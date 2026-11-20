@@ -1,0 +1,14 @@
+{
+  "name": "telinha-server",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Servidor de sinalizacao WebSocket para telinha-do-botecao",
+  "main": "index.mjs",
+  "scripts": {
+    "start": "node index.mjs",
+    "dev": "node index.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

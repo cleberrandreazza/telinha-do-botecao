@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: telinha-signaling
+    runtime: node
+    region: oregon
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: node index.mjs
+    envVars:
+      - key: PORT
+        value: 10000
+    healthCheckPath: /health

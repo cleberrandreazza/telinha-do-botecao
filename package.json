@@ -1,0 +1,16 @@
+{
+  "name": "telinha-do-botecao",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Compartilhador de tela P2P com WebRTC - gratuito e sem travamentos",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:web\"",
+    "dev:server": "cd server && node index.mjs",
+    "dev:web": "cd web && npm run dev",
+    "install:all": "cd server && npm install && cd ../web && npm install",
+    "build": "cd web && npm run build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
