@@ -47,6 +47,21 @@ const ICE_SERVERS: RTCIceServer[] = [
   },
 ];
 
+export interface ConnectionStats {
+  videoCodec: string;
+  audioCodec: string;
+  videoBitrate: number;  // bits/s
+  audioBitrate: number;  // bits/s
+  fps: number;
+  width: number;
+  height: number;
+  packetLoss: number;
+  roundTripTime: number; // ms
+  hasAudio: boolean;
+  jitter: number;
+  timestamp: number;
+}
+
 type OnStreamCallback = (info: StreamInfo) => void;
 type OnStreamEndCallback = (peerId: string) => void;
 
@@ -101,26 +116,18 @@ export class WebRTCManager {
     const fps = cfg.frameRate;
     const wantsAudio = cfg.audio;
 
-    const displayMediaOptions: DisplayMediaStreamOptions & { systemAudio?: string } = {
+    // getDisplayMedia: audio precisa ser simples (true/false).
+    // Constraints complexos em audio podem fazer o Chrome ignorar o áudio.
+    // systemAudio DEVE ser top-level (Chromium 105+).
+    const displayMediaOptions: any = {
       video: {
         width: { ideal: res.width },
         height: { ideal: res.height },
         frameRate: { ideal: fps, max: fps },
       },
-      audio: wantsAudio
-        ? {
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: false,
-          }
-        : false,
+      audio: wantsAudio,
+      ...(wantsAudio ? { systemAudio: 'include' } : {}),
     };
-
-    // systemAudio é top-level no getDisplayMedia (Chromium 105+)
-    if (wantsAudio) {
-      // @ts-ignore — propriedade existe mas não está nos tipos TS
-      displayMediaOptions.systemAudio = 'include';
-    }
 
     const stream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions as DisplayMediaStreamOptions);
 
@@ -440,6 +447,126 @@ export class WebRTCManager {
 
     return pc;
   }
+
+  /**
+   * Retorna stats em tempo real de uma conexão WebRTC
+   */
+  async getConnectionStats(peerId: string): Promise<ConnectionStats | null> {
+    const pc = this.connections.get(peerId);
+    if (!pc) return null;
+
+    try {
+      const rawStats = await pc.getStats();
+      const result: ConnectionStats = {
+        videoCodec: '—',
+        audioCodec: '—',
+        videoBitrate: 0,
+        audioBitrate: 0,
+        fps: 0,
+        width: 0,
+        height: 0,
+        packetLoss: 0,
+        roundTripTime: 0,
+        hasAudio: false,
+        jitter: 0,
+        timestamp: Date.now(),
+      };
+
+      let videoInboundId = '';
+      let audioInboundId = '';
+
+      rawStats.forEach((report) => {
+        // Inbound video (viewer side)
+        if (report.type === 'inbound-rtp' && report.kind === 'video') {
+          result.fps = report.framesPerSecond || 0;
+          result.width = report.frameWidth || 0;
+          result.height = report.frameHeight || 0;
+          result.packetLoss = report.packetsLost || 0;
+          result.jitter = report.jitter || 0;
+          videoInboundId = report.codecId || '';
+
+          // Calcula bitrate (bytes recebidos desde último check)
+          const key = `${peerId}-video`;
+          const prev = this._prevStats.get(key);
+          if (prev) {
+            const dtMs = report.timestamp - prev.timestamp;
+            if (dtMs > 0) {
+              result.videoBitrate = Math.round(((report.bytesReceived - prev.bytes) * 8) / (dtMs / 1000));
+            }
+          }
+          this._prevStats.set(key, { bytes: report.bytesReceived, timestamp: report.timestamp });
+        }
+
+        // Outbound video (sharer side)
+        if (report.type === 'outbound-rtp' && report.kind === 'video') {
+          result.fps = result.fps || report.framesPerSecond || 0;
+          result.width = result.width || report.frameWidth || 0;
+          result.height = result.height || report.frameHeight || 0;
+          videoInboundId = videoInboundId || report.codecId || '';
+
+          const key = `${peerId}-video-out`;
+          const prev = this._prevStats.get(key);
+          if (prev) {
+            const dtMs = report.timestamp - prev.timestamp;
+            if (dtMs > 0) {
+              result.videoBitrate = result.videoBitrate || Math.round(((report.bytesSent - prev.bytes) * 8) / (dtMs / 1000));
+            }
+          }
+          this._prevStats.set(key, { bytes: report.bytesSent, timestamp: report.timestamp });
+        }
+
+        // Inbound audio
+        if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+          result.hasAudio = true;
+          audioInboundId = report.codecId || '';
+
+          const key = `${peerId}-audio`;
+          const prev = this._prevStats.get(key);
+          if (prev) {
+            const dtMs = report.timestamp - prev.timestamp;
+            if (dtMs > 0) {
+              result.audioBitrate = Math.round(((report.bytesReceived - prev.bytes) * 8) / (dtMs / 1000));
+            }
+          }
+          this._prevStats.set(key, { bytes: report.bytesReceived, timestamp: report.timestamp });
+        }
+
+        // Outbound audio (sharer side)
+        if (report.type === 'outbound-rtp' && report.kind === 'audio') {
+          result.hasAudio = true;
+          audioInboundId = audioInboundId || report.codecId || '';
+        }
+
+        // RTT
+        if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+          result.roundTripTime = report.currentRoundTripTime ? Math.round(report.currentRoundTripTime * 1000) : 0;
+        }
+      });
+
+      // Resolve codec names
+      rawStats.forEach((report) => {
+        if (report.type === 'codec') {
+          if (report.id === videoInboundId) {
+            result.videoCodec = (report.mimeType || '').replace('video/', '');
+          }
+          if (report.id === audioInboundId) {
+            result.audioCodec = (report.mimeType || '').replace('audio/', '');
+          }
+        }
+      });
+
+      return result;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Retorna todos os peerIds conectados */
+  getConnectedPeerIds(): string[] {
+    return Array.from(this.connections.keys());
+  }
+
+  private _prevStats = new Map<string, { bytes: number; timestamp: number }>();
 
   private closeConnection(peerId: string) {
     const pc = this.connections.get(peerId);

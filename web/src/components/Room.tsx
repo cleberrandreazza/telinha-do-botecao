@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { PeerInfo, StreamInfo } from '../lib/types';
+import type { ConnectionStats } from '../lib/webrtc';
 import { getInitials, colorFromString } from '../lib/profile';
 import CrtEmptyState from './CrtEmptyState';
 import StreamViewer from './StreamViewer';
@@ -16,6 +17,7 @@ interface RoomProps {
   onStartSharing: () => void;
   onStopSharing: () => void;
   onLeaveRoom: () => void;
+  getStats?: (peerId: string) => Promise<ConnectionStats | null>;
 }
 
 export default function Room({
@@ -29,6 +31,7 @@ export default function Room({
   onStartSharing,
   onStopSharing,
   onLeaveRoom,
+  getStats,
 }: RoomProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeStreamId, setActiveStreamId] = useState<string | null>(null);
@@ -424,6 +427,7 @@ export default function Room({
             mouseInactive={mouseInactive}
             volume={volume}
             onVolumeChange={setVolume}
+            getStats={getStats ? () => getStats(activeStream.peerId) : undefined}
           />
         ) : (
           <CrtEmptyState onOpenSidebar={() => setSidebarOpen(true)} />

@@ -294,6 +294,7 @@ export default function App() {
           onStartSharing={handleOpenSettings}
           onStopSharing={handleStopSharing}
           onLeaveRoom={handleLeaveRoom}
+          getStats={(peerId: string) => rtcRef.current?.getConnectionStats(peerId) ?? Promise.resolve(null)}
         />
       )}
       {showSettings && (
