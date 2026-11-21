@@ -343,10 +343,18 @@ export default function StreamViewer({
           </div>
           <div className="flex items-center justify-between gap-4">
             <span>Pacotes perdidos:</span>
-            <span className={`font-medium ${(liveStats?.packetLoss || 0) > 100 ? 'text-red-400' : 'text-white'}`}>
-              {liveStats?.packetLoss ?? '—'}
+            <span className={`font-medium ${(liveStats?.packetLossRate || 0) > 2 ? 'text-red-400' : (liveStats?.packetLossRate || 0) > 0.5 ? 'text-yellow-400' : 'text-white'}`}>
+              {liveStats ? `${liveStats.packetLoss} (${liveStats.packetLossRate?.toFixed(1) || '0.0'}%)` : '—'}
             </span>
           </div>
+          {liveStats?.adaptiveState && (
+            <div className="flex items-center justify-between gap-4 pt-1 border-t border-white/5">
+              <span>Bitrate adapt.:</span>
+              <span className="font-medium text-cyan-400">
+                {liveStats.adaptiveState}
+              </span>
+            </div>
+          )}
         </div>
       )}
 
