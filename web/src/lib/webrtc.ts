@@ -59,6 +59,8 @@ export class WebRTCManager {
   private onStream: OnStreamCallback;
   private onStreamEnd: OnStreamEndCallback;
   private unsubSignal: (() => void) | null = null;
+  private notifiedPeers = new Set<string>();  // evita chamar onStream duplicado
+  public hasAudioTrack = false;  // indica se a captura tem áudio
 
   constructor(
     signal: SignalingClient,
@@ -122,8 +124,22 @@ export class WebRTCManager {
 
     const stream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions as DisplayMediaStreamOptions);
 
+    // Diagnóstico de áudio
+    const audioTracks = stream.getAudioTracks();
+    const videoTracks = stream.getVideoTracks();
+    console.log(`[WebRTC] Captura: ${videoTracks.length} vídeo, ${audioTracks.length} áudio`);
+    this.hasAudioTrack = audioTracks.length > 0;
+
+    if (wantsAudio && audioTracks.length === 0) {
+      console.warn('[WebRTC] ⚠️ Áudio solicitado mas NÃO capturado! Verifique se marcou "Compartilhar áudio" no diálogo do Chrome.');
+    }
+
+    for (const at of audioTracks) {
+      console.log(`[WebRTC] Audio track: label="${at.label}", readyState=${at.readyState}, muted=${at.muted}`);
+    }
+
     // Otimiza a track de vídeo para screen sharing com movimento (jogos, vídeos)
-    const videoTrack = stream.getVideoTracks()[0];
+    const videoTrack = videoTracks[0];
     if (videoTrack) {
       videoTrack.contentHint = 'motion';
     }
@@ -223,8 +239,10 @@ export class WebRTCManager {
 
     const pc = this.createPeerConnection(viewerId);
 
-    // Adiciona as tracks da minha tela
-    for (const track of this.localStream.getTracks()) {
+    // Adiciona as tracks da minha tela (vídeo + áudio se existir)
+    const tracks = this.localStream.getTracks();
+    console.log(`[WebRTC] Enviando ${tracks.length} tracks para viewer ${viewerId}:`, tracks.map(t => `${t.kind}(${t.label})`));
+    for (const track of tracks) {
       pc.addTrack(track, this.localStream);
     }
 
@@ -370,13 +388,19 @@ export class WebRTCManager {
 
     // Recebe stream remoto (eu sou viewer)
     pc.ontrack = (event) => {
+      console.log(`[WebRTC] Viewer recebeu track: kind=${event.track.kind}, label="${event.track.label}", readyState=${event.track.readyState}`);
+
       const [remoteStream] = event.streams;
       if (remoteStream) {
-        this.onStream({
-          peerId: remotePeerId,
-          nickname: '', // será preenchido pelo componente
-          stream: remoteStream,
-        });
+        // Só notifica onStream uma vez por peer (evita re-render duplicado quando áudio chega)
+        if (!this.notifiedPeers.has(remotePeerId)) {
+          this.notifiedPeers.add(remotePeerId);
+          this.onStream({
+            peerId: remotePeerId,
+            nickname: '', // será preenchido pelo componente
+            stream: remoteStream,
+          });
+        }
 
         // Monitora o fim da track remota (sharer fechou o programa / parou de compartilhar)
         const track = event.track;
@@ -423,5 +447,6 @@ export class WebRTCManager {
       pc.close();
       this.connections.delete(peerId);
     }
+    this.notifiedPeers.delete(peerId);
   }
 }
