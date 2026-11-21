@@ -8,7 +8,8 @@
     "dev:server": "cd server && node index.mjs",
     "dev:web": "cd web && npm run dev",
     "install:all": "cd server && npm install && cd ../web && npm install",
-    "build": "cd web && npm run build"
+    "build": "cd web && npm run build",
+    "test": "npm test --prefix web"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

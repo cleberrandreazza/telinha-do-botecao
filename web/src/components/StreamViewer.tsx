@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import type { ConnectionStats } from '../lib/webrtc';
+import StatsPanel from './StatsPanel';
+import { PlaybackMonitor, type DiagnosticsSnapshot, type PlaybackSample } from '../lib/diagnostics/index';
 
 interface StreamViewerProps {
   stream: MediaStream;
@@ -9,7 +10,9 @@ interface StreamViewerProps {
   mouseInactive: boolean;
   volume: number;
   onVolumeChange: (v: number) => void;
-  getStats?: () => Promise<ConnectionStats | null>;
+  subscribeStats?: (cb: (snapshot: DiagnosticsSnapshot) => void) => () => void;
+  pushPlayback?: (sample: PlaybackSample) => boolean;
+  onExportDiagnostics?: () => void;
 }
 
 export default function StreamViewer({
@@ -20,7 +23,9 @@ export default function StreamViewer({
   mouseInactive,
   volume,
   onVolumeChange,
-  getStats,
+  subscribeStats,
+  pushPlayback,
+  onExportDiagnostics,
 }: StreamViewerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -142,34 +147,46 @@ export default function StreamViewer({
     }, 500);
   }, [onClose]);
 
-  // ── Stats from track (basic) ──
+  // ── Live diagnostics: playback always, React only while the panel is open ──
+  const [snapshot, setSnapshot] = useState<DiagnosticsSnapshot | null>(null);
+  const [livePlayback, setLivePlayback] = useState<PlaybackSample | null>(null);
+  const showStatsRef = useRef(false);
+  const latestPlayback = useRef<PlaybackSample | null>(null);
+  const pushPlaybackRef = useRef(pushPlayback);
+  const exportRef = useRef(onExportDiagnostics);
+  showStatsRef.current = showStats;
+  pushPlaybackRef.current = pushPlayback;
+  exportRef.current = onExportDiagnostics;
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const monitor = new PlaybackMonitor(video, (sample) => {
+      latestPlayback.current = sample;
+      const accepted = pushPlaybackRef.current?.(sample) ?? false;
+      if (showStatsRef.current && !accepted) setLivePlayback(sample);
+    });
+    monitor.start();
+    return () => monitor.stop();
+  }, [stream]);
+
+  useEffect(() => {
+    if (!showStats) return;
+    setLivePlayback(latestPlayback.current);
+    if (!subscribeStats) return;
+    let active = true;
+    const unsubscribe = subscribeStats((next) => {
+      if (active) setSnapshot(next);
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [showStats, subscribeStats]);
+
   const videoTrack = stream.getVideoTracks()[0];
   const settings = videoTrack?.getSettings();
-  const statsText = settings
-    ? `${settings.width || '?'}×${settings.height || '?'} · ${settings.frameRate?.toFixed(0) || '?'}fps`
-    : '';
-
-  // ── Live WebRTC stats polling ──
-  const [liveStats, setLiveStats] = useState<ConnectionStats | null>(null);
-  useEffect(() => {
-    if (!showStats || !getStats) return;
-    let active = true;
-    const poll = async () => {
-      if (!active) return;
-      const s = await getStats();
-      if (active) setLiveStats(s);
-    };
-    poll();
-    const interval = setInterval(poll, 1000);
-    return () => { active = false; clearInterval(interval); };
-  }, [showStats, getStats]);
-
-  const formatBitrate = (bps: number) => {
-    if (bps <= 0) return '—';
-    if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} Mbps`;
-    if (bps >= 1_000) return `${(bps / 1_000).toFixed(0)} Kbps`;
-    return `${bps} bps`;
-  };
+  const trackRequestedFps = typeof settings?.frameRate === 'number' ? settings.frameRate : null;
 
   // Hide cursor in fullscreen when mouse inactive
   const containerStyle: React.CSSProperties = isFullscreen && mouseInactive ? { cursor: 'none' } : {};
@@ -300,61 +317,15 @@ export default function StreamViewer({
         </div>
       )}
 
-      {/* Stats Panel (top-right, live data) */}
       {showStats && (
-        <div className="absolute top-16 right-4 z-30 bg-black/85 backdrop-blur-xl border border-white/10 rounded-xl p-3 shadow-2xl text-[11px] font-label-mono text-[#dbdee1] flex flex-col gap-1.5 autohide-ui min-w-[220px]">
-          <div className="flex items-center justify-between pb-1 border-b border-white/10 text-primary font-bold">
-            <span className="text-[10px] uppercase tracking-wider">Estatísticas</span>
-            <button className="text-white/60 hover:text-white cursor-pointer ml-4" onClick={() => setShowStats(false)}>
-              <span className="material-symbols-outlined text-[14px]">close</span>
-            </button>
-          </div>
-          <div className="flex items-center justify-between gap-4">
-            <span>Resolução:</span>
-            <span className="text-white font-medium">{liveStats?.width || settings?.width || '?'}×{liveStats?.height || settings?.height || '?'}</span>
-          </div>
-          <div className="flex items-center justify-between gap-4">
-            <span>FPS:</span>
-            <span className={`font-medium ${(liveStats?.fps || 0) < 15 ? 'text-red-400' : (liveStats?.fps || 0) < 25 ? 'text-yellow-400' : 'text-green-400'}`}>
-              {liveStats?.fps?.toFixed(0) || settings?.frameRate?.toFixed(0) || '?'}
-            </span>
-          </div>
-          <div className="flex items-center justify-between gap-4">
-            <span>Bitrate vídeo:</span>
-            <span className="text-white font-medium">{liveStats ? formatBitrate(liveStats.videoBitrate) : '—'}</span>
-          </div>
-          <div className="flex items-center justify-between gap-4">
-            <span>Codec vídeo:</span>
-            <span className={`font-medium ${liveStats?.videoCodec === 'H264' ? 'text-green-400' : liveStats?.videoCodec === 'VP9' ? 'text-yellow-400' : 'text-white'}`}>
-              {liveStats?.videoCodec || '—'}
-            </span>
-          </div>
-          <div className="flex items-center justify-between gap-4 pt-1 border-t border-white/5">
-            <span>Áudio:</span>
-            <span className={`font-medium ${liveStats?.hasAudio ? 'text-green-400' : 'text-red-400'}`}>
-              {liveStats ? (liveStats.hasAudio ? `${liveStats.audioCodec} · ${formatBitrate(liveStats.audioBitrate)}` : '✗ Sem áudio') : '—'}
-            </span>
-          </div>
-          <div className="flex items-center justify-between gap-4">
-            <span>Latência (RTT):</span>
-            <span className={`font-medium ${(liveStats?.roundTripTime || 0) > 150 ? 'text-red-400' : (liveStats?.roundTripTime || 0) > 80 ? 'text-yellow-400' : 'text-primary'}`}>
-              {liveStats?.roundTripTime ? `${liveStats.roundTripTime} ms` : '—'}
-            </span>
-          </div>
-          <div className="flex items-center justify-between gap-4">
-            <span>Pacotes perdidos:</span>
-            <span className={`font-medium ${(liveStats?.packetLossRate || 0) > 2 ? 'text-red-400' : (liveStats?.packetLossRate || 0) > 0.5 ? 'text-yellow-400' : 'text-white'}`}>
-              {liveStats ? `${liveStats.packetLoss} (${liveStats.packetLossRate?.toFixed(1) || '0.0'}%)` : '—'}
-            </span>
-          </div>
-          {liveStats?.adaptiveState && (
-            <div className="flex items-center justify-between gap-4 pt-1 border-t border-white/5">
-              <span>Bitrate adapt.:</span>
-              <span className="font-medium text-cyan-400">
-                {liveStats.adaptiveState}
-              </span>
-            </div>
-          )}
+        <div className="absolute top-16 right-4 z-30 autohide-ui">
+          <StatsPanel
+            snapshot={snapshot}
+            trackRequestedFps={trackRequestedFps}
+            livePlayback={snapshot?.sample.playback ?? livePlayback}
+            onClose={() => setShowStats(false)}
+            onExport={() => exportRef.current?.()}
+          />
         </div>
       )}
 

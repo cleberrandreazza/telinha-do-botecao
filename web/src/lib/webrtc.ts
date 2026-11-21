@@ -1,5 +1,14 @@
 import { SignalingClient } from './signaling';
 import type { ServerMessage, StreamInfo } from './types';
+import {
+  AdaptiveBitrateController,
+  ConnectionMonitor,
+  reportFilename,
+  triggerJsonDownload,
+  type DiagnosticsSnapshot,
+  type PeerConnectionLike,
+  type PlaybackSample,
+} from './diagnostics/index';
 
 export interface StreamConfig {
   resolution: '2160' | '1080' | '720' | '480';
@@ -45,171 +54,29 @@ const ICE_SERVERS: RTCIceServer[] = [
   },
 ];
 
+/** Visão compatível. Campos medidos usam null quando o navegador não expõe o dado. */
 export interface ConnectionStats {
+  role: 'sender' | 'receiver';
   videoCodec: string;
   audioCodec: string;
-  videoBitrate: number;  // bits/s
-  audioBitrate: number;  // bits/s
-  fps: number;
-  width: number;
-  height: number;
-  packetLoss: number;      // packets lost (cumulative)
-  packetLossRate: number;  // % of packets lost
-  roundTripTime: number;   // ms
+  videoBitrate: number | null;
+  audioBitrate: number | null;
+  /** FPS medido da direção desta extremidade. Zero permanece zero. */
+  fps: number | null;
+  width: number | null;
+  height: number | null;
+  packetLoss: number | null;
+  packetLossRate: number | null;
+  roundTripTime: number | null;
   hasAudio: boolean;
-  jitter: number;
+  /** Milissegundos. null se o navegador não expôs jitter na direção certa. */
+  jitter: number | null;
   timestamp: number;
-  // Adaptive bitrate info
-  adaptiveState?: string;  // current ABR state description
+  adaptiveState?: string;
 }
 
 type OnStreamCallback = (info: StreamInfo) => void;
 type OnStreamEndCallback = (peerId: string) => void;
-
-/**
- * Adaptive Bitrate Controller
- * Monitors FPS and adjusts bitrate dynamically to maintain stable framerate
- */
-class AdaptiveBitrateController {
-  private targetFps: number;
-  private currentMaxBitrate: number;
-  private minBitrate = 500_000;      // 500 Kbps absolute minimum
-  private initialBitrate: number;
-  private pollInterval: ReturnType<typeof setInterval> | null = null;
-  private pc: RTCPeerConnection;
-  private lowFpsCount = 0;           // consecutive polls with low FPS
-  private highFpsCount = 0;          // consecutive polls with healthy FPS
-  private lastBytesReceived = 0;
-  private lastTimestamp = 0;
-  private currentFps = 0;
-  private currentBitrate = 0;        // actual measured bitrate
-
-  // Thresholds
-  private readonly LOW_FPS_THRESHOLD = 0.6;   // below 60% of target = too low
-  private readonly HIGH_FPS_THRESHOLD = 0.85;  // above 85% of target = healthy
-  private readonly DECREASE_STEP = 0.7;        // reduce by 30% when struggling
-  private readonly INCREASE_STEP = 1.15;       // increase by 15% when stable
-  private readonly MIN_LOW_POLLS = 3;          // need 3 consecutive low polls to reduce
-  private readonly MIN_HIGH_POLLS = 10;        // need 10 consecutive high polls to increase
-
-  constructor(pc: RTCPeerConnection, targetFps: number, maxBitrate: number) {
-    this.pc = pc;
-    this.targetFps = targetFps;
-    this.currentMaxBitrate = maxBitrate;
-    this.initialBitrate = maxBitrate;
-  }
-
-  start() {
-    // Poll every 2 seconds
-    this.pollInterval = setInterval(() => this.evaluate(), 2000);
-    console.log(`[ABR] Started: target=${this.targetFps}fps, maxBitrate=${(this.currentMaxBitrate / 1_000_000).toFixed(1)}Mbps`);
-  }
-
-  stop() {
-    if (this.pollInterval) {
-      clearInterval(this.pollInterval);
-      this.pollInterval = null;
-    }
-  }
-
-  getState(): string {
-    const pct = Math.round((this.currentMaxBitrate / this.initialBitrate) * 100);
-    return `${(this.currentMaxBitrate / 1_000_000).toFixed(1)}Mbps (${pct}%)`;
-  }
-
-  private async evaluate() {
-    try {
-      const stats = await this.pc.getStats();
-      let fps = 0;
-
-      stats.forEach((report) => {
-        // Check outbound (sharer side) for FPS
-        if (report.type === 'outbound-rtp' && report.kind === 'video') {
-          fps = report.framesPerSecond || 0;
-        }
-        // Also check inbound (viewer side)
-        if (report.type === 'inbound-rtp' && report.kind === 'video') {
-          fps = fps || report.framesPerSecond || 0;
-
-          // Track actual bitrate
-          if (this.lastTimestamp > 0) {
-            const dtMs = report.timestamp - this.lastTimestamp;
-            if (dtMs > 0) {
-              this.currentBitrate = Math.round(((report.bytesReceived - this.lastBytesReceived) * 8) / (dtMs / 1000));
-            }
-          }
-          this.lastBytesReceived = report.bytesReceived;
-          this.lastTimestamp = report.timestamp;
-        }
-      });
-
-      this.currentFps = fps;
-      const fpsRatio = fps / this.targetFps;
-
-      if (fpsRatio < this.LOW_FPS_THRESHOLD && fps > 0) {
-        this.lowFpsCount++;
-        this.highFpsCount = 0;
-
-        if (this.lowFpsCount >= this.MIN_LOW_POLLS) {
-          this.decreaseBitrate();
-          this.lowFpsCount = 0;
-        }
-      } else if (fpsRatio >= this.HIGH_FPS_THRESHOLD) {
-        this.highFpsCount++;
-        this.lowFpsCount = 0;
-
-        if (this.highFpsCount >= this.MIN_HIGH_POLLS && this.currentMaxBitrate < this.initialBitrate) {
-          this.increaseBitrate();
-          this.highFpsCount = 0;
-        }
-      } else {
-        // In the middle zone — reset counters
-        this.lowFpsCount = Math.max(0, this.lowFpsCount - 1);
-        this.highFpsCount = Math.max(0, this.highFpsCount - 1);
-      }
-    } catch {
-      // stats can fail during renegotiation
-    }
-  }
-
-  private decreaseBitrate() {
-    const newBitrate = Math.max(this.minBitrate, Math.round(this.currentMaxBitrate * this.DECREASE_STEP));
-    if (newBitrate < this.currentMaxBitrate) {
-      console.log(`[ABR] ⬇️ FPS baixo (${this.currentFps.toFixed(0)}/${this.targetFps}), reduzindo bitrate: ${(this.currentMaxBitrate / 1_000_000).toFixed(1)}→${(newBitrate / 1_000_000).toFixed(1)}Mbps`);
-      this.currentMaxBitrate = newBitrate;
-      this.applyBitrate();
-    }
-  }
-
-  private increaseBitrate() {
-    const newBitrate = Math.min(this.initialBitrate, Math.round(this.currentMaxBitrate * this.INCREASE_STEP));
-    if (newBitrate > this.currentMaxBitrate) {
-      console.log(`[ABR] ⬆️ FPS estável (${this.currentFps.toFixed(0)}/${this.targetFps}), aumentando bitrate: ${(this.currentMaxBitrate / 1_000_000).toFixed(1)}→${(newBitrate / 1_000_000).toFixed(1)}Mbps`);
-      this.currentMaxBitrate = newBitrate;
-      this.applyBitrate();
-    }
-  }
-
-  private applyBitrate() {
-    const videoSender = this.pc.getSenders().find(s => s.track?.kind === 'video');
-    if (!videoSender) return;
-
-    try {
-      const params = videoSender.getParameters();
-      if (!params.encodings || params.encodings.length === 0) {
-        params.encodings = [{}];
-      }
-      params.encodings[0].maxBitrate = this.currentMaxBitrate;
-      videoSender.setParameters(params).then(() => {
-        console.log(`[ABR] ✅ Bitrate aplicado: ${(this.currentMaxBitrate / 1_000_000).toFixed(1)}Mbps`);
-      }).catch(e => {
-        console.warn('[ABR] Falha ao aplicar bitrate:', e);
-      });
-    } catch (e) {
-      console.warn('[ABR] Erro ao configurar params:', e);
-    }
-  }
-}
 
 export class WebRTCManager {
   private signal: SignalingClient;
@@ -223,8 +90,12 @@ export class WebRTCManager {
   private notifiedPeers = new Set<string>();
   public hasAudioTrack = false;
   public onAudioStatus?: (captured: boolean) => void;
-  private _prevStats = new Map<string, { bytes: number; timestamp: number; packetsLost: number; packetsReceived: number }>();
   private abrControllers = new Map<string, AdaptiveBitrateController>();
+  private monitors = new Map<string, ConnectionMonitor>();
+  private readonly sessionId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `s_${Date.now().toString(36)}`;
+  private diagnosticsListeners = new Set<() => void>();
 
   constructor(
     signal: SignalingClient,
@@ -319,15 +190,8 @@ export class WebRTCManager {
       this.localStream = null;
     }
 
-    // Stop all ABR controllers
-    for (const abr of this.abrControllers.values()) {
-      abr.stop();
-    }
-    this.abrControllers.clear();
-
-    for (const [peerId, pc] of this.connections) {
-      pc.close();
-      this.connections.delete(peerId);
+    for (const peerId of [...this.connections.keys()]) {
+      this.closeConnection(peerId);
     }
 
     this.signal.send({ type: 'stop-sharing' });
@@ -340,14 +204,10 @@ export class WebRTCManager {
   destroy() {
     this.stopScreenShare();
     this.stopListening();
-    for (const pc of this.connections.values()) {
-      pc.close();
+    for (const peerId of [...this.connections.keys()]) {
+      this.closeConnection(peerId);
     }
-    this.connections.clear();
-    for (const abr of this.abrControllers.values()) {
-      abr.stop();
-    }
-    this.abrControllers.clear();
+    this.diagnosticsListeners.clear();
   }
 
   // ── Handlers de sinalização ──
@@ -384,7 +244,7 @@ export class WebRTCManager {
   private async createOfferForViewer(viewerId: string) {
     if (!this.localStream) return;
 
-    const pc = this.createPeerConnection(viewerId);
+    const pc = this.createPeerConnection(viewerId, 'sender');
 
     const tracks = this.localStream.getTracks();
     console.log(`[WebRTC] Enviando ${tracks.length} tracks para viewer ${viewerId}:`, tracks.map(t => `${t.kind}(${t.label}, enabled=${t.enabled})`));
@@ -465,13 +325,24 @@ export class WebRTCManager {
         scaleResolutionDownBy: check.encodings?.[0]?.scaleResolutionDownBy,
       }));
 
-      // Start Adaptive Bitrate Controller
       const existingAbr = this.abrControllers.get(peerId);
       if (existingAbr) existingAbr.stop();
 
-      const abr = new AdaptiveBitrateController(pc, this.currentConfig.frameRate, maxBitrate);
+      const monitor = this.monitors.get(peerId);
+      const abr = new AdaptiveBitrateController({
+        applyMaxBitrate: (bitrate) => this.applySenderBitrate(pc, bitrate),
+      }, this.currentConfig.frameRate, maxBitrate, (change) => {
+        const mbps = (value: number) => (value / 1_000_000).toFixed(1);
+        console.info(`[ABR] ${change.action === 'decrease' ? 'reduziu' : 'aumentou'} bitrate: ${mbps(change.from)}→${mbps(change.to)} Mbps (fps ${change.fps ?? 'n/d'})`);
+        monitor?.recordEvent({
+          category: 'ABR',
+          severity: change.action === 'decrease' ? 'atenção' : 'info',
+          message: change.action === 'decrease' ? 'ABR reduziu o bitrate.' : 'ABR aumentou o bitrate.',
+          data: { de: change.from, para: change.to, fps: change.fps },
+        });
+      });
       this.abrControllers.set(peerId, abr);
-      abr.start();
+      monitor?.setSampleListener((sample) => abr.onSample(sample));
 
     } catch (e) {
       console.warn('[WebRTC] Não foi possível configurar sender de vídeo:', e);
@@ -482,7 +353,7 @@ export class WebRTCManager {
    * VIEWER: recebi offer, criar answer
    */
   private async handleOffer(fromId: string, sdp: RTCSessionDescriptionInit) {
-    const pc = this.createPeerConnection(fromId);
+    const pc = this.createPeerConnection(fromId, 'receiver');
 
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
     const answer = await pc.createAnswer();
@@ -517,7 +388,8 @@ export class WebRTCManager {
     }
   }
 
-  private createPeerConnection(remotePeerId: string): RTCPeerConnection {
+  private createPeerConnection(remotePeerId: string, role: 'sender' | 'receiver'): RTCPeerConnection {
+    const replaced = this.connections.has(remotePeerId);
     this.closeConnection(remotePeerId);
 
     const pc = new RTCPeerConnection({
@@ -525,6 +397,30 @@ export class WebRTCManager {
     });
 
     this.connections.set(remotePeerId, pc);
+    const monitor = new ConnectionMonitor({
+      pc: pc as unknown as PeerConnectionLike,
+      role,
+      sessionId: this.sessionId,
+      getContext: () => ({
+        viewerCount: role === 'sender' ? this.activeViewerCount() : null,
+        configuredFps: role === 'sender' ? this.currentConfig.frameRate : null,
+        streamConfig: role === 'sender' ? { ...this.currentConfig } : null,
+        adaptiveState: this.abrControllers.get(remotePeerId)?.getState() ?? null,
+      }),
+    });
+    this.monitors.set(remotePeerId, monitor);
+    monitor.subscribeAny(() => {
+      for (const listener of this.diagnosticsListeners) listener();
+    });
+    monitor.start();
+    if (replaced) {
+      monitor.recordEvent({
+        category: 'SISTEMA',
+        severity: 'info',
+        message: 'Reconexão: a conexão anterior foi substituída.',
+        data: {},
+      });
+    }
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
@@ -592,154 +488,53 @@ export class WebRTCManager {
   }
 
   /**
-   * Retorna stats em tempo real de uma conexão WebRTC.
-   * Funciona tanto para sharer (outbound) quanto viewer (inbound).
+   * Última amostra do monitor. Não chama getStats.
+   * O FPS é o medido na direção desta extremidade; zero não vira o FPS configurado.
    */
   async getConnectionStats(peerId: string): Promise<ConnectionStats | null> {
-    const pc = this.connections.get(peerId);
-    if (!pc) return null;
+    const snapshot = this.monitors.get(peerId)?.getSnapshot() ?? null;
+    if (!snapshot) return null;
+    return snapshotToConnectionStats(snapshot);
+  }
 
-    try {
-      const rawStats = await pc.getStats();
-      const result: ConnectionStats = {
-        videoCodec: '—',
-        audioCodec: '—',
-        videoBitrate: 0,
-        audioBitrate: 0,
-        fps: 0,
-        width: 0,
-        height: 0,
-        packetLoss: 0,
-        packetLossRate: 0,
-        roundTripTime: 0,
-        hasAudio: false,
-        jitter: 0,
-        timestamp: Date.now(),
-      };
+  subscribeStats(peerId: string, listener: (snapshot: DiagnosticsSnapshot) => void): () => void {
+    const monitor = this.monitors.get(peerId);
+    if (!monitor) return () => {};
+    return monitor.subscribe(listener);
+  }
 
-      let videoCodecId = '';
-      let audioCodecId = '';
+  subscribeDiagnostics(listener: () => void): () => void {
+    this.diagnosticsListeners.add(listener);
+    return () => this.diagnosticsListeners.delete(listener);
+  }
 
-      rawStats.forEach((report) => {
-        // ── Inbound video (viewer side) ──
-        if (report.type === 'inbound-rtp' && report.kind === 'video') {
-          result.fps = report.framesPerSecond || 0;
-          result.width = report.frameWidth || 0;
-          result.height = report.frameHeight || 0;
-          result.jitter = report.jitter || 0;
-          videoCodecId = report.codecId || '';
+  pushPlayback(peerId: string, sample: PlaybackSample): boolean {
+    return this.monitors.get(peerId)?.pushPlayback(sample) ?? false;
+  }
 
-          // Packet loss rate calculation
-          const totalPackets = (report.packetsReceived || 0) + (report.packetsLost || 0);
-          result.packetLoss = report.packetsLost || 0;
-          if (totalPackets > 0) {
-            // Calculate packet loss rate since last check
-            const key = `${peerId}-pktloss`;
-            const prev = this._prevStats.get(key);
-            if (prev) {
-              const dLost = (report.packetsLost || 0) - prev.packetsLost;
-              const dRecv = (report.packetsReceived || 0) - prev.packetsReceived;
-              const dTotal = dLost + dRecv;
-              result.packetLossRate = dTotal > 0 ? Math.round((dLost / dTotal) * 10000) / 100 : 0;
-            }
-            this._prevStats.set(key, {
-              bytes: 0,
-              timestamp: report.timestamp,
-              packetsLost: report.packetsLost || 0,
-              packetsReceived: report.packetsReceived || 0,
-            });
-          }
+  getSenderSnapshots(): DiagnosticsSnapshot[] {
+    const snapshots: DiagnosticsSnapshot[] = [];
+    for (const monitor of this.monitors.values()) {
+      if (monitor.role !== 'sender' || monitor.isStopped) continue;
+      const snapshot = monitor.getSnapshot();
+      if (snapshot) snapshots.push(snapshot);
+    }
+    return snapshots;
+  }
 
-          // Bitrate calc (bytes received since last check)
-          const key = `${peerId}-video`;
-          const prev = this._prevStats.get(key);
-          if (prev && prev.bytes > 0) {
-            const dtMs = report.timestamp - prev.timestamp;
-            if (dtMs > 0) {
-              result.videoBitrate = Math.round(((report.bytesReceived - prev.bytes) * 8) / (dtMs / 1000));
-            }
-          }
-          this._prevStats.set(key, { bytes: report.bytesReceived, timestamp: report.timestamp, packetsLost: 0, packetsReceived: 0 });
-        }
+  downloadDiagnostics(peerId: string) {
+    const monitor = this.monitors.get(peerId);
+    if (!monitor) return;
+    const report = monitor.exportReport();
+    triggerJsonDownload(reportFilename(report.role, report.connectionId), report);
+  }
 
-        // ── Outbound video (sharer side) ──
-        if (report.type === 'outbound-rtp' && report.kind === 'video') {
-          result.fps = result.fps || report.framesPerSecond || 0;
-          result.width = result.width || report.frameWidth || 0;
-          result.height = result.height || report.frameHeight || 0;
-          videoCodecId = videoCodecId || report.codecId || '';
-
-          const key = `${peerId}-video-out`;
-          const prev = this._prevStats.get(key);
-          if (prev && prev.bytes > 0) {
-            const dtMs = report.timestamp - prev.timestamp;
-            if (dtMs > 0) {
-              const br = Math.round(((report.bytesSent - prev.bytes) * 8) / (dtMs / 1000));
-              result.videoBitrate = result.videoBitrate || br;
-            }
-          }
-          this._prevStats.set(key, { bytes: report.bytesSent, timestamp: report.timestamp, packetsLost: 0, packetsReceived: 0 });
-        }
-
-        // ── Inbound audio (viewer) ──
-        if (report.type === 'inbound-rtp' && report.kind === 'audio') {
-          result.hasAudio = true;
-          audioCodecId = report.codecId || '';
-
-          const key = `${peerId}-audio`;
-          const prev = this._prevStats.get(key);
-          if (prev && prev.bytes > 0) {
-            const dtMs = report.timestamp - prev.timestamp;
-            if (dtMs > 0) {
-              result.audioBitrate = Math.round(((report.bytesReceived - prev.bytes) * 8) / (dtMs / 1000));
-            }
-          }
-          this._prevStats.set(key, { bytes: report.bytesReceived, timestamp: report.timestamp, packetsLost: 0, packetsReceived: 0 });
-        }
-
-        // ── Outbound audio (sharer) ──
-        if (report.type === 'outbound-rtp' && report.kind === 'audio') {
-          result.hasAudio = true;
-          audioCodecId = audioCodecId || report.codecId || '';
-
-          const key = `${peerId}-audio-out`;
-          const prev = this._prevStats.get(key);
-          if (prev && prev.bytes > 0) {
-            const dtMs = report.timestamp - prev.timestamp;
-            if (dtMs > 0) {
-              result.audioBitrate = result.audioBitrate || Math.round(((report.bytesSent - prev.bytes) * 8) / (dtMs / 1000));
-            }
-          }
-          this._prevStats.set(key, { bytes: report.bytesSent, timestamp: report.timestamp, packetsLost: 0, packetsReceived: 0 });
-        }
-
-        // ── RTT ──
-        if (report.type === 'candidate-pair' && report.state === 'succeeded') {
-          result.roundTripTime = report.currentRoundTripTime ? Math.round(report.currentRoundTripTime * 1000) : 0;
-        }
-      });
-
-      // Resolve codec names
-      rawStats.forEach((report) => {
-        if (report.type === 'codec') {
-          if (report.id === videoCodecId) {
-            result.videoCodec = (report.mimeType || '').replace('video/', '');
-          }
-          if (report.id === audioCodecId) {
-            result.audioCodec = (report.mimeType || '').replace('audio/', '');
-          }
-        }
-      });
-
-      // Add ABR state
-      const abr = this.abrControllers.get(peerId);
-      if (abr) {
-        result.adaptiveState = abr.getState();
-      }
-
-      return result;
-    } catch {
-      return null;
+  downloadDiagnosticsByConnection(connectionId: string) {
+    for (const monitor of this.monitors.values()) {
+      if (monitor.connectionId !== connectionId || monitor.isStopped) continue;
+      const report = monitor.exportReport();
+      triggerJsonDownload(reportFilename(report.role, report.connectionId), report);
+      return;
     }
   }
 
@@ -747,7 +542,37 @@ export class WebRTCManager {
     return Array.from(this.connections.keys());
   }
 
+  private activeViewerCount(): number {
+    let count = 0;
+    for (const monitor of this.monitors.values()) {
+      if (monitor.role === 'sender' && !monitor.isStopped) count += 1;
+    }
+    return count;
+  }
+
+  private applySenderBitrate(pc: RTCPeerConnection, bitrate: number) {
+    const videoSender = pc.getSenders().find(sender => sender.track?.kind === 'video');
+    if (!videoSender) return;
+    try {
+      const params = videoSender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      params.encodings[0].maxBitrate = bitrate;
+      videoSender.setParameters(params).catch((error) => {
+        console.warn('[ABR] Falha ao aplicar bitrate:', error);
+      });
+    } catch (error) {
+      console.warn('[ABR] Erro ao configurar params:', error);
+    }
+  }
+
   private closeConnection(peerId: string) {
+    const monitor = this.monitors.get(peerId);
+    if (monitor) {
+      monitor.stop();
+      this.monitors.delete(peerId);
+    }
     const pc = this.connections.get(peerId);
     if (pc) {
       pc.close();
@@ -755,11 +580,41 @@ export class WebRTCManager {
     }
     this.notifiedPeers.delete(peerId);
 
-    // Stop ABR controller for this peer
     const abr = this.abrControllers.get(peerId);
     if (abr) {
       abr.stop();
       this.abrControllers.delete(peerId);
     }
   }
+}
+
+function snapshotToConnectionStats(snapshot: DiagnosticsSnapshot): ConnectionStats {
+  const sample = snapshot.sample;
+  const sender = sample.role === 'sender';
+  const fps = sender
+    ? (sample.outbound?.encodedFps ?? sample.outbound?.reportedFps ?? null)
+    : (sample.inbound?.decodedFps ?? sample.inbound?.reportedFps ?? null);
+  const width = sender
+    ? (sample.outbound?.frameWidth ?? sample.outbound?.sourceWidth ?? null)
+    : (sample.inbound?.frameWidth ?? null);
+  const height = sender
+    ? (sample.outbound?.frameHeight ?? sample.outbound?.sourceHeight ?? null)
+    : (sample.inbound?.frameHeight ?? null);
+  return {
+    role: sample.role,
+    videoCodec: sample.videoCodec ?? '—',
+    audioCodec: sample.audioCodec ?? '—',
+    videoBitrate: sender ? (sample.outbound?.bitrate ?? null) : (sample.inbound?.bitrate ?? null),
+    audioBitrate: sample.audioBitrate,
+    fps,
+    width,
+    height,
+    packetLoss: sender ? (sample.remoteInbound?.packetsLost ?? null) : (sample.inbound?.packetsLost ?? null),
+    packetLossRate: sender ? (sample.remoteInbound?.lossPct ?? null) : (sample.inbound?.lossPct ?? null),
+    roundTripTime: sample.network.rttMs,
+    hasAudio: sample.hasAudio,
+    jitter: sender ? (sample.remoteInbound?.jitterMs ?? null) : (sample.inbound?.jitterMs ?? null),
+    timestamp: sample.timestamp,
+    adaptiveState: snapshot.adaptiveState ?? undefined,
+  };
 }

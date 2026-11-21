@@ -43,6 +43,8 @@ A comunicação é **peer-to-peer (P2P)** via WebRTC, ou seja, o vídeo vai dire
 3. Quem quiser compartilha a tela
 4. Todos assistem em tempo real, direto pelo navegador
 
+O painel de estatísticas do player mede, em cada navegador, onde o FPS cai: captura, codificação, rede, recepção, decodificação ou reprodução. O detalhe está em [`docs/diagnostics.md`](docs/diagnostics.md).
+
 ## Stack
 
 | Camada | Tecnologia |
@@ -69,7 +71,13 @@ npm run install:all
 npm run dev
 ```
 
-O frontend abre em `http://localhost:5173` e o servidor de sinalização roda na porta `8080`.
+O frontend abre em `http://localhost:3000` e o servidor de sinalização roda na porta `8080`.
+
+```bash
+# Testes do diagnóstico (na pasta web) e build de produção
+npm test
+npm run build
+```
 
 > **Dica:** Adicione `?mock` na URL para testar com streams fake sem precisar de outra pessoa.
 
@@ -85,15 +93,19 @@ telinha-do-botecao/
 │       │   ├── Home.tsx           # Tela inicial (criar/entrar sala)
 │       │   ├── Room.tsx           # Sala com sidebar + viewer
 │       │   ├── StreamViewer.tsx   # Player de stream com controles
+│       │   ├── StatsPanel.tsx     # Painel de diagnóstico do player
 │       │   ├── CrtEmptyState.tsx  # TV retrô quando ninguém transmite
 │       │   ├── SettingsModal.tsx  # Config de qualidade/fps
 │       │   └── StreamSettings.tsx # Seleção de tela pra compartilhar
 │       ├── lib/           # Lógica de negócio
-│       │   ├── signaling.ts  # Cliente WebSocket
-│       │   ├── webrtc.ts     # Gerenciador de conexões WebRTC
-│       │   ├── mock.ts       # Dados fake pra testes
-│       │   └── types.ts      # Tipos TypeScript
+│       │   ├── signaling.ts       # Cliente WebSocket
+│       │   ├── webrtc.ts          # Conexões WebRTC, ABR e monitor
+│       │   ├── diagnostics/       # Cálculo, histórico, diagnóstico e exportação
+│       │   ├── mock.ts            # Dados fake pra testes
+│       │   └── types.ts           # Tipos TypeScript
 │       └── App.tsx        # Estado global da aplicação
+├── docs/
+│   └── diagnostics.md     # Métricas, painel, exportação e testes
 ├── render.yaml            # Config de deploy no Render
 └── package.json           # Scripts de dev e build
 ```

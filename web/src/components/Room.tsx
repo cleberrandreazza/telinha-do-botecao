@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { PeerInfo, StreamInfo } from '../lib/types';
-import type { ConnectionStats } from '../lib/webrtc';
 import { getInitials, colorFromString } from '../lib/profile';
 import CrtEmptyState from './CrtEmptyState';
 import StreamViewer from './StreamViewer';
+import StatsPanel from './StatsPanel';
 import SettingsModal, { loadSettings, type BotecaoSettings } from './SettingsModal';
+import type { DiagnosticsSnapshot, PlaybackSample } from '../lib/diagnostics/index';
 
 interface RoomProps {
   code: string;
@@ -17,7 +18,12 @@ interface RoomProps {
   onStartSharing: () => void;
   onStopSharing: () => void;
   onLeaveRoom: () => void;
-  getStats?: (peerId: string) => Promise<ConnectionStats | null>;
+  subscribeStats?: (peerId: string, cb: (snapshot: DiagnosticsSnapshot) => void) => () => void;
+  pushPlayback?: (peerId: string, sample: PlaybackSample) => boolean;
+  exportDiagnostics?: (peerId: string) => void;
+  subscribeSenderDiagnostics?: (cb: () => void) => () => void;
+  getSenderSnapshots?: () => DiagnosticsSnapshot[];
+  exportSenderDiagnostics?: (connectionId: string) => void;
 }
 
 export default function Room({
@@ -31,7 +37,12 @@ export default function Room({
   onStartSharing,
   onStopSharing,
   onLeaveRoom,
-  getStats,
+  subscribeStats,
+  pushPlayback,
+  exportDiagnostics,
+  subscribeSenderDiagnostics,
+  getSenderSnapshots,
+  exportSenderDiagnostics,
 }: RoomProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeStreamId, setActiveStreamId] = useState<string | null>(null);
@@ -40,8 +51,29 @@ export default function Room({
   const [volume, setVolume] = useState(0.7);
 
   const [showSettings, setShowSettings] = useState(false);
+  const [showSenderStats, setShowSenderStats] = useState(false);
+  const [senderSnapshots, setSenderSnapshots] = useState<DiagnosticsSnapshot[]>([]);
+  const [senderConnectionId, setSenderConnectionId] = useState<string | null>(null);
   const [streamDismissed, setStreamDismissed] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    if (!showSenderStats || !subscribeSenderDiagnostics || !getSenderSnapshots) return;
+    const pull = () => {
+      const next = getSenderSnapshots();
+      setSenderSnapshots(next);
+      setSenderConnectionId((current) => {
+        if (current && next.some((item) => item.sample.connectionId === current)) return current;
+        return next[0]?.sample.connectionId ?? null;
+      });
+    };
+    pull();
+    return subscribeSenderDiagnostics(pull);
+  }, [showSenderStats, subscribeSenderDiagnostics, getSenderSnapshots]);
+
+  useEffect(() => {
+    if (!isSharing) setShowSenderStats(false);
+  }, [isSharing]);
 
   const sidebarRef = useRef<HTMLElement>(null);
   const mouseOverSidebar = useRef(false);
@@ -63,6 +95,19 @@ export default function Room({
   }, [remoteStreams.length, activeStreamId, streams, streamDismissed]);
 
   const activeStream = remoteStreams.find(s => s.peerId === activeStreamId) || null;
+  const activePeerId = activeStream?.peerId ?? null;
+  const subscribeActive = useCallback((cb: (snapshot: DiagnosticsSnapshot) => void) => {
+    if (!subscribeStats || !activePeerId) return () => {};
+    return subscribeStats(activePeerId, cb);
+  }, [subscribeStats, activePeerId]);
+  const pushActive = useCallback((sample: PlaybackSample) => {
+    if (!pushPlayback || !activePeerId) return false;
+    return pushPlayback(activePeerId, sample);
+  }, [pushPlayback, activePeerId]);
+  const exportActive = useCallback(() => {
+    if (activePeerId) exportDiagnostics?.(activePeerId);
+  }, [exportDiagnostics, activePeerId]);
+  const selectedSender = senderSnapshots.find((item) => item.sample.connectionId === senderConnectionId) ?? senderSnapshots[0] ?? null;
 
   // ── Track fullscreen state ──
   useEffect(() => {
@@ -374,6 +419,19 @@ export default function Room({
               {isSharing ? 'Parar Transmissao' : 'Compartilhar Tela'}
             </span>
           </button>
+          {isSharing && (
+            <button
+              onClick={() => setShowSenderStats((open) => !open)}
+              className={`w-full h-9 px-3 rounded-xl flex items-center justify-center gap-2 transition-all border cursor-pointer font-label-md text-[13px] ${
+                showSenderStats
+                  ? 'bg-primary/15 text-primary border-primary/30'
+                  : 'bg-surface-container hover:bg-surface-container-high text-on-surface border-[#1f222e]'
+              }`}
+            >
+              <span className="material-symbols-outlined text-[18px]">monitoring</span>
+              <span className="truncate font-medium">Diagnóstico</span>
+            </button>
+          )}
 
           {/* User profile (Discord/Arc style) */}
           <div className="flex items-center justify-between px-2.5 py-1.5 rounded-xl bg-surface-container-low border border-[#1f222e] mt-1">
@@ -427,12 +485,32 @@ export default function Room({
             mouseInactive={mouseInactive}
             volume={volume}
             onVolumeChange={setVolume}
-            getStats={getStats ? () => getStats(activeStream.peerId) : undefined}
+            subscribeStats={activePeerId ? subscribeActive : undefined}
+            pushPlayback={activePeerId ? pushActive : undefined}
+            onExportDiagnostics={activePeerId ? exportActive : undefined}
           />
         ) : (
           <CrtEmptyState onOpenSidebar={() => setSidebarOpen(true)} />
         )}
       </main>
+      {showSenderStats && (
+        <div className="fixed top-4 right-4 z-40">
+          <StatsPanel
+            snapshot={selectedSender}
+            onClose={() => setShowSenderStats(false)}
+            onExport={() => {
+              if (selectedSender) exportSenderDiagnostics?.(selectedSender.sample.connectionId);
+            }}
+            connections={senderSnapshots.map((item, index) => ({
+              connectionId: item.sample.connectionId,
+              label: `Conexão ${index + 1}`,
+            }))}
+            selectedConnectionId={selectedSender?.sample.connectionId ?? null}
+            onSelectConnection={setSenderConnectionId}
+            emptyHint="Nenhum espectador conectado. A codificação só é medida quando existe uma conexão WebRTC."
+          />
+        </div>
+      )}
     </div>
   );
 }

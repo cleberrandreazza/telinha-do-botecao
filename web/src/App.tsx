@@ -7,6 +7,7 @@ import Home from './components/Home';
 import Room from './components/Room';
 import StreamSettings from './components/StreamSettings';
 import type { StreamConfig } from './lib/webrtc';
+import type { DiagnosticsSnapshot, PlaybackSample } from './lib/diagnostics/index';
 import { isMockMode, generateMockData, generateMockStreamsDelayed } from './lib/mock';
 
 export default function App() {
@@ -270,6 +271,23 @@ export default function App() {
     return () => clearTimeout(timer);
   }, []);
 
+  const subscribeStats = useCallback((peerId: string, cb: (snapshot: DiagnosticsSnapshot) => void) => {
+    return rtcRef.current?.subscribeStats(peerId, cb) ?? (() => {});
+  }, []);
+  const pushPlayback = useCallback((peerId: string, sample: PlaybackSample) => {
+    return rtcRef.current?.pushPlayback(peerId, sample) ?? false;
+  }, []);
+  const exportDiagnostics = useCallback((peerId: string) => {
+    rtcRef.current?.downloadDiagnostics(peerId);
+  }, []);
+  const subscribeSenderDiagnostics = useCallback((cb: () => void) => {
+    return rtcRef.current?.subscribeDiagnostics(cb) ?? (() => {});
+  }, []);
+  const getSenderSnapshots = useCallback(() => rtcRef.current?.getSenderSnapshots() ?? [], []);
+  const exportSenderDiagnostics = useCallback((connectionId: string) => {
+    rtcRef.current?.downloadDiagnosticsByConnection(connectionId);
+  }, []);
+
   // ── Render ──
   return (
     <>
@@ -294,7 +312,12 @@ export default function App() {
           onStartSharing={handleOpenSettings}
           onStopSharing={handleStopSharing}
           onLeaveRoom={handleLeaveRoom}
-          getStats={(peerId: string) => rtcRef.current?.getConnectionStats(peerId) ?? Promise.resolve(null)}
+          subscribeStats={subscribeStats}
+          pushPlayback={pushPlayback}
+          exportDiagnostics={exportDiagnostics}
+          subscribeSenderDiagnostics={subscribeSenderDiagnostics}
+          getSenderSnapshots={getSenderSnapshots}
+          exportSenderDiagnostics={exportSenderDiagnostics}
         />
       )}
       {showSettings && (
