@@ -14,6 +14,14 @@ const RESOLUTION_MAP: Record<string, { width: number; height: number }> = {
   '480': { width: 854, height: 480 },
 };
 
+/** Bitrate limits per resolution (bits/s) */
+const BITRATE_MAP: Record<string, number> = {
+  '2160': 12_000_000, // 12 Mbps
+  '1080': 6_000_000,  //  6 Mbps
+  '720': 3_000_000,   //  3 Mbps
+  '480': 1_500_000,   //  1.5 Mbps
+};
+
 /**
  * Servidores ICE (STUN + TURN gratuito via Open Relay)
  * STUN: Google público
@@ -46,6 +54,7 @@ export class WebRTCManager {
   private signal: SignalingClient;
   private connections = new Map<string, RTCPeerConnection>();
   private localStream: MediaStream | null = null;
+  private currentConfig: StreamConfig = { resolution: '1080', frameRate: 30, audio: true };
   private myPeerId = '';
   private onStream: OnStreamCallback;
   private onStreamEnd: OnStreamEndCallback;
@@ -83,20 +92,41 @@ export class WebRTCManager {
    * Captura a tela do usuário
    */
   async startScreenShare(config?: StreamConfig): Promise<MediaStream> {
-    const res = RESOLUTION_MAP[config?.resolution || '1080'];
+    const cfg = config || this.currentConfig;
+    this.currentConfig = cfg;
+
+    const res = RESOLUTION_MAP[cfg.resolution];
+    const fps = cfg.frameRate;
+    const wantsAudio = cfg.audio;
+
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: {
         width: { ideal: res.width },
         height: { ideal: res.height },
-        frameRate: { ideal: config?.frameRate || 30 },
+        frameRate: { ideal: fps, max: fps },
       },
-      audio: config?.audio ?? true,
+      audio: wantsAudio
+        ? {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            // Chromium 105+ — captura áudio do sistema mesmo ao compartilhar tela inteira
+            // @ts-ignore
+            systemAudio: 'include',
+          }
+        : false,
     });
+
+    // Otimiza a track de vídeo para screen sharing com movimento (jogos, vídeos)
+    const videoTrack = stream.getVideoTracks()[0];
+    if (videoTrack) {
+      videoTrack.contentHint = 'motion';
+    }
 
     this.localStream = stream;
 
     // Detecta quando o usuário clica "Parar de compartilhar" no browser
-    stream.getVideoTracks()[0].onended = () => {
+    videoTrack.onended = () => {
       this.stopScreenShare();
     };
 
@@ -193,6 +223,9 @@ export class WebRTCManager {
       pc.addTrack(track, this.localStream);
     }
 
+    // Configura bitrate e prioridade de frame rate no sender de vídeo
+    await this.configureVideoSender(pc);
+
     // Cria e envia o offer
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -202,6 +235,36 @@ export class WebRTCManager {
       to: viewerId,
       sdp: pc.localDescription!,
     });
+  }
+
+  /**
+   * Configura o sender de vídeo com bitrate e degradation preference
+   */
+  private async configureVideoSender(pc: RTCPeerConnection) {
+    const videoSender = pc.getSenders().find(s => s.track?.kind === 'video');
+    if (!videoSender) return;
+
+    try {
+      const params = videoSender.getParameters();
+
+      // Garante que encodings existe
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+
+      // Define bitrate máximo baseado na resolução configurada
+      const maxBitrate = BITRATE_MAP[this.currentConfig.resolution] || 6_000_000;
+      params.encodings[0].maxBitrate = maxBitrate;
+
+      // Prioriza manter frame rate em vez de resolução quando a rede aperta
+      // @ts-ignore — degradationPreference existe mas pode não estar nos tipos TS
+      params.degradationPreference = 'maintain-framerate';
+
+      await videoSender.setParameters(params);
+    } catch {
+      // Alguns browsers podem não suportar todos os parâmetros
+      console.warn('[WebRTC] Não foi possível configurar sender de vídeo');
+    }
   }
 
   /**
@@ -276,10 +339,36 @@ export class WebRTCManager {
           nickname: '', // será preenchido pelo componente
           stream: remoteStream,
         });
+
+        // Monitora o fim da track remota (sharer fechou o programa / parou de compartilhar)
+        const track = event.track;
+        track.onended = () => {
+          this.closeConnection(remotePeerId);
+          this.onStreamEnd(remotePeerId);
+        };
+
+        // Alguns browsers disparam 'mute' em vez de 'ended' quando a track remota para
+        track.onmute = () => {
+          // Espera um pouco — tracks podem ficar muted temporariamente durante renegociação
+          setTimeout(() => {
+            if (track.muted && (track.readyState === 'ended' || pc.connectionState !== 'connected')) {
+              this.closeConnection(remotePeerId);
+              this.onStreamEnd(remotePeerId);
+            }
+          }, 3000);
+        };
+
+        // Safety net: se todas as tracks forem removidas do stream
+        remoteStream.onremovetrack = () => {
+          if (remoteStream.getTracks().filter(t => t.readyState === 'live').length === 0) {
+            this.closeConnection(remotePeerId);
+            this.onStreamEnd(remotePeerId);
+          }
+        };
       }
     };
 
-    // Log de estado
+    // Log de estado — detecta queda de conexão
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
         this.closeConnection(remotePeerId);
