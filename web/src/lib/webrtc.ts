@@ -7,6 +7,7 @@ import {
   audioModeFromConfig,
   commitPreparedShare,
   negotiationFromSdp,
+  inspectAudioSdp,
   readAudioCapture,
   readCaptureProbe,
   readEncoderEncoding,
@@ -468,9 +469,10 @@ export class WebRTCManager {
 
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
     const answer = await pc.createAnswer();
+    const remoteSourceStereo = inspectAudioSdp(pc.remoteDescription?.sdp).fmtp.spropStereo;
     const mungedAnswer = new RTCSessionDescription({
       type: answer.type,
-      sdp: configureOpusReceiverSdp(answer.sdp || ''),
+      sdp: configureOpusReceiverSdp(answer.sdp || '', remoteSourceStereo === '0' ? false : true),
     });
     await pc.setLocalDescription(mungedAnswer);
     this.noteAudioNegotiation(fromId, pc);
