@@ -7,12 +7,14 @@ import {
   audioModeFromConfig,
   commitPreparedShare,
   negotiationFromSdp,
+  readAudioCapture,
   readCaptureProbe,
   readEncoderEncoding,
   reportFilename,
   requestDisplayMedia,
   triggerJsonDownload,
   SessionTimeline,
+  type AudioLinkContext,
   type AudioMode,
   type AudioPlaybackReport,
   type DiagnosticsSnapshot,
@@ -131,8 +133,9 @@ export class WebRTCManager {
     policy: null as string | null,
     discardReason: null as string | null,
     message: null as string | null,
+    format: null as ReturnType<typeof readAudioCapture>,
   };
-  private audioLink = new Map<string, { senderAttached: boolean; negotiated: boolean | null; direction: string | null }>();
+  private audioLink = new Map<string, AudioLinkContext>();
   private remoteAudioTracks = new Map<string, number>();
   private watchedRemoteStreams = new WeakSet<MediaStream>();
   private pendingAudioEvents: { severity: 'info' | 'atenção' | 'crítico'; message: string; data: Record<string, number | string | null> }[] = [];
@@ -254,6 +257,7 @@ export class WebRTCManager {
       policy: null,
       discardReason: null,
       message: null,
+      format: null,
     };
     this.hasAudioTrack = false;
     this.pendingAudioEvents = [];
@@ -540,6 +544,7 @@ export class WebRTCManager {
           displaySurface: this.audioCapture.displaySurface,
           policy: this.audioCapture.policy,
           discardReason: this.audioCapture.discardReason,
+          format: this.audioCapture.format,
         } : null,
         audioLink: this.audioLink.get(remotePeerId) ?? null,
         remoteAudioTracks: this.remoteAudioTracks.get(remotePeerId) ?? null,
@@ -757,6 +762,17 @@ export class WebRTCManager {
 
   private notePreparedAudio(stream: MediaStream, mode: AudioMode, prepared: PreparedShare) {
     const track = stream.getAudioTracks()[0] ?? null;
+    const videoTrack = stream.getVideoTracks()[0] ?? null;
+    let surfaceSettings: Record<string, unknown> | null = null;
+    try {
+      const settings = videoTrack?.getSettings();
+      if (settings && typeof settings === 'object' && 'suppressLocalAudioPlayback' in settings) {
+        const value = (settings as { suppressLocalAudioPlayback?: unknown }).suppressLocalAudioPlayback;
+        surfaceSettings = { suppressLocalAudioPlayback: value };
+      }
+    } catch {
+      surfaceSettings = null;
+    }
     this.hasAudioTrack = prepared.kept > 0;
     this.audioCapture = {
       requested: mode !== 'off',
@@ -770,6 +786,7 @@ export class WebRTCManager {
       policy: prepared.decision.policy,
       discardReason: prepared.kept > 0 ? null : prepared.message,
       message: prepared.message,
+      format: readAudioCapture(track, surfaceSettings),
     };
     this.observeAudioTracks(stream);
     if (prepared.message) console.warn(`[WebRTC] ${prepared.message}`);
@@ -837,6 +854,8 @@ export class WebRTCManager {
       senderAttached: sender ? (current?.senderAttached ?? false) : false,
       negotiated: result.negotiated,
       direction: result.direction,
+      local: result.local,
+      remote: result.remote,
     });
     this.monitors.get(peerId)?.recordEvent({
       category: 'ÁUDIO',

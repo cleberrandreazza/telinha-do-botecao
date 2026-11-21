@@ -247,7 +247,96 @@ export type AudioCode =
   | 'SENDING'
   | 'INSUFFICIENT';
 
-/** Contadores de áudio desta direção. Relatório RTP sem bytes não conta como áudio funcionando. */
+/** Valores lidos da track. Campo ausente fica null. Não é o formato negociado no SDP. */
+export interface AudioFormatFields {
+  sampleRate: number | null;
+  sampleSize: number | null;
+  channelCount: number | null;
+  latency: number | null;
+  echoCancellation: boolean | null;
+  noiseSuppression: boolean | null;
+  autoGainControl: boolean | null;
+  suppressLocalAudioPlayback: boolean | null;
+}
+
+export interface AudioCaptureObservation {
+  settings: AudioFormatFields;
+  constraints: AudioFormatFields | null;
+  capabilities: AudioFormatFields | null;
+  /** O que a superfície compartilhada informou. Não é o pedido que a página fez. */
+  surfaceSuppressLocalAudioPlayback: boolean | null;
+}
+
+/** Parâmetros Opus conhecidos. O texto do SDP não entra aqui. */
+export interface OpusFmtp {
+  stereo: string | null;
+  spropStereo: string | null;
+  maxaveragebitrate: string | null;
+  maxplaybackrate: string | null;
+  spropMaxcapturerate: string | null;
+  useinbandfec: string | null;
+  usedtx: string | null;
+  ptime: string | null;
+  maxptime: string | null;
+}
+
+/** Seção de áudio já parseada. Não contém o SDP. `clockRate` não é o sample rate da captura. */
+export interface AudioSdpInfo {
+  present: boolean;
+  rejected: boolean;
+  direction: 'sendrecv' | 'sendonly' | 'recvonly' | 'inactive' | null;
+  codecs: string[];
+  codec: string | null;
+  payloadType: string | null;
+  clockRate: number | null;
+  channels: number | null;
+  fmtp: OpusFmtp;
+}
+
+/** Relatório `codec` do getStats. `clockRate` não é o sample rate da captura. */
+export interface RtpCodecInfo {
+  mimeType: string | null;
+  clockRate: number | null;
+  channels: number | null;
+  fmtp: OpusFmtp;
+}
+
+/** Energia e nível. RMS não descreve o espectro nem a nitidez. */
+export interface AudioSignalStats {
+  audioLevel: number | null;
+  totalAudioEnergy: number | null;
+  totalSamplesDuration: number | null;
+  rms: number | null;
+  dbFs: number | null;
+}
+
+/** Recepção de áudio. Contadores de vídeo não entram nestes campos. */
+export interface AudioInboundQuality {
+  packetsReceived: number | null;
+  packetsLost: number | null;
+  packetsLostDelta: number | null;
+  jitterMs: number | null;
+  concealedSamples: number | null;
+  concealedSamplesDelta: number | null;
+  concealmentEvents: number | null;
+  concealmentEventsDelta: number | null;
+  silentConcealedSamples: number | null;
+  silentConcealedSamplesDelta: number | null;
+  fecPacketsReceived: number | null;
+  fecPacketsReceivedDelta: number | null;
+  fecPacketsDiscarded: number | null;
+  fecPacketsDiscardedDelta: number | null;
+  removedSamplesForAcceleration: number | null;
+  removedSamplesDelta: number | null;
+  insertedSamplesForDeceleration: number | null;
+  insertedSamplesDelta: number | null;
+  totalSamplesReceived: number | null;
+  jitterBufferDelay: number | null;
+  jitterBufferEmittedCount: number | null;
+  jitterBufferAvgDelayMs: number | null;
+}
+
+/** Contadores de áudio desta direção. Relatório RTP sem bytes não conta como áudio funcionando. Bitrate não prova fidelidade. */
 export interface AudioRtp {
   codec: string | null;
   packets: number | null;
@@ -256,6 +345,9 @@ export interface AudioRtp {
   bitrate: number | null;
   samples: number | null;
   samplesPerSec: number | null;
+  codecInfo: RtpCodecInfo | null;
+  signal: AudioSignalStats | null;
+  inbound: AudioInboundQuality | null;
 }
 
 export interface AudioFacts {
@@ -285,6 +377,12 @@ export interface AudioFacts {
   playbackBlocked: boolean | null;
   playError: string | null;
   elementAudioTracks: number | null;
+  captureFormat: AudioCaptureObservation | null;
+  localNegotiation: AudioSdpInfo | null;
+  remoteNegotiation: AudioSdpInfo | null;
+  codecInfo: RtpCodecInfo | null;
+  signal: AudioSignalStats | null;
+  inbound: AudioInboundQuality | null;
 }
 
 export interface AudioDiagnosis {

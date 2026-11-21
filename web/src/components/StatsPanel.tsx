@@ -15,6 +15,7 @@ import {
   type AudioDiagnosis,
   type AudioFacts,
   type AudioPlaybackReport,
+  type OpusFmtp,
   type DiagnosticsSnapshot,
   type MetricSample,
   type PlaybackSample,
@@ -335,6 +336,38 @@ function linePoints(points: ChartPoint[], key: keyof ChartPoint, width: number, 
   }).join(' ');
 }
 
+function num(value: number | null | undefined, digits: number, unit: string): string {
+  return formatOptional(value ?? null, digits, unit);
+}
+
+function yesNo(value: boolean | null | undefined): string {
+  if (value === null || value === undefined) return UNAVAILABLE_LABEL;
+  return value ? 'sim' : 'não';
+}
+
+function fmtpCodec(info: AudioFacts['localNegotiation'] | undefined): string {
+  if (!info?.codec && info?.clockRate == null && info?.channels == null) return UNAVAILABLE_LABEL;
+  const channels = info?.channels == null ? UNAVAILABLE_LABEL : String(info.channels);
+  const clock = info?.clockRate == null ? UNAVAILABLE_LABEL : `${info.clockRate} Hz`;
+  return `${info?.codec ?? UNAVAILABLE_LABEL} · pt ${info?.payloadType ?? UNAVAILABLE_LABEL} · ${clock} · ${channels} canais`;
+}
+
+function fmtpLine(fmtp: OpusFmtp | null | undefined): string {
+  if (!fmtp) return UNAVAILABLE_LABEL;
+  const parts = [
+    fmtp.stereo !== null ? `stereo=${fmtp.stereo}` : null,
+    fmtp.spropStereo !== null ? `sprop-stereo=${fmtp.spropStereo}` : null,
+    fmtp.maxaveragebitrate !== null ? `maxaveragebitrate=${fmtp.maxaveragebitrate}` : null,
+    fmtp.maxplaybackrate !== null ? `maxplaybackrate=${fmtp.maxplaybackrate}` : null,
+    fmtp.spropMaxcapturerate !== null ? `sprop-maxcapturerate=${fmtp.spropMaxcapturerate}` : null,
+    fmtp.useinbandfec !== null ? `useinbandfec=${fmtp.useinbandfec}` : null,
+    fmtp.usedtx !== null ? `usedtx=${fmtp.usedtx}` : null,
+    fmtp.ptime !== null ? `ptime=${fmtp.ptime}` : null,
+    fmtp.maxptime !== null ? `maxptime=${fmtp.maxptime}` : null,
+  ].filter((part): part is string => part !== null);
+  return parts.length > 0 ? parts.join(' ') : UNAVAILABLE_LABEL;
+}
+
 function AudioLayers({
   audio,
   role,
@@ -368,6 +401,15 @@ function AudioLayers({
         <Row label="Codec enviado" value={sender ? (audio?.codec ?? UNAVAILABLE_LABEL) : UNAVAILABLE_LABEL} />
         <Row label="Bitrate enviado" value={sender ? formatBitrate(audio?.bitrate ?? null) : UNAVAILABLE_LABEL} />
         <Row label="Pacotes/s" value={sender ? formatOptional(audio?.packetsPerSec ?? null, 1, '') : UNAVAILABLE_LABEL} />
+        <Row label="Sample rate da captura" value={sender ? num(audio?.captureFormat?.settings.sampleRate, 0, 'Hz') : UNAVAILABLE_LABEL} />
+        <Row label="Canais capturados" value={sender ? num(audio?.captureFormat?.settings.channelCount, 0, '') : UNAVAILABLE_LABEL} />
+        <Row label="Sample size" value={sender ? num(audio?.captureFormat?.settings.sampleSize, 0, 'bit') : UNAVAILABLE_LABEL} />
+        <Row label="Latência da captura" value={sender ? num(audio?.captureFormat?.settings.latency, 3, 's') : UNAVAILABLE_LABEL} />
+        <Row label="Echo cancellation" value={sender ? yesNo(audio?.captureFormat?.settings.echoCancellation) : UNAVAILABLE_LABEL} />
+        <Row label="Noise suppression" value={sender ? yesNo(audio?.captureFormat?.settings.noiseSuppression) : UNAVAILABLE_LABEL} />
+        <Row label="Auto gain" value={sender ? yesNo(audio?.captureFormat?.settings.autoGainControl) : UNAVAILABLE_LABEL} />
+        <Row label="Supressão local na track" value={sender ? yesNo(audio?.captureFormat?.settings.suppressLocalAudioPlayback) : UNAVAILABLE_LABEL} />
+        <Row label="Supressão local na superfície" value={sender ? yesNo(audio?.captureFormat?.surfaceSuppressLocalAudioPlayback) : UNAVAILABLE_LABEL} />
       </Layer>
       <Layer title="Áudio — receptor">
         <Row label="Estado" value={receiver ? (diagnosis?.label ?? UNAVAILABLE_LABEL) : UNAVAILABLE_LABEL} valueClass={receiver ? audioClass(diagnosis?.code ?? null) : 'text-white/70'} />
@@ -377,6 +419,28 @@ function AudioLayers({
         <Row label="Pacotes/s" value={receiver ? formatOptional(audio?.packetsPerSec ?? null, 1, '') : UNAVAILABLE_LABEL} />
         <Row label="Reprodução" value={muted === null ? UNAVAILABLE_LABEL : blocked ? 'bloqueada' : muted ? 'silenciada' : 'ativa'} />
         <Row label="Volume" value={volume === null ? UNAVAILABLE_LABEL : `${Math.round(volume * 100)}%`} />
+        <Row label="Pacotes perdidos no intervalo" value={receiver ? num(audio?.inbound?.packetsLostDelta, 0, '') : UNAVAILABLE_LABEL} />
+        <Row label="Jitter" value={receiver ? num(audio?.inbound?.jitterMs, 1, 'ms') : UNAVAILABLE_LABEL} />
+        <Row label="Amostras ocultadas no intervalo" value={receiver ? num(audio?.inbound?.concealedSamplesDelta, 0, '') : UNAVAILABLE_LABEL} />
+        <Row label="Eventos de ocultação no intervalo" value={receiver ? num(audio?.inbound?.concealmentEventsDelta, 0, '') : UNAVAILABLE_LABEL} />
+        <Row label="Amostras silenciosas reconstruídas" value={receiver ? num(audio?.inbound?.silentConcealedSamplesDelta, 0, '') : UNAVAILABLE_LABEL} />
+        <Row label="FEC recebido no intervalo" value={receiver ? num(audio?.inbound?.fecPacketsReceivedDelta, 0, '') : UNAVAILABLE_LABEL} />
+        <Row label="FEC descartado no intervalo" value={receiver ? num(audio?.inbound?.fecPacketsDiscardedDelta, 0, '') : UNAVAILABLE_LABEL} />
+        <Row label="Amostras aceleradas no intervalo" value={receiver ? num(audio?.inbound?.removedSamplesDelta, 0, '') : UNAVAILABLE_LABEL} />
+        <Row label="Amostras desaceleradas no intervalo" value={receiver ? num(audio?.inbound?.insertedSamplesDelta, 0, '') : UNAVAILABLE_LABEL} />
+        <Row label="Atraso médio do jitter buffer" value={receiver ? num(audio?.inbound?.jitterBufferAvgDelayMs, 1, 'ms') : UNAVAILABLE_LABEL} />
+      </Layer>
+      <Layer title="Áudio — formato negociado e sinal">
+        <Row label="Codec local" value={fmtpCodec(audio?.localNegotiation)} />
+        <Row label="Parâmetros Opus locais" value={fmtpLine(audio?.localNegotiation?.fmtp)} />
+        <Row label="Codec remoto" value={fmtpCodec(audio?.remoteNegotiation)} />
+        <Row label="Parâmetros Opus remotos" value={fmtpLine(audio?.remoteNegotiation?.fmtp)} />
+        <Row label="Clock rate RTP" value={num(audio?.codecInfo?.clockRate, 0, 'Hz')} />
+        <Row label="Canais no relatório codec" value={num(audio?.codecInfo?.channels, 0, '')} />
+        <Row label="Nível" value={num(audio?.signal?.audioLevel, 3, '')} />
+        <Row label="RMS do intervalo" value={num(audio?.signal?.rms, 4, '')} />
+        <Row label="Nível em dBFS" value={num(audio?.signal?.dbFs, 1, 'dBFS')} />
+        <span className="text-white/45 leading-snug">Bitrate, clock rate e reprodução não medem se o som chegou nítido. n/d é dado ausente, não zero.</span>
       </Layer>
       {diagnosis && <span className="text-white/55 leading-snug">{diagnosis.reason}</span>}
     </>
