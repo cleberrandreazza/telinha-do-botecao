@@ -332,7 +332,12 @@ export interface StatsReportLike {
   [key: string]: unknown;
 }
 
-export const HISTORY_LIMIT = 120;
+/** Amostras de métrica e de playback por conexão. 600 s a 1 Hz cobrem um teste de 10 minutos. */
+export const HISTORY_LIMIT = 600;
+/** O gráfico do painel continua curto. O JSON é que guarda o histórico longo. */
 export const CHART_LIMIT = 60;
-export const EVENT_LIMIT = 150;
+/** Eventos de diagnóstico por conexão. O mesmo teto do histórico, para uma sessão de 10 minutos. */
+export const EVENT_LIMIT = 600;
+/** Um diagnóstico por amostra. O teto acompanha o histórico. */
+export const DIAGNOSIS_LIMIT = 600;
 export const UNAVAILABLE_LABEL = 'n/d';

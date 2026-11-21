@@ -11,6 +11,7 @@ import {
   reportFilename,
   requestDisplayMedia,
   triggerJsonDownload,
+  SessionTimeline,
   type AudioMode,
   type AudioPlaybackReport,
   type DiagnosticsSnapshot,
@@ -142,15 +143,18 @@ export class WebRTCManager {
     ? crypto.randomUUID()
     : `s_${Date.now().toString(36)}`;
   private diagnosticsListeners = new Set<() => void>();
+  private readonly timeline: SessionTimeline;
 
   constructor(
     signal: SignalingClient,
     onStream: OnStreamCallback,
     onStreamEnd: OnStreamEndCallback,
+    now?: () => number,
   ) {
     this.signal = signal;
     this.onStream = onStream;
     this.onStreamEnd = onStreamEnd;
+    this.timeline = new SessionTimeline(now);
   }
 
   setMyPeerId(id: string) {
@@ -220,6 +224,7 @@ export class WebRTCManager {
       },
       startSharing: () => {
         this.signal.send({ type: 'start-sharing' });
+        this.timeline.transmissionStarted();
       },
     });
     return stream;
@@ -273,6 +278,7 @@ export class WebRTCManager {
   private async handleSignalMessage(msg: ServerMessage) {
     switch (msg.type) {
       case 'stream-requested':
+        this.timeline.viewerRequested();
         await this.createOfferForViewer(msg.from);
         break;
       case 'offer':
@@ -337,6 +343,7 @@ export class WebRTCManager {
       to: viewerId,
       sdp: pc.localDescription!,
     });
+    this.timeline.offerSent(this.monitors.get(viewerId)?.connectionId ?? null);
   }
 
   private preferH264(pc: RTCPeerConnection) {
@@ -459,6 +466,7 @@ export class WebRTCManager {
   private async handleAnswer(fromId: string, sdp: RTCSessionDescriptionInit) {
     const pc = this.connections.get(fromId);
     if (!pc) return;
+    this.timeline.answerReceived(this.monitors.get(fromId)?.connectionId ?? null);
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
     this.noteAudioNegotiation(fromId, pc);
 
@@ -478,8 +486,9 @@ export class WebRTCManager {
 
   private createPeerConnection(remotePeerId: string, role: 'sender' | 'receiver'): RTCPeerConnection {
     const replaced = this.connections.has(remotePeerId);
-    this.closeConnection(remotePeerId);
+    this.closeConnection(remotePeerId, replaced ? 'replace' : 'leave');
 
+    const connectionCreatedAt = this.timeline.clock();
     const pc = new RTCPeerConnection({
       iceServers: ICE_SERVERS,
     });
@@ -489,6 +498,14 @@ export class WebRTCManager {
       pc: pc as unknown as PeerConnectionLike,
       role,
       sessionId: this.sessionId,
+      now: () => this.timeline.clock(),
+      connectionCreatedAt,
+      onFirstSample: (connectionId) => this.timeline.firstSample(connectionId),
+      onConnected: (connectionId) => this.timeline.connectionEstablished(connectionId),
+      sessionTimeline: () => ({
+        sessionStartedAt: this.timeline.sessionStartedAt,
+        events: this.timeline.snapshot(),
+      }),
       getContext: () => ({
         viewerCount: role === 'sender' ? this.activeViewerCount() : null,
         configuredFps: role === 'sender' ? this.currentConfig.frameRate : null,
@@ -526,7 +543,10 @@ export class WebRTCManager {
       for (const listener of this.diagnosticsListeners) listener();
     });
     monitor.start();
+    this.timeline.setViewerCount(this.activeViewerCount());
+    this.timeline.peerConnectionCreated(monitor.connectionId);
     if (replaced) {
+      this.timeline.reconnected(monitor.connectionId);
       monitor.recordEvent({
         category: 'SISTEMA',
         severity: 'info',
@@ -557,6 +577,7 @@ export class WebRTCManager {
           remoteStream.addEventListener('addtrack', updateRemoteAudio);
           remoteStream.addEventListener('removetrack', updateRemoteAudio);
         }
+        if (event.track.kind === 'video') this.timeline.firstVideo(monitor.connectionId);
         if (event.track.kind === 'audio') {
           monitor.recordEvent({
             category: 'ÁUDIO',
@@ -581,6 +602,7 @@ export class WebRTCManager {
 
         const track = event.track;
         track.onended = () => {
+          if (this.connections.get(remotePeerId) !== pc) return;
           this.closeConnection(remotePeerId);
           this.onStreamEnd(remotePeerId);
         };
@@ -588,6 +610,7 @@ export class WebRTCManager {
         track.onmute = () => {
           if (track.kind === 'audio') return;
           setTimeout(() => {
+            if (this.connections.get(remotePeerId) !== pc) return;
             if (track.muted && (track.readyState === 'ended' || pc.connectionState !== 'connected')) {
               this.closeConnection(remotePeerId);
               this.onStreamEnd(remotePeerId);
@@ -596,6 +619,7 @@ export class WebRTCManager {
         };
 
         remoteStream.onremovetrack = () => {
+          if (this.connections.get(remotePeerId) !== pc) return;
           if (remoteStream.getTracks().filter(t => t.readyState === 'live').length === 0) {
             this.closeConnection(remotePeerId);
             this.onStreamEnd(remotePeerId);
@@ -605,16 +629,21 @@ export class WebRTCManager {
     };
 
     pc.onconnectionstatechange = () => {
+      if (this.connections.get(remotePeerId) !== pc) return;
       console.log(`[WebRTC] Connection state (${remotePeerId}): ${pc.connectionState}`);
+      if (pc.connectionState === 'connected') monitor.markConnected();
       if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
         this.closeConnection(remotePeerId);
         this.onStreamEnd(remotePeerId);
       }
     };
 
-    // Log ICE state for debugging
     pc.oniceconnectionstatechange = () => {
+      if (this.connections.get(remotePeerId) !== pc) return;
       console.log(`[WebRTC] ICE state (${remotePeerId}): ${pc.iceConnectionState}`);
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        this.timeline.iceConnected(monitor.connectionId);
+      }
     };
 
     return pc;
@@ -799,18 +828,21 @@ export class WebRTCManager {
     });
   }
 
-  private closeConnection(peerId: string) {
+  private closeConnection(peerId: string, cause: 'leave' | 'replace' = 'leave') {
     const monitor = this.monitors.get(peerId);
+    const pc = this.connections.get(peerId);
+    this.connections.delete(peerId);
     if (monitor) {
       this.encoderProbes.delete(monitor.connectionId);
       monitor.stop();
       this.monitors.delete(peerId);
+      if (cause === 'leave') this.timeline.setViewerCount(this.activeViewerCount());
+      this.timeline.connectionClosed(monitor.connectionId);
+      if (cause === 'leave' && monitor.role === 'sender') {
+        this.timeline.viewerDisconnected(monitor.connectionId);
+      }
     }
-    const pc = this.connections.get(peerId);
-    if (pc) {
-      pc.close();
-      this.connections.delete(peerId);
-    }
+    if (pc) pc.close();
     this.notifiedPeers.delete(peerId);
     this.audioLink.delete(peerId);
     this.remoteAudioTracks.delete(peerId);

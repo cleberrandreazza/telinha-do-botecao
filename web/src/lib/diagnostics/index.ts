@@ -16,7 +16,9 @@ export type {
   PlaybackSample,
   StreamConfigSnapshot,
 } from './types.ts';
-export { HISTORY_LIMIT, UNAVAILABLE_LABEL } from './types.ts';
+export { HISTORY_LIMIT, DIAGNOSIS_LIMIT, EVENT_LIMIT, UNAVAILABLE_LABEL } from './types.ts';
+export { SessionTimeline, TIMELINE_LIMIT } from './timeline.ts';
+export type { TimelineEvent, TimelineEventType } from './timeline.ts';
 export { diffCounter, perSecond, bitrateFromBytes, lossPercent, avgMsPerFrame } from './math.ts';
 export { selectNetwork, classifyRoute } from './ice.ts';
 export { buildSample, emptyCounters, reportsFrom } from './parse.ts';

@@ -17,7 +17,8 @@ import type {
   StatsReportLike,
   StreamConfigSnapshot,
 } from './types.ts';
-import { CHART_LIMIT, EVENT_LIMIT, HISTORY_LIMIT } from './types.ts';
+import type { TimelineEvent } from './timeline.ts';
+import { CHART_LIMIT, DIAGNOSIS_LIMIT, EVENT_LIMIT, HISTORY_LIMIT } from './types.ts';
 
 export interface PeerConnectionLike {
   connectionState: string;
@@ -37,12 +38,23 @@ export interface MonitorContext {
   encoderProbe?: EncoderProbe | null;
 }
 
+export interface SessionTimelineView {
+  sessionStartedAt: number;
+  events: TimelineEvent[];
+}
+
 export interface MonitorOptions {
   pc: PeerConnectionLike;
   role: 'sender' | 'receiver';
   sessionId: string;
   connectionId?: string;
   intervalMs?: number;
+  now?: () => number;
+  /** Horário em que o RTCPeerConnection foi construído. Não é copiado do monitor. */
+  connectionCreatedAt?: number | null;
+  onFirstSample?: (connectionId: string) => void;
+  onConnected?: (connectionId: string) => void;
+  sessionTimeline?: () => SessionTimelineView;
   getContext: () => MonitorContext;
 }
 
@@ -76,7 +88,15 @@ export class ConnectionMonitor {
   private onSample?: (sample: MetricSample) => void;
   private lastDiagnosis: Diagnosis | null = null;
   private eventCooldown = new Map<string, { at: number; severity: EventSeverity }>();
-  private startedAt = Date.now();
+  private readonly now: () => number;
+  private readonly constructedAt: number;
+  private monitorStartedAt: number | null = null;
+  private readonly connectionCreatedAt: number | null;
+  private firstConnectedAt: number | null = null;
+  private firstSampleAt: number | null = null;
+  private readonly onFirstSample?: (connectionId: string) => void;
+  private readonly onConnected?: (connectionId: string) => void;
+  private readonly sessionTimeline?: () => SessionTimelineView;
   private streamConfig: StreamConfigSnapshot | null = null;
   private adaptiveState: string | null = null;
   private lastPlayback: PlaybackSample | null = null;
@@ -90,9 +110,16 @@ export class ConnectionMonitor {
     this.connectionId = options.connectionId ?? newId();
     this.intervalMs = options.intervalMs ?? 1000;
     this.getContext = options.getContext;
+    this.now = options.now ?? Date.now;
+    this.constructedAt = this.now();
+    this.connectionCreatedAt = options.connectionCreatedAt ?? null;
+    this.onFirstSample = options.onFirstSample;
+    this.onConnected = options.onConnected;
+    this.sessionTimeline = options.sessionTimeline;
   }
 
   start() {
+    if (this.monitorStartedAt === null) this.monitorStartedAt = this.now();
     if (this.timer || this.stopped) return;
     this.timer = setInterval(() => {
       void this.tick();
@@ -123,6 +150,12 @@ export class ConnectionMonitor {
 
   get isStopped() {
     return this.stopped;
+  }
+
+  markConnected() {
+    if (this.firstConnectedAt !== null || this.pc.connectionState !== 'connected') return;
+    this.firstConnectedAt = this.now();
+    this.onConnected?.(this.connectionId);
   }
 
   setSampleListener(listener: ((sample: MetricSample) => void) | undefined) {
@@ -181,7 +214,7 @@ export class ConnectionMonitor {
   recordEvent(event: Omit<DiagEvent, 'connectionId' | 'timestamp'> & { timestamp?: number }) {
     if (this.stopped) return;
     this.pushEvent({
-      timestamp: event.timestamp ?? Date.now(),
+      timestamp: event.timestamp ?? this.now(),
       connectionId: this.connectionId,
       category: event.category,
       severity: event.severity,
@@ -204,7 +237,7 @@ export class ConnectionMonitor {
       confidence: 'baixo' as const,
       reason: 'Ainda não há amostras WebRTC.',
       evidence: [],
-      timestamp: this.lastPlayback?.timestamp ?? Date.now(),
+      timestamp: this.lastPlayback?.timestamp ?? this.now(),
     });
     const baseSample: MetricSample = sample ?? {
       timestamp: this.lastPlayback!.timestamp,
@@ -240,7 +273,7 @@ export class ConnectionMonitor {
     };
     return {
       sessionId: this.sessionId,
-      collectedFrom: this.startedAt,
+      collectedFrom: this.monitorStartedAt ?? this.constructedAt,
       streamConfig: this.streamConfig,
       adaptiveState: this.adaptiveState,
       sample: { ...baseSample, playback: baseSample.playback ?? this.lastPlayback },
@@ -253,9 +286,20 @@ export class ConnectionMonitor {
 
   exportReport(browser?: BrowserInfo): DiagnosticReport {
     const context = this.getContext();
+    const session = this.sessionTimeline?.() ?? null;
+    const timeline = session?.events ?? [];
+    const visible = this.role === 'sender'
+      ? timeline
+      : timeline.filter((event) => event.connectionId === null || event.connectionId === this.connectionId);
     return buildReport({
       sessionId: this.sessionId,
-      collectedFrom: this.startedAt,
+      collectedFrom: this.monitorStartedAt ?? this.constructedAt,
+      sessionStartedAt: session?.sessionStartedAt ?? null,
+      connectionCreatedAt: this.connectionCreatedAt,
+      monitorStartedAt: this.monitorStartedAt,
+      firstConnectedAt: this.firstConnectedAt,
+      firstSampleAt: this.firstSampleAt,
+      timeline: visible,
       streamConfig: context.streamConfig ?? this.streamConfig,
       history: this.history.slice(),
       playback: this.playbackHistory.slice(),
@@ -275,6 +319,7 @@ export class ConnectionMonitor {
       if (this.pc.connectionState === 'closed') return;
       const raw = await this.pc.getStats();
       if (this.stopped || generation !== this.generation) return;
+      if (this.firstConnectedAt === null && this.pc.connectionState === 'connected') this.markConnected();
       const context = this.getContext();
       this.streamConfig = context.streamConfig;
       this.adaptiveState = context.adaptiveState;
@@ -282,7 +327,7 @@ export class ConnectionMonitor {
         reports: reportsFrom(raw),
         previous: this.counters,
         role: this.role,
-        wallTime: Date.now(),
+        wallTime: this.now(),
         connectionId: this.connectionId,
         viewerCount: context.viewerCount,
         configuredFps: context.configuredFps,
@@ -302,6 +347,10 @@ export class ConnectionMonitor {
       });
       this.noteAudio(previousAudio, built.sample.audio);
       this.counters = built.counters;
+      if (this.firstSampleAt === null) {
+        this.firstSampleAt = built.sample.timestamp;
+        this.onFirstSample?.(this.connectionId);
+      }
       const previous = this.history[this.history.length - 1] ?? null;
       this.history.push(built.sample);
       if (this.history.length > HISTORY_LIMIT) this.history.shift();
@@ -321,7 +370,7 @@ export class ConnectionMonitor {
     for (const draft of audioEvents(previous, current)) {
       const key = `ÁUDIO:${draft.message}`;
       const prev = this.eventCooldown.get(key);
-      const now = Date.now();
+      const now = this.now();
       if (!shouldEmit(prev?.at, now, draft.severity, prev?.severity)) continue;
       this.eventCooldown.set(key, { at: now, severity: draft.severity });
       this.pushEvent({
@@ -343,7 +392,7 @@ export class ConnectionMonitor {
       || this.lastDiagnosis.category !== diagnosis.category;
     this.lastDiagnosis = diagnosis;
     this.diagnoses.push(diagnosis);
-    if (this.diagnoses.length > HISTORY_LIMIT) this.diagnoses.shift();
+    if (this.diagnoses.length > DIAGNOSIS_LIMIT) this.diagnoses.shift();
     if (changed && this.history.length >= 3) {
       this.pushEvent({
         timestamp: diagnosis.timestamp,

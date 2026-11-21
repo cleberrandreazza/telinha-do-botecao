@@ -10,10 +10,12 @@ Não há banco, serviço externo nem tráfego novo no servidor de sinalização.
 
 - A coleta usa um único `getStats()` por conexão a cada ciclo (1 segundo).
 - Se a coleta anterior ainda não terminou, o ciclo é ignorado. Não há duas consultas empilhadas.
-- O histórico guarda as últimas **120** amostras e até **150** eventos, em buffer circular.
+- O histórico guarda as últimas **600** amostras de métrica e de playback (10 minutos a 1 Hz) e até **600** eventos e diagnósticos por conexão. O gráfico do painel continua com 60 pontos.
+- Há uma linha do tempo da sessão, no `WebRTCManager`, com o mesmo relógio (`Date.now`) dos monitores daquele navegador. Ela não é compartilhada entre máquinas.
 - O painel e o controle adaptativo de bitrate (ABR) leem essa amostra. Nenhum dos dois chama `getStats()` por conta própria.
 - O papel fica separado: `sender` (quem compartilha) usa `outbound-rtp` e `media-source`; `receiver` (quem assiste) usa `inbound-rtp`.
-- Ao fechar a conexão, o timer para, os ouvintes são removidos e o histórico daquela conexão é descartado.
+- Ao fechar a conexão, o timer para, os ouvintes são removidos e o histórico daquela conexão é descartado. A linha do tempo da sessão permanece até a página sair, com teto de 600 eventos.
+- Um `disconnected` ou `failed` ainda encerra a conexão. O handler antigo não encerra a conexão que já a substituiu: o mapa é limpo antes do `close()`, e o evento só vale se aquele `RTCPeerConnection` ainda for o atual.
 
 A reprodução é medida no `StreamViewer`, no elemento `<video>`:
 
@@ -140,8 +142,33 @@ O arquivo traz:
 - histórico, eventos, diagnósticos
 - rota ICE sem IP
 - `collectedFrom` e `collectedTo`
+- `sessionStartedAt`, `connectionCreatedAt`, `monitorStartedAt`, `firstConnectedAt`, `firstSampleAt`
+- `timeline`: a sessão inteira em cada JSON do remetente; no receptor, só os eventos desta conexão e os que não têm `connectionId`
 
-Não entram CPF, apelido, IP, conteúdo da tela, senha, token ou SDP. Chaves como `address`, `credential` e `token` são removidas antes do download. Para comparar uma queda, exporte os dois lados com os horários alinhados.
+Não entram CPF, apelido, IP, conteúdo da tela, senha, token, SDP ou `peerId`. A linha do tempo usa `connectionId`. Chaves como `address`, `credential`, `nickname` e `peerId` são removidas antes do download. Para comparar uma queda, exporte os dois lados com os horários alinhados.
+
+## Linha do tempo e horários
+
+São relógios diferentes. Um `null` não é preenchido com outro:
+
+| Campo | Quando é gravado |
+| --- | --- |
+| `sessionStartedAt` | O `WebRTCManager` deste navegador foi construído |
+| `transmission-started` | `start-sharing` foi enviado |
+| `viewer-requested` | Chegou `stream-requested`. Ainda não há `connectionId` |
+| `connectionCreatedAt` | `new RTCPeerConnection` |
+| `monitorStartedAt` e `collectedFrom` | `ConnectionMonitor.start()`. Não é a primeira amostra |
+| `firstConnectedAt` | `connectionState` chegou a `connected` |
+| `firstSampleAt` | Primeira amostra de `getStats`, mesmo que o histórico depois descarte as anteriores |
+| `collectedTo` | Horário da última amostra retida. `null` se ainda não houve amostra |
+
+`connectionCreatedAt` e `monitorStartedAt` podem cair no mesmo milissegundo. A conexão e o monitor nascem na mesma função, no tratamento de `stream-requested`. Isso não é um relógio copiado: dois espectadores que entram com um minuto de diferença ficam com esses campos separados por esse minuto, e a `sequence` ordena dois pedidos que caem no mesmo milissegundo.
+
+Numa sessão de cerca de 204 segundos com teto de 120 amostras, o primeiro ponto que restava nos dois JSON do remetente ficava por volta de “agora menos 120 segundos”. Os arquivos pareciam ter sido criados juntos mesmo quando o segundo espectador entrou depois. O `collectedFrom` já era a criação do monitor, mas não havia linha do tempo da solicitação, e a amostra mais antiga do arquivo era fácil de ler como se fosse o começo. O teto agora é 600. `firstSampleAt` continua guardado quando o buffer descarta o início.
+
+Cada evento traz `timestamp`, `sequence`, `type`, `connectionId` e `viewerCount` naquele instante. `viewerCount` é quantos espectadores este navegador está atendendo. No receptor o número fica 0. Trocar de um para dois espectadores aparece como `viewer-count-changed`. Reconexão grava `connection-closed` da conexão antiga e `reconnected` da nova, sem contar como saída. Saída grava `viewer-disconnected` e o novo total.
+
+O consumo fica limitado: 600 amostras, 600 playbacks, 600 diagnósticos e 600 eventos por conexão, mais 600 eventos na linha do tempo da página. Não há banco nem serviço externo. O gráfico da tela não cresce junto.
 
 ## Testes
 
@@ -152,7 +179,7 @@ npm test
 npm run build
 ```
 
-`npm test` usa o executor do Node (`node:test`) sobre `src/lib/diagnostics/diagnostics.test.ts`, `src/lib/diagnostics/audio.test.ts` e `src/lib/diagnostics/resolution.test.ts`. Cobre FPS normal e zero, queda, contadores e reset, perda, jitter, tempo de decode, descartes de reprodução, API ausente, aba visível, aba oculta, vídeo pausado, decoder estável com compositor mais baixo, ausência de callbacks, intervalo irregular, fechamento, troca de stream, coleta com o painel fechado, consulta sobreposta, limite de 120 amostras, duas conexões, separação inbound/outbound, par ICE selecionado, o tratamento de FPS zero no ABR, o escopo da captura de áudio e a separação entre resolução pedida, capturada, de origem, codificada e recebida. O teste de escuta no Chrome ou no Edge está separado, em [`audio.md`](audio.md), e não é substituído por estes testes. Estes testes não observam um `<video>` real no Chrome.
+`npm test` usa o executor do Node (`node:test`) sobre `src/lib/diagnostics/diagnostics.test.ts`, `src/lib/diagnostics/audio.test.ts`, `src/lib/diagnostics/resolution.test.ts` e `src/lib/diagnostics/timeline.test.ts`. Cobre FPS normal e zero, queda, contadores e reset, perda, jitter, tempo de decode, descartes de reprodução, API ausente, aba visível, aba oculta, vídeo pausado, decoder estável com compositor mais baixo, ausência de callbacks, intervalo irregular, fechamento, troca de stream, coleta com o painel fechado, consulta sobreposta, retenção de 600 amostras, dois monitores com horários diferentes, a entrada do segundo espectador depois de 60 segundos, reconexão, saída, a linha do tempo compartilhada nos JSON do remetente, separação inbound/outbound, par ICE selecionado, o tratamento de FPS zero no ABR, o escopo da captura de áudio e a separação entre resolução pedida, capturada, de origem, codificada e recebida. O teste de escuta no Chrome ou no Edge está separado, em [`audio.md`](audio.md), e não é substituído por estes testes. Estes testes não observam um `<video>` real no Chrome nem uma sala com dois espectadores de verdade.
 
 ## Roteiro manual (Chrome ou Edge)
 
@@ -162,7 +189,7 @@ npm run build
 4. Confira no resumo que FPS recebido, decodificado e compositor aparecem separados. Se um deles for 0, o número mostrado é 0, não 30. Na camada técnica, “Total considerado/s” inclui descartes; “Callbacks do compositor” não é quadro pintado.
 5. No transmissor, abra **Diagnóstico**. FPS de origem e FPS codificado são dessa máquina. No espectador esses dois ficam `n/d`.
 6. Anote RTT e o tipo de conexão (Direta ou TURN/Relay). Não deve aparecer IP.
-7. Exporte o JSON dos dois lados. Abra os arquivos e procure: sem IP, sem apelido, com `role` diferente em cada um.
+7. Exporte o JSON dos dois lados. Abra os arquivos e procure: sem IP, sem apelido, sem `peerId`, com `role` diferente em cada um. No remetente, os dois arquivos da mesma transmissão trazem a mesma `timeline`. `collectedFrom` é o início daquele monitor; a primeira amostra do array pode ser posterior se a sessão passar de 10 minutos.
 8. Pause o player. Os callbacks podem ir a 0; o diagnóstico não deve chamar isso de falha de reprodução. Esconder a aba também não deve gerar “Congelamento detectado”.
 9. Troque de stream ou feche o player e compartilhe de novo. O painel não pode continuar contando o vídeo anterior (o FPS apresentado zera e recomeça).
 10. No DevTools, Performance ou na aba do console: não deve haver um `getStats` extra do ABR além do ciclo de 1 segundo, nem erro novo ao fechar a sala.
@@ -177,7 +204,8 @@ Para um teste visual sem segunda pessoa, `http://localhost:3000/?mock` mostra o 
 - O RTT some se o navegador não indicar o par selecionado. Não caímos num par `succeeded` qualquer.
 - O diagnóstico é heurístico. Confiança alta ainda não é prova.
 - ESCALA olha o número de conexões neste transmissor e o FPS daquela conexão. Não separa CPU de upload com certeza.
-- O histórico é apagado quando a conexão fecha. Exporte antes de sair da sala se precisar guardar a queda.
+- O histórico da conexão é apagado quando ela fecha. A linha do tempo da sessão permanece na página, também com teto. Exporte antes de sair da sala se precisar guardar a queda.
+- Os horários são o relógio local de cada navegador. Dois JSON de máquinas diferentes não estão sincronizados entre si.
 - O ABR não ficou mais agressivo. Ele só passou a usar a medição certa, inclusive o zero.
 - Não há métrica de “FPS da captura” fora de uma conexão WebRTC. `getSettings().frameRate` é o que a track informou na captura; o FPS codificado continua vindo do `outbound-rtp`.
 - A linha “Resolução” do painel continua sendo o tamanho codificado (ou o da origem, se o frame codificado ainda não existe). O JSON é que separa o 1080p pedido da track, da origem, do encoder e do espectador. Um desses campos em `null` não é completado com outro.

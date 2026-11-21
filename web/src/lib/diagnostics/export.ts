@@ -1,5 +1,6 @@
 import { classifyAudio } from './audio.ts';
 import { resolutionFacts, type CaptureProbe, type EncoderProbe, type ResolutionFacts } from './resolution.ts';
+import type { TimelineEvent } from './timeline.ts';
 import type {
   AudioDiagnosis,
   AudioFacts,
@@ -23,8 +24,22 @@ export interface DiagnosticReport {
   browser: BrowserInfo;
   streamConfig: StreamConfigSnapshot | null;
   viewerCount: number | null;
+  /** Início do monitor desta conexão. Não é a primeira amostra retida no histórico. */
   collectedFrom: number;
-  collectedTo: number;
+  /** Horário da última amostra. null se ainda não houve amostra. */
+  collectedTo: number | null;
+  /** Construção do WebRTCManager neste navegador. null se o relatório não veio de uma sessão. */
+  sessionStartedAt: number | null;
+  /** Construção do RTCPeerConnection. null se esse instante não foi observado. */
+  connectionCreatedAt: number | null;
+  /** Chamada de ConnectionMonitor.start. null se o monitor ainda não foi iniciado. */
+  monitorStartedAt: number | null;
+  /** Primeira vez em que connectionState ficou connected. null até isso acontecer. */
+  firstConnectedAt: number | null;
+  /** Primeira amostra WebRTC, mesmo que o histórico depois descarte as anteriores. */
+  firstSampleAt: number | null;
+  /** Linha do tempo da sessão. No remetente, a sessão inteira; no receptor, o ciclo desta conexão. */
+  timeline: TimelineEvent[];
   history: MetricSample[];
   playback: PlaybackSample[];
   events: DiagEvent[];
@@ -90,6 +105,12 @@ function sanitizeValue(value: unknown): unknown {
 export function buildReport(input: {
   sessionId: string;
   collectedFrom: number;
+  sessionStartedAt?: number | null;
+  connectionCreatedAt?: number | null;
+  monitorStartedAt?: number | null;
+  firstConnectedAt?: number | null;
+  firstSampleAt?: number | null;
+  timeline?: TimelineEvent[];
   streamConfig: StreamConfigSnapshot | null;
   history: MetricSample[];
   playback: PlaybackSample[];
@@ -108,7 +129,13 @@ export function buildReport(input: {
     streamConfig: input.streamConfig,
     viewerCount: latest?.viewerCount ?? null,
     collectedFrom: input.collectedFrom,
-    collectedTo: latest?.timestamp ?? Date.now(),
+    collectedTo: latest?.timestamp ?? null,
+    sessionStartedAt: input.sessionStartedAt ?? null,
+    connectionCreatedAt: input.connectionCreatedAt ?? null,
+    monitorStartedAt: input.monitorStartedAt ?? null,
+    firstConnectedAt: input.firstConnectedAt ?? null,
+    firstSampleAt: input.firstSampleAt ?? null,
+    timeline: input.timeline ?? [],
     history: input.history,
     playback: input.playback,
     events: input.events,
@@ -134,6 +161,7 @@ export function buildReport(input: {
       'Áudio funcionando exige pacotes em movimento e, no receptor, o elemento desmutado. A existência de um relatório RTP não basta.',
       'Resolução solicitada, da track, da origem WebRTC, codificada e recebida são medidas distintas. Um null não é preenchido com o número de outra etapa.',
       'presentedFps conta callbacks de requestVideoFrameCallback, não quadros pintados na tela. totalPresentedFrames é totalVideoFrames e inclui descartes. Sem a API, o valor fica null, não zero. Aba oculta não é congelamento.',
+      'collectedFrom é o início do monitor, não a primeira amostra que restou no histórico. sessionStartedAt, connectionCreatedAt, monitorStartedAt, firstConnectedAt e firstSampleAt ficam null quando esse instante não foi observado. A linha do tempo não contém peerId, apelido nem IP.',
     ],
   };
   return sanitize(report);
