@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { loadSettings, type BotecaoSettings } from './SettingsModal';
 
 export interface StreamConfig {
   resolution: '2160' | '1080' | '720' | '480';
@@ -7,17 +8,22 @@ export interface StreamConfig {
 }
 
 const RESOLUTIONS = [
-  { value: '2160', label: '4K (2160p)', desc: 'Máxima qualidade' },
-  { value: '1080', label: 'Full HD (1080p)', desc: 'Recomendado' },
-  { value: '720', label: 'HD (720p)', desc: 'Economiza banda' },
-  { value: '480', label: 'SD (480p)', desc: 'Conexão lenta' },
+  { value: '2160', label: '4K', desc: '2160p' },
+  { value: '1080', label: 'Full HD', desc: '1080p' },
+  { value: '720', label: 'HD', desc: '720p' },
+  { value: '480', label: 'SD', desc: '480p' },
 ] as const;
 
 const FRAMERATES = [
   { value: 30, label: '30 FPS', desc: 'Fluido' },
   { value: 15, label: '15 FPS', desc: 'Moderado' },
-  { value: 5, label: '5 FPS', desc: 'Só apresentação' },
+  { value: 5, label: '5 FPS', desc: 'Slides' },
 ] as const;
+
+/** Map SettingsModal resolution format to StreamConfig format */
+function settingsResToStreamRes(res: BotecaoSettings['resolution']): StreamConfig['resolution'] {
+  return res.replace('p', '') as StreamConfig['resolution'];
+}
 
 interface StreamSettingsProps {
   onStart: (config: StreamConfig) => void;
@@ -25,32 +31,44 @@ interface StreamSettingsProps {
 }
 
 export default function StreamSettings({ onStart, onCancel }: StreamSettingsProps) {
-  const [resolution, setResolution] = useState<StreamConfig['resolution']>('1080');
-  const [frameRate, setFrameRate] = useState<StreamConfig['frameRate']>(30);
-  const [audio, setAudio] = useState(true);
+  // Load saved settings from localStorage
+  const saved = loadSettings();
+  const [resolution, setResolution] = useState<StreamConfig['resolution']>(settingsResToStreamRes(saved.resolution));
+  const [frameRate, setFrameRate] = useState<StreamConfig['frameRate']>(saved.fps);
+  const [audio, setAudio] = useState(saved.shareAudio);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-dark-900 border border-dark-800 rounded-2xl w-full max-w-md mx-4 p-6 shadow-2xl">
-        <h2 className="text-lg font-bold text-white mb-1">Configurar transmissão</h2>
-        <p className="text-dark-200/60 text-sm mb-5">Ajuste antes de compartilhar sua tela</p>
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="bg-surface-container border border-outline-variant/30 rounded-2xl w-full max-w-md mx-4 p-5 shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-9 h-9 rounded-xl bg-primary/10 border border-primary/30 flex items-center justify-center">
+            <span className="material-symbols-outlined text-[20px] text-primary">screen_share</span>
+          </div>
+          <div>
+            <h2 className="text-base font-sans font-semibold text-on-surface">Configurar transmissão</h2>
+            <p className="text-outline font-body text-xs">Ajuste antes de compartilhar sua tela</p>
+          </div>
+        </div>
 
-        {/* Resolução */}
+        {/* Resolution */}
         <div className="mb-4">
-          <label className="block text-sm font-medium text-dark-200 mb-2">Resolução</label>
-          <div className="grid grid-cols-2 gap-2">
+          <label className="block text-xs font-body font-semibold text-on-surface-variant uppercase tracking-wider mb-2">
+            Resolução
+          </label>
+          <div className="grid grid-cols-4 gap-1.5">
             {RESOLUTIONS.map((r) => (
               <button
                 key={r.value}
                 onClick={() => setResolution(r.value)}
-                className={`px-3 py-2 rounded-lg border text-left transition-colors ${
+                className={`px-2 py-2.5 rounded-xl border text-center transition-all cursor-pointer ${
                   resolution === r.value
-                    ? 'border-boteco-500 bg-boteco-600/20 text-boteco-400'
-                    : 'border-dark-800 bg-dark-800/50 text-dark-200 hover:border-dark-800/80'
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-outline-variant/20 bg-surface-container-high/40 text-on-surface hover:bg-surface-container-high hover:border-outline-variant/40'
                 }`}
               >
-                <span className="block text-sm font-medium">{r.label}</span>
-                <span className="block text-xs opacity-60">{r.desc}</span>
+                <span className="block text-sm font-sans font-semibold">{r.label}</span>
+                <span className="block text-[10px] font-body opacity-60 mt-0.5">{r.desc}</span>
               </button>
             ))}
           </div>
@@ -58,61 +76,65 @@ export default function StreamSettings({ onStart, onCancel }: StreamSettingsProp
 
         {/* Frame rate */}
         <div className="mb-4">
-          <label className="block text-sm font-medium text-dark-200 mb-2">Taxa de quadros</label>
-          <div className="grid grid-cols-3 gap-2">
+          <label className="block text-xs font-body font-semibold text-on-surface-variant uppercase tracking-wider mb-2">
+            Taxa de quadros
+          </label>
+          <div className="grid grid-cols-3 gap-1.5">
             {FRAMERATES.map((f) => (
               <button
                 key={f.value}
                 onClick={() => setFrameRate(f.value)}
-                className={`px-3 py-2 rounded-lg border text-center transition-colors ${
+                className={`px-2 py-2.5 rounded-xl border text-center transition-all cursor-pointer ${
                   frameRate === f.value
-                    ? 'border-boteco-500 bg-boteco-600/20 text-boteco-400'
-                    : 'border-dark-800 bg-dark-800/50 text-dark-200 hover:border-dark-800/80'
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-outline-variant/20 bg-surface-container-high/40 text-on-surface hover:bg-surface-container-high hover:border-outline-variant/40'
                 }`}
               >
-                <span className="block text-sm font-medium">{f.label}</span>
-                <span className="block text-xs opacity-60">{f.desc}</span>
+                <span className="block text-sm font-sans font-semibold">{f.label}</span>
+                <span className="block text-[10px] font-body opacity-60 mt-0.5">{f.desc}</span>
               </button>
             ))}
           </div>
         </div>
 
-        {/* Áudio */}
-        <div className="mb-6">
+        {/* Audio toggle */}
+        <div className="mb-5">
           <button
             onClick={() => setAudio(!audio)}
-            className="flex items-center justify-between w-full px-3 py-3 rounded-lg border border-dark-800 bg-dark-800/50 hover:border-dark-800/80 transition-colors"
+            className="flex items-center justify-between w-full px-3 py-2.5 rounded-xl border border-outline-variant/20 bg-surface-container-high/40 hover:bg-surface-container-high transition-all cursor-pointer"
           >
-            <div className="flex items-center gap-3">
-              <svg className="w-5 h-5 text-dark-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                {audio ? (
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
-                ) : (
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15zm7-7l8 8m0-8l-8 8" />
-                )}
-              </svg>
+            <div className="flex items-center gap-2.5">
+              <span className="material-symbols-outlined text-[20px] text-on-surface-variant">
+                {audio ? 'volume_up' : 'volume_off'}
+              </span>
               <div className="text-left">
-                <span className="block text-sm font-medium text-dark-200">Compartilhar áudio</span>
-                <span className="block text-xs text-dark-200/60">Áudio do sistema/aba</span>
+                <span className="block text-sm font-body font-medium text-on-surface">Compartilhar áudio</span>
+                <span className="block text-[11px] font-body text-outline">Áudio do sistema / aba</span>
               </div>
             </div>
-            <div className={`w-10 h-6 rounded-full transition-colors flex items-center ${audio ? 'bg-boteco-500 justify-end' : 'bg-dark-800 justify-start'}`}>
-              <div className="w-4 h-4 mx-1 rounded-full bg-white shadow" />
-            </div>
+            <label className="relative inline-flex items-center cursor-pointer shrink-0" onClick={(e) => e.stopPropagation()}>
+              <input
+                type="checkbox"
+                className="sr-only peer"
+                checked={audio}
+                onChange={(e) => setAudio(e.target.checked)}
+              />
+              <div className="w-11 h-6 bg-surface-container-highest peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-on-surface after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-container peer-checked:after:bg-on-primary" />
+            </label>
           </button>
         </div>
 
-        {/* Botões */}
-        <div className="flex gap-3">
+        {/* Action buttons */}
+        <div className="flex gap-2.5">
           <button
             onClick={onCancel}
-            className="flex-1 px-4 py-2.5 rounded-lg border border-dark-800 text-dark-200 hover:text-white hover:border-dark-800/80 transition-colors text-sm font-medium"
+            className="flex-1 px-4 py-2.5 rounded-xl border border-outline-variant/20 text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-all text-sm font-body font-medium cursor-pointer"
           >
             Cancelar
           </button>
           <button
             onClick={() => onStart({ resolution, frameRate, audio })}
-            className="flex-1 px-4 py-2.5 rounded-lg bg-boteco-600 hover:bg-boteco-500 text-white transition-colors text-sm font-medium"
+            className="flex-1 px-4 py-2.5 rounded-xl bg-primary hover:bg-primary-container text-on-primary-container transition-all text-sm font-body font-semibold cursor-pointer shadow-sm"
           >
             Compartilhar
           </button>

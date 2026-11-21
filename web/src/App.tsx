@@ -7,6 +7,7 @@ import Home from './components/Home';
 import Room from './components/Room';
 import StreamSettings from './components/StreamSettings';
 import type { StreamConfig } from './lib/webrtc';
+import { isMockMode, generateMockData, generateMockStreamsDelayed } from './lib/mock';
 
 export default function App() {
   // ── Estado da aplicação ──
@@ -28,11 +29,15 @@ export default function App() {
   const signalRef = useRef<SignalingClient | null>(null);
   const rtcRef = useRef<WebRTCManager | null>(null);
   const peersRef = useRef<PeerInfo[]>([]);
+  const nickRef = useRef<string>('');
 
-  // Sync peers ref
+  // Sync refs
   useEffect(() => {
     peersRef.current = peers;
   }, [peers]);
+  useEffect(() => {
+    nickRef.current = nickname;
+  }, [nickname]);
 
   // ── Callbacks de stream ──
   const handleNewStream = useCallback((info: StreamInfo) => {
@@ -54,19 +59,26 @@ export default function App() {
   // ── Handler de mensagens do servidor ──
   const handleSignalMessage = useCallback((msg: ServerMessage) => {
     switch (msg.type) {
-      case 'room-created':
+      case 'room-created': {
+        const selfPeer: PeerInfo = { id: msg.peerId, nickname: nickRef.current, isSharing: false };
         setRoomCode(msg.code);
         setMyPeerId(msg.peerId);
+        setPeers([selfPeer]);
         setScreen('room');
         setError(null);
         setConnecting(false);
         rtcRef.current?.setMyPeerId(msg.peerId);
         break;
+      }
 
-      case 'room-joined':
+      case 'room-joined': {
+        const selfJoined: PeerInfo = { id: msg.peerId, nickname: nickRef.current, isSharing: false };
+        const peersWithSelf = msg.peers.some((p: PeerInfo) => p.id === msg.peerId)
+          ? msg.peers
+          : [...msg.peers, selfJoined];
         setRoomCode(msg.code);
         setMyPeerId(msg.peerId);
-        setPeers(msg.peers);
+        setPeers(peersWithSelf);
         setScreen('room');
         setError(null);
         setConnecting(false);
@@ -79,6 +91,7 @@ export default function App() {
           }
         }
         break;
+      }
 
       case 'peer-joined':
         setPeers(prev => [...prev, msg.peer]);
@@ -178,11 +191,14 @@ export default function App() {
       if (stream) {
         setLocalStream(stream);
         setIsSharing(true);
+        // Atualiza o próprio peer na lista
+        setPeers(prev => prev.map(p => p.id === myPeerId ? { ...p, isSharing: true } : p));
 
         // Detecta se o usuário parou pelo dialog do browser
         stream.getVideoTracks()[0].onended = () => {
           setLocalStream(null);
           setIsSharing(false);
+          setPeers(prev => prev.map(p => p.id === myPeerId ? { ...p, isSharing: false } : p));
         };
       }
     } catch (err: any) {
@@ -197,6 +213,8 @@ export default function App() {
     rtcRef.current?.stopScreenShare();
     setLocalStream(null);
     setIsSharing(false);
+    // Atualiza o próprio peer na lista
+    setPeers(prev => prev.map(p => p.id === myPeerId ? { ...p, isSharing: false } : p));
   };
 
   const handleLeaveRoom = () => {
@@ -229,6 +247,27 @@ export default function App() {
       rtcRef.current?.destroy();
       signalRef.current?.disconnect();
     };
+  }, []);
+
+  // ── Mock mode: ?mock na URL ──
+  useEffect(() => {
+    if (!isMockMode()) return;
+    const mock = generateMockData();
+    setRoomCode(mock.roomCode);
+    setMyPeerId(mock.myPeerId);
+    setNickname(mock.nickname);
+    setPeers(mock.peers);
+    setStreams([]); // Start with no streams — loading state
+    setScreen('room');
+
+    // Streams arrive after 5 seconds (simulates WebRTC connection)
+    const timer = generateMockStreamsDelayed((readyStreams, peerIds) => {
+      setStreams(readyStreams);
+      // Flip isSharing on peers whose streams just arrived
+      setPeers(prev => prev.map(p => peerIds.includes(p.id) ? { ...p, isSharing: true } : p));
+    }, 5000);
+
+    return () => clearTimeout(timer);
   }, []);
 
   // ── Render ──

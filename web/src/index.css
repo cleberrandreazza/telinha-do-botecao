@@ -2,12 +2,19 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ═══════════════════════════════════════════
+   Base Styles
+   ═══════════════════════════════════════════ */
 body {
   margin: 0;
-  background: #080620;
-  color: #e0e7ff;
-  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  background-color: #0c0e13;
+  background-image:
+    radial-gradient(circle at 50% 0%, rgba(16, 185, 129, 0.08) 0%, transparent 55%),
+    radial-gradient(circle at 50% 100%, rgba(245, 158, 11, 0.04) 0%, transparent 45%);
+  color: #e2e2e9;
+  font-family: 'Geist', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
   min-height: 100vh;
+  overscroll-behavior: none;
 }
 
 #root {
@@ -16,29 +23,192 @@ body {
   flex-direction: column;
 }
 
-/* Scrollbar custom */
-::-webkit-scrollbar {
-  width: 6px;
-}
-::-webkit-scrollbar-track {
-  background: #0f0d2e;
-}
-::-webkit-scrollbar-thumb {
-  background: #fbbf24;
-  border-radius: 3px;
+/* Selection */
+::selection {
+  background: rgba(16, 185, 129, 0.3);
+  color: #6ee7b7;
 }
 
-/* Video container aspect ratio */
+/* Scrollbar custom */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(134, 148, 138, 0.3);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(134, 148, 138, 0.5);
+}
+
+/* ═══════════════════════════════════════════
+   Arc Sidebar Transitions
+   ═══════════════════════════════════════════ */
+.arc-sidebar {
+  transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease;
+}
+.arc-sidebar.sidebar-collapsed {
+  transform: translateX(-105%);
+  pointer-events: none;
+}
+
+/* ═══════════════════════════════════════════
+   Auto-hide UI on Mouse Inactivity
+   ═══════════════════════════════════════════ */
+.autohide-ui {
+  transition: opacity 0.4s ease, transform 0.4s ease, pointer-events 0.4s ease;
+}
+body.mouse-inactive .autohide-ui {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+body.mouse-inactive {
+  cursor: none;
+}
+
+/* Hide cursor everywhere when inactive — including fullscreen containers */
+body.mouse-inactive *,
+body.mouse-inactive *::before,
+body.mouse-inactive *::after {
+  cursor: none !important;
+}
+
+/* ═══════════════════════════════════════════
+   CRT Retro TV Static Noise Animations
+   ═══════════════════════════════════════════ */
+@keyframes tvScanline {
+  0% { transform: translateY(0); }
+  100% { transform: translateY(100%); }
+}
+
+@keyframes pixelGlitchStatic {
+  0% { background-position: 0 0, 0 0; }
+  20% { background-position: -20px 10px, 15px -10px; }
+  40% { background-position: 30px -15px, -25px 20px; }
+  60% { background-position: -10px 25px, 20px 15px; }
+  80% { background-position: 25px -5px, -15px -25px; }
+  100% { background-position: 0 0, 0 0; }
+}
+
+@keyframes tvFlicker {
+  0%, 100% { opacity: 0.94; }
+  50% { opacity: 1; }
+  80% { opacity: 0.88; }
+}
+
+.crt-screen-noise {
+  animation: tvFlicker 0.15s infinite;
+  background-image:
+    repeating-radial-gradient(circle at 50% 50%, rgba(16, 185, 129, 0.08) 0, rgba(16, 185, 129, 0.08) 2px, transparent 3px, transparent 6px),
+    linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.45) 50%),
+    linear-gradient(90deg, rgba(16, 185, 129, 0.06), rgba(4, 180, 162, 0.04), rgba(78, 222, 163, 0.06));
+  background-size: 8px 8px, 100% 4px, 100% 100%;
+}
+
+.crt-scanlines {
+  background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0) 50%, rgba(0, 0, 0, 0.4) 50%, rgba(0, 0, 0, 0.4));
+  background-size: 100% 4px;
+}
+
+/* ═══════════════════════════════════════════
+   CRT Turn On / Off Transitions
+   ═══════════════════════════════════════════ */
+@keyframes crtTurnOn {
+  0% {
+    transform: scale(0.94) translateY(8px);
+    filter: brightness(3.5) contrast(1.8) saturate(0.2);
+    opacity: 0;
+  }
+  35% {
+    transform: scale(0.98) translateY(2px);
+    filter: brightness(2.2) contrast(1.4) saturate(0.7);
+    opacity: 0.85;
+  }
+  100% {
+    transform: scale(1) translateY(0);
+    filter: brightness(1) contrast(1) saturate(1);
+    opacity: 1;
+  }
+}
+
+@keyframes crtTurnOff {
+  0% {
+    transform: scale(1);
+    filter: brightness(1);
+    opacity: 1;
+  }
+  40% {
+    transform: scale(1.02, 0.08);
+    filter: brightness(2.8) contrast(2);
+    opacity: 0.85;
+  }
+  100% {
+    transform: scale(0.01, 0.01);
+    filter: brightness(4);
+    opacity: 0;
+  }
+}
+
+@keyframes analogFlash {
+  0% { opacity: 0.9; }
+  100% { opacity: 0; }
+}
+
+.crt-turn-on {
+  animation: crtTurnOn 0.38s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.crt-turn-off {
+  animation: crtTurnOff 0.32s cubic-bezier(0.7, 0, 0.84, 0) forwards;
+}
+
+.analog-flash-overlay {
+  animation: analogFlash 0.32s ease-out forwards;
+}
+
+/* ═══════════════════════════════════════════
+   Ambient Background Orbs
+   ═══════════════════════════════════════════ */
+@keyframes floatOrb1 {
+  0% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(60px, 40px) scale(1.12); }
+  100% { transform: translate(-30px, 70px) scale(0.95); }
+}
+@keyframes floatOrb2 {
+  0% { transform: translate(-50%, -50%) scale(1); }
+  50% { transform: translate(-45%, -55%) scale(1.18); }
+  100% { transform: translate(-55%, -46%) scale(0.92); }
+}
+@keyframes floatOrb3 {
+  0% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-50px, -40px) scale(1.15); }
+  100% { transform: translate(30px, -60px) scale(0.92); }
+}
+
+/* ═══════════════════════════════════════════
+   Pulse dot (live indicator)
+   ═══════════════════════════════════════════ */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.pulse-dot {
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+/* ═══════════════════════════════════════════
+   Video container (single stream viewer)
+   ═══════════════════════════════════════════ */
 .video-container {
   position: relative;
-  background: #0f0d2e;
-  border-radius: 12px;
+  background: #000;
+  border-radius: 1rem;
   overflow: hidden;
-  border: 2px solid #1e1b4b;
+  border: 1px solid rgba(39, 42, 55, 1);
   transition: border-color 0.2s;
-}
-.video-container:hover {
-  border-color: #fbbf24;
 }
 .video-container:fullscreen,
 .video-container:-webkit-full-screen {
@@ -53,41 +223,131 @@ body {
   background: #000;
 }
 
-/* Animação de pulse para indicador "ao vivo" */
-@keyframes pulse-dot {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
-}
-.pulse-dot {
-  animation: pulse-dot 1.5s ease-in-out infinite;
-}
-
-/* Volume slider */
+/* ═══════════════════════════════════════════
+   Volume slider
+   ═══════════════════════════════════════════ */
 .volume-slider {
   -webkit-appearance: none;
   appearance: none;
-  background: rgba(255,255,255,0.2);
-  border-radius: 2px;
+  border-radius: 9999px;
   outline: none;
-  opacity: 0;
-  transition: width 0.2s, opacity 0.2s;
-}
-.group\/vol:hover .volume-slider {
-  opacity: 1;
+  height: 6px;
+  cursor: pointer;
 }
 .volume-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
-  background: #fbbf24;
+  background: #10b981;
   cursor: pointer;
+  border: 2px solid #fff;
 }
 .volume-slider::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
-  background: #fbbf24;
-  border: none;
+  background: #10b981;
+  border: 2px solid #fff;
   cursor: pointer;
+}
+
+/* Toggle switch */
+.toggle-switch {
+  position: relative;
+  width: 2.75rem;
+  height: 1.5rem;
+  border-radius: 9999px;
+  transition: background-color 0.2s;
+  cursor: pointer;
+}
+.toggle-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 50%;
+  background: #e2e2e9;
+  transition: transform 0.2s;
+}
+.toggle-switch.active {
+  background-color: #10b981;
+}
+.toggle-switch.active::after {
+  transform: translateX(1.25rem);
+  background: #00422b;
+}
+.toggle-switch:not(.active) {
+  background-color: #33353a;
+}
+
+/* Subtle scanline texture for home screen */
+.screen-noise {
+  background-image: linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+  background-size: 100% 3px;
+}
+
+/* Tab transition */
+.tab-btn {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Floating controls show on group hover */
+.floating-controls {
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+/* ═══════════════════════════════════════════
+   CRT Loading Effect (replaces static noise)
+   ═══════════════════════════════════════════ */
+
+/* Animated loading bars — horizontal green bands that pulse upward */
+@keyframes crtLoadingBars {
+  0% { transform: translateY(100%); }
+  100% { transform: translateY(-100%); }
+}
+
+@keyframes crtLoadingPulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+
+.crt-loading-bars {
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent 6px,
+    rgba(16, 185, 129, 0.12) 6px,
+    rgba(16, 185, 129, 0.18) 8px,
+    rgba(16, 185, 129, 0.12) 10px,
+    transparent 10px,
+    transparent 16px
+  );
+  background-size: 100% 16px;
+  animation:
+    crtLoadingBars 3s linear infinite,
+    crtLoadingPulse 2s ease-in-out infinite;
+}
+
+/* Bright scan line that sweeps downward repeatedly */
+@keyframes crtScanSweep {
+  0% { transform: translateY(-100%); opacity: 0; }
+  10% { opacity: 1; }
+  90% { opacity: 1; }
+  100% { transform: translateY(1000%); opacity: 0; }
+}
+
+.crt-scan-sweep {
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(16, 185, 129, 0.0) 40%,
+    rgba(16, 185, 129, 0.25) 50%,
+    rgba(16, 185, 129, 0.0) 60%,
+    transparent
+  );
+  height: 20%;
+  animation: crtScanSweep 2.5s ease-in-out infinite;
 }
