@@ -27,11 +27,16 @@ O ABR continua avaliando a cada **2 segundos** (a cada duas amostras de 1 segund
 
 ## De onde vem cada número
 
-`null` significa “o navegador não expôs isso” ou “ainda não há um intervalo válido”. A interface mostra **n/d**. Zero é medição real e continua zero. O FPS pedido em `getDisplayMedia()` ou em `track.getSettings()` não preenche um medido ausente.
+`null` significa “o navegador não expôs isso” ou “ainda não há um intervalo válido”. A interface mostra **n/d**. Zero é medição real e continua zero. O FPS pedido em `getDisplayMedia()` não preenche um FPS medido ausente. O mesmo vale para a resolução: o 1080p escolhido na tela não substitui o tamanho da track, do encoder nem do espectador.
 
 | Métrica | Origem | Conta |
 | --- | --- | --- |
 | FPS solicitado | Configuração de quem compartilha, ou `track.getSettings().frameRate` no player, sempre com esse nome | O que foi pedido, não o que saiu |
+| Resolução solicitada | Rótulo da configuração (`1080`) e os pixels ideais enviados ao `getDisplayMedia` | Pedido. Não é o tamanho que saiu |
+| Resolução da track | `videoTrack.getSettings()` no instante em que a captura retorna: `width`, `height`, `frameRate`, `displaySurface`, `aspectRatio`, `resizeMode` | O que o navegador entregou na track. Campo ausente fica `null` |
+| Resolução da origem | `media-source.width` / `height`, ligado ao `outbound-rtp` | O que o WebRTC diz que entrou no encoder, por conexão |
+| Resolução codificada | `outbound-rtp.frameWidth` / `frameHeight` | O frame que o encoder produziu nessa conexão |
+| Resolução recebida | `inbound-rtp.frameWidth` / `frameHeight` | O frame que este espectador recebeu. Quem compartilha não tem esse número |
 | FPS da origem | `media-source.framesPerSecond`, ligado por `outbound-rtp.mediaSourceId` | Frames que a captura entregou ao encoder |
 | FPS codificado | Delta de `outbound-rtp.framesEncoded` / intervalo. Se o delta ainda não existe, `framesPerSecond` | Frames que o encoder produziu |
 | Tempo de encode | Delta de `totalEncodeTime` / delta de `framesEncoded`, em ms | Média do intervalo. Sem frames, fica n/d |
@@ -119,6 +124,9 @@ O arquivo traz:
 - `role`: `sender` ou `receiver`
 - navegador e versão, a partir do user agent
 - configuração de resolução/FPS/áudio, só em quem compartilha
+- `capture`: pedido, `getSettings`, `getConstraints`, `getCapabilities` (ou `null` se o navegador não tiver), `readyState` e `contentHint` de antes de ajustarmos o hint
+- `encoder`: por `connectionId`, `maxBitrate`, `maxFramerate`, `scaleResolutionDownBy` e `degradationPreference` antes e depois de `setParameters`. `after: null` significa que a aplicação falhou
+- `resolution`: solicitada, track capturada, origem WebRTC, codificada e recebida, cada uma com `null` quando aquela etapa não existe neste navegador
 - histórico, eventos, diagnósticos
 - rota ICE sem IP
 - `collectedFrom` e `collectedTo`
@@ -134,7 +142,7 @@ npm test
 npm run build
 ```
 
-`npm test` usa o executor do Node (`node:test`) sobre `src/lib/diagnostics/diagnostics.test.ts` e `src/lib/diagnostics/audio.test.ts`. Cobre FPS normal e zero, queda, contadores e reset, perda, jitter, tempo de decode, descartes de reprodução, API ausente, fechamento, troca de stream, coleta com o painel fechado, consulta sobreposta, limite de 120 amostras, duas conexões, separação inbound/outbound, par ICE selecionado, o tratamento de FPS zero no ABR e o escopo da captura de áudio. O teste de escuta no Chrome ou no Edge está separado, em [`audio.md`](audio.md), e não é substituído por estes testes.
+`npm test` usa o executor do Node (`node:test`) sobre `src/lib/diagnostics/diagnostics.test.ts`, `src/lib/diagnostics/audio.test.ts` e `src/lib/diagnostics/resolution.test.ts`. Cobre FPS normal e zero, queda, contadores e reset, perda, jitter, tempo de decode, descartes de reprodução, API ausente, fechamento, troca de stream, coleta com o painel fechado, consulta sobreposta, limite de 120 amostras, duas conexões, separação inbound/outbound, par ICE selecionado, o tratamento de FPS zero no ABR, o escopo da captura de áudio e a separação entre resolução pedida, capturada, de origem, codificada e recebida. O teste de escuta no Chrome ou no Edge está separado, em [`audio.md`](audio.md), e não é substituído por estes testes.
 
 ## Roteiro manual (Chrome ou Edge)
 
@@ -161,4 +169,5 @@ Para um teste visual sem segunda pessoa, `http://localhost:3000/?mock` mostra o 
 - ESCALA olha o número de conexões neste transmissor e o FPS daquela conexão. Não separa CPU de upload com certeza.
 - O histórico é apagado quando a conexão fecha. Exporte antes de sair da sala se precisar guardar a queda.
 - O ABR não ficou mais agressivo. Ele só passou a usar a medição certa, inclusive o zero.
-- Não há métrica de “FPS da captura” fora de uma conexão WebRTC. `getSettings().frameRate` continua sendo só o valor pedido.
+- Não há métrica de “FPS da captura” fora de uma conexão WebRTC. `getSettings().frameRate` é o que a track informou na captura; o FPS codificado continua vindo do `outbound-rtp`.
+- A linha “Resolução” do painel continua sendo o tamanho codificado (ou o da origem, se o frame codificado ainda não existe). O JSON é que separa o 1080p pedido da track, da origem, do encoder e do espectador. Um desses campos em `null` não é completado com outro.

@@ -6,12 +6,16 @@ import {
   audioModeFromConfig,
   commitPreparedShare,
   negotiationFromSdp,
+  readCaptureProbe,
+  readEncoderEncoding,
   reportFilename,
   requestDisplayMedia,
   triggerJsonDownload,
   type AudioMode,
   type AudioPlaybackReport,
   type DiagnosticsSnapshot,
+  type CaptureProbe,
+  type EncoderProbe,
   type PeerConnectionLike,
   type PlaybackSample,
   type PreparedShare,
@@ -130,6 +134,8 @@ export class WebRTCManager {
   private remoteAudioTracks = new Map<string, number>();
   private watchedRemoteStreams = new WeakSet<MediaStream>();
   private pendingAudioEvents: { severity: 'info' | 'atenção' | 'crítico'; message: string; data: Record<string, number | string | null> }[] = [];
+  private captureProbe: CaptureProbe | null = null;
+  private encoderProbes = new Map<string, EncoderProbe>();
   private abrControllers = new Map<string, AdaptiveBitrateController>();
   private monitors = new Map<string, ConnectionMonitor>();
   private readonly sessionId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -196,6 +202,14 @@ export class WebRTCManager {
         this.notePreparedAudio(stream, mode, prepared);
         const videoTrack = stream.getVideoTracks()[0];
         if (videoTrack) {
+          const requestedSize = RESOLUTION_MAP[this.currentConfig.resolution];
+          this.captureProbe = readCaptureProbe({
+            label: this.currentConfig.resolution,
+            width: requestedSize?.width ?? null,
+            height: requestedSize?.height ?? null,
+            frameRate: this.currentConfig.frameRate,
+          }, videoTrack);
+          console.info('[WebRTC] Captura', this.captureProbe);
           videoTrack.contentHint = 'motion';
           const actualSettings = videoTrack.getSettings();
           console.log(`[WebRTC] Video track settings: ${actualSettings.width}x${actualSettings.height} @ ${actualSettings.frameRate}fps`);
@@ -237,6 +251,8 @@ export class WebRTCManager {
     };
     this.hasAudioTrack = false;
     this.pendingAudioEvents = [];
+    this.captureProbe = null;
+    this.encoderProbes.clear();
   }
 
   requestStream(sharerId: string) {
@@ -353,8 +369,12 @@ export class WebRTCManager {
       return;
     }
 
+    const connectionId = this.monitors.get(peerId)?.connectionId ?? null;
+    let beforeEncoder = readEncoderEncoding(null);
+    let encoderApplied = false;
     try {
       const params = videoSender.getParameters();
+      beforeEncoder = readEncoderEncoding(params);
 
       if (!params.encodings || params.encodings.length === 0) {
         params.encodings = [{}];
@@ -374,6 +394,12 @@ export class WebRTCManager {
 
       // Verify params were applied
       const check = videoSender.getParameters();
+      const afterEncoder = readEncoderEncoding(check);
+      if (connectionId) {
+        this.encoderProbes.set(connectionId, { connectionId, before: beforeEncoder, after: afterEncoder });
+        encoderApplied = true;
+      }
+      console.info('[WebRTC] Encoder', connectionId, { before: beforeEncoder, after: afterEncoder });
       console.log('[WebRTC] Params verificados:', JSON.stringify({
         maxBitrate: check.encodings?.[0]?.maxBitrate,
         maxFramerate: check.encodings?.[0]?.maxFramerate,
@@ -402,6 +428,9 @@ export class WebRTCManager {
       monitor?.setSampleListener((sample) => abr.onSample(sample));
 
     } catch (e) {
+      if (connectionId && !encoderApplied) {
+        this.encoderProbes.set(connectionId, { connectionId, before: beforeEncoder, after: null });
+      }
       console.warn('[WebRTC] Não foi possível configurar sender de vídeo:', e);
     }
   }
@@ -479,6 +508,12 @@ export class WebRTCManager {
         } : null,
         audioLink: this.audioLink.get(remotePeerId) ?? null,
         remoteAudioTracks: this.remoteAudioTracks.get(remotePeerId) ?? null,
+        captureProbe: role === 'sender' ? this.captureProbe : null,
+        encoderProbe: (() => {
+          if (role !== 'sender') return null;
+          const connectionId = this.monitors.get(remotePeerId)?.connectionId;
+          return connectionId ? this.encoderProbes.get(connectionId) ?? null : null;
+        })(),
       }),
     });
     if (role === 'sender') {
@@ -767,6 +802,7 @@ export class WebRTCManager {
   private closeConnection(peerId: string) {
     const monitor = this.monitors.get(peerId);
     if (monitor) {
+      this.encoderProbes.delete(monitor.connectionId);
       monitor.stop();
       this.monitors.delete(peerId);
     }

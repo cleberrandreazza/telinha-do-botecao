@@ -1,4 +1,5 @@
 import { classifyAudio } from './audio.ts';
+import { resolutionFacts, type CaptureProbe, type EncoderProbe, type ResolutionFacts } from './resolution.ts';
 import type {
   AudioDiagnosis,
   AudioFacts,
@@ -30,6 +31,9 @@ export interface DiagnosticReport {
   diagnoses: Diagnosis[];
   audio: AudioFacts | null;
   audioDiagnosis: AudioDiagnosis | null;
+  capture: CaptureProbe | null;
+  encoder: EncoderProbe | null;
+  resolution: ResolutionFacts;
   ice: {
     route: string;
     localCandidateType: string | null;
@@ -92,6 +96,8 @@ export function buildReport(input: {
   events: DiagEvent[];
   diagnoses: Diagnosis[];
   browser?: BrowserInfo;
+  capture?: CaptureProbe | null;
+  encoder?: EncoderProbe | null;
 }): DiagnosticReport {
   const latest = input.history[input.history.length - 1] ?? null;
   const report: DiagnosticReport = {
@@ -109,6 +115,9 @@ export function buildReport(input: {
     diagnoses: input.diagnoses,
     audio: latest?.audio ?? null,
     audioDiagnosis: latest?.audio ? classifyAudio(latest.audio, latest.timestamp) : null,
+    capture: input.capture ?? null,
+    encoder: input.encoder ?? null,
+    resolution: resolutionFacts(input.capture ?? null, latest),
     ice: latest ? {
       route: latest.network.route,
       localCandidateType: latest.network.localCandidateType,
@@ -123,6 +132,7 @@ export function buildReport(input: {
       'FPS zero é medição real. FPS solicitado não substitui FPS medido.',
       'Endereços IP, credenciais e conteúdo da tela não fazem parte deste arquivo.',
       'Áudio funcionando exige pacotes em movimento e, no receptor, o elemento desmutado. A existência de um relatório RTP não basta.',
+      'Resolução solicitada, da track, da origem WebRTC, codificada e recebida são medidas distintas. Um null não é preenchido com o número de outra etapa.',
     ],
   };
   return sanitize(report);

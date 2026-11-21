@@ -2,6 +2,7 @@ import { attachAudio, audioEvents, classifyAudio, type AudioCaptureContext, type
 import { classifyDiagnosis } from './classify.ts';
 import { detectEvents, shouldEmit } from './events.ts';
 import { buildReport, type BrowserInfo, type DiagnosticReport } from './export.ts';
+import type { CaptureProbe, EncoderProbe } from './resolution.ts';
 import { buildChart } from './format.ts';
 import { buildSample, emptyCounters, reportsFrom, type CounterSnapshot } from './parse.ts';
 import type {
@@ -32,6 +33,8 @@ export interface MonitorContext {
   audioCapture?: AudioCaptureContext | null;
   audioLink?: AudioLinkContext | null;
   remoteAudioTracks?: number | null;
+  captureProbe?: CaptureProbe | null;
+  encoderProbe?: EncoderProbe | null;
 }
 
 export interface MonitorOptions {
@@ -249,15 +252,18 @@ export class ConnectionMonitor {
   }
 
   exportReport(browser?: BrowserInfo): DiagnosticReport {
+    const context = this.getContext();
     return buildReport({
       sessionId: this.sessionId,
       collectedFrom: this.startedAt,
-      streamConfig: this.streamConfig,
+      streamConfig: context.streamConfig ?? this.streamConfig,
       history: this.history.slice(),
       playback: this.playbackHistory.slice(),
       events: this.events.slice(),
       diagnoses: this.diagnoses.slice(),
       browser,
+      capture: context.captureProbe ?? null,
+      encoder: context.encoderProbe ?? null,
     });
   }
 

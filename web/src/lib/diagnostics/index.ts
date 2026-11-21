@@ -39,6 +39,12 @@ export {
 export { buildReport, triggerJsonDownload, reportFilename, sanitize, parseBrowser } from './export.ts';
 export type { DiagnosticReport } from './export.ts';
 export {
+  readCaptureProbe,
+  readEncoderEncoding,
+  resolutionFacts,
+} from './resolution.ts';
+export type { CaptureProbe, EncoderProbe, ResolutionFacts } from './resolution.ts';
+export {
   attachAudio,
   audioEvents,
   audioModeFromConfig,
