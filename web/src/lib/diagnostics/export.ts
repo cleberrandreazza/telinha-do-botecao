@@ -1,4 +1,7 @@
+import { classifyAudio } from './audio.ts';
 import type {
+  AudioDiagnosis,
+  AudioFacts,
   DiagEvent,
   Diagnosis,
   MetricSample,
@@ -25,6 +28,8 @@ export interface DiagnosticReport {
   playback: PlaybackSample[];
   events: DiagEvent[];
   diagnoses: Diagnosis[];
+  audio: AudioFacts | null;
+  audioDiagnosis: AudioDiagnosis | null;
   ice: {
     route: string;
     localCandidateType: string | null;
@@ -102,6 +107,8 @@ export function buildReport(input: {
     playback: input.playback,
     events: input.events,
     diagnoses: input.diagnoses,
+    audio: latest?.audio ?? null,
+    audioDiagnosis: latest?.audio ? classifyAudio(latest.audio, latest.timestamp) : null,
     ice: latest ? {
       route: latest.network.route,
       localCandidateType: latest.network.localCandidateType,
@@ -115,6 +122,7 @@ export function buildReport(input: {
       'RTT ausente significa que o par ICE selecionado não foi identificado, não que o RTT seja zero.',
       'FPS zero é medição real. FPS solicitado não substitui FPS medido.',
       'Endereços IP, credenciais e conteúdo da tela não fazem parte deste arquivo.',
+      'Áudio funcionando exige pacotes em movimento e, no receptor, o elemento desmutado. A existência de um relatório RTP não basta.',
     ],
   };
   return sanitize(report);

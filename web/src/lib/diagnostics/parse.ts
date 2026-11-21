@@ -40,6 +40,8 @@ export interface CounterSnapshot {
   firIn: number | null;
   audioBytesOut: number | null;
   audioBytesIn: number | null;
+  audioPackets: number | null;
+  audioSamples: number | null;
 }
 
 export function emptyCounters(): CounterSnapshot {
@@ -71,6 +73,8 @@ export function emptyCounters(): CounterSnapshot {
     firIn: null,
     audioBytesOut: null,
     audioBytesIn: null,
+    audioPackets: null,
+    audioSamples: null,
   };
 }
 
@@ -222,11 +226,16 @@ export function buildSample(input: BuildSampleInput): BuildSampleResult {
   const audioBytes = input.role === 'sender'
     ? diffCounter(readNumber(audioReport, 'bytesSent'), prev?.audioBytesOut ?? null)
     : diffCounter(readNumber(audioReport, 'bytesReceived'), prev?.audioBytesIn ?? null);
+  const audioPackets = input.role === 'sender'
+    ? diffCounter(readNumber(audioReport, 'packetsSent'), prev?.audioPackets ?? null)
+    : diffCounter(readNumber(audioReport, 'packetsReceived'), prev?.audioPackets ?? null);
+  const sampleKey = input.role === 'sender' ? 'totalSamplesSent' : 'totalSamplesReceived';
+  const audioSamples = diffCounter(readNumber(audioReport, sampleKey), prev?.audioSamples ?? null);
 
   const resets = [
     encoded, encodeTime, bytesSent, keyOut, nackOut, pliOut, firOut,
     received, decoded, dropped, decodeTime, packetsReceived, packetsLost, bytesReceived,
-    jitterDelay, jitterEmitted, freezes, freezeDuration, keyIn, nackIn, pliIn, firIn, audioBytes,
+    jitterDelay, jitterEmitted, freezes, freezeDuration, keyIn, nackIn, pliIn, firIn, audioBytes, audioPackets, audioSamples,
   ];
   const countersReset = resets.some((item) => item.reset);
 
@@ -335,7 +344,11 @@ export function buildSample(input: BuildSampleInput): BuildSampleResult {
     firIn: readNumber(inboundReport, 'firCount'),
     audioBytesOut: input.role === 'sender' ? audioBytesNow : prev?.audioBytesOut ?? null,
     audioBytesIn: input.role === 'receiver' ? audioBytesNow : prev?.audioBytesIn ?? null,
+    audioPackets: readNumber(audioReport, input.role === 'sender' ? 'packetsSent' : 'packetsReceived'),
+    audioSamples: readNumber(audioReport, sampleKey),
   };
+  const audioDtMs = audioDt ?? dtMs;
+  const audioFlowing = (audioBytes.delta ?? 0) > 0 || (audioPackets.delta ?? 0) > 0;
 
   const sample: MetricSample = {
     timestamp: input.wallTime,
@@ -349,8 +362,18 @@ export function buildSample(input: BuildSampleInput): BuildSampleResult {
     countersReset,
     videoCodec: codecName(reports, readString(videoReport, 'codecId')),
     audioCodec: codecName(reports, readString(audioReport, 'codecId')),
-    hasAudio: audioReport !== null,
-    audioBitrate: bitrateFromBytes(audioBytes.delta, audioDt ?? dtMs),
+    hasAudio: audioFlowing,
+    audioBitrate: bitrateFromBytes(audioBytes.delta, audioDtMs),
+    audioRtp: audioReport ? {
+      codec: codecName(reports, readString(audioReport, 'codecId')),
+      packets: readNumber(audioReport, input.role === 'sender' ? 'packetsSent' : 'packetsReceived'),
+      packetsPerSec: perSecond(audioPackets.delta, audioDtMs),
+      bytes: audioBytesNow,
+      bitrate: bitrateFromBytes(audioBytes.delta, audioDtMs),
+      samples: readNumber(audioReport, sampleKey),
+      samplesPerSec: perSecond(audioSamples.delta, audioDtMs),
+    } : null,
+    audio: null,
     outbound,
     inbound,
     remoteInbound: remoteInbound(reports),

@@ -109,7 +109,7 @@ export default function StreamSettings({ onStart, onCancel }: StreamSettingsProp
               </span>
               <div className="text-left">
                 <span className="block text-sm font-body font-medium text-on-surface">Compartilhar áudio</span>
-                <span className="block text-[11px] font-body text-outline">Áudio do sistema / aba</span>
+                <span className="block text-[11px] font-body text-outline">Aba ou sistema. Não usa microfone.</span>
               </div>
             </div>
             <label className="relative inline-flex items-center cursor-pointer shrink-0" onClick={(e) => e.stopPropagation()}>
@@ -122,6 +122,9 @@ export default function StreamSettings({ onStart, onCancel }: StreamSettingsProp
               <div className="w-11 h-6 bg-surface-container-highest peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-on-surface after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-container peer-checked:after:bg-on-primary" />
             </label>
           </button>
+          <p className="mt-2 text-[11px] leading-snug text-outline">
+            Aba do Chrome ou Edge: marque “Compartilhar áudio da guia”. Tela inteira: marque “Compartilhar áudio do sistema”. Uma janela, no Windows, em geral não entrega áudio — o seletor simplesmente não oferece a opção.
+          </p>
         </div>
 
         {/* Action buttons */}

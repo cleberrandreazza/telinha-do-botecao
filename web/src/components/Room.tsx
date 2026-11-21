@@ -5,7 +5,7 @@ import CrtEmptyState from './CrtEmptyState';
 import StreamViewer from './StreamViewer';
 import StatsPanel from './StatsPanel';
 import SettingsModal, { loadSettings, type BotecaoSettings } from './SettingsModal';
-import type { DiagnosticsSnapshot, PlaybackSample } from '../lib/diagnostics/index';
+import type { AudioPlaybackReport, DiagnosticsSnapshot, PlaybackSample } from '../lib/diagnostics/index';
 
 interface RoomProps {
   code: string;
@@ -20,6 +20,8 @@ interface RoomProps {
   onLeaveRoom: () => void;
   subscribeStats?: (peerId: string, cb: (snapshot: DiagnosticsSnapshot) => void) => () => void;
   pushPlayback?: (peerId: string, sample: PlaybackSample) => boolean;
+  pushAudioPlayback?: (peerId: string, report: AudioPlaybackReport) => boolean;
+  audioNotice?: string | null;
   exportDiagnostics?: (peerId: string) => void;
   subscribeSenderDiagnostics?: (cb: () => void) => () => void;
   getSenderSnapshots?: () => DiagnosticsSnapshot[];
@@ -39,6 +41,8 @@ export default function Room({
   onLeaveRoom,
   subscribeStats,
   pushPlayback,
+  pushAudioPlayback,
+  audioNotice,
   exportDiagnostics,
   subscribeSenderDiagnostics,
   getSenderSnapshots,
@@ -104,6 +108,10 @@ export default function Room({
     if (!pushPlayback || !activePeerId) return false;
     return pushPlayback(activePeerId, sample);
   }, [pushPlayback, activePeerId]);
+  const pushAudioActive = useCallback((report: AudioPlaybackReport) => {
+    if (!pushAudioPlayback || !activePeerId) return false;
+    return pushAudioPlayback(activePeerId, report);
+  }, [pushAudioPlayback, activePeerId]);
   const exportActive = useCallback(() => {
     if (activePeerId) exportDiagnostics?.(activePeerId);
   }, [exportDiagnostics, activePeerId]);
@@ -419,6 +427,11 @@ export default function Room({
               {isSharing ? 'Parar Transmissao' : 'Compartilhar Tela'}
             </span>
           </button>
+          {isSharing && audioNotice && (
+            <p className="text-[11px] leading-snug text-yellow-200/90 bg-yellow-500/10 border border-yellow-500/20 rounded-xl px-2.5 py-2">
+              {audioNotice}
+            </p>
+          )}
           {isSharing && (
             <button
               onClick={() => setShowSenderStats((open) => !open)}
@@ -487,6 +500,7 @@ export default function Room({
             onVolumeChange={setVolume}
             subscribeStats={activePeerId ? subscribeActive : undefined}
             pushPlayback={activePeerId ? pushActive : undefined}
+            pushAudioPlayback={activePeerId ? pushAudioActive : undefined}
             onExportDiagnostics={activePeerId ? exportActive : undefined}
           />
         ) : (

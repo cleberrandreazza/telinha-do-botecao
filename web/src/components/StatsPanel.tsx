@@ -11,6 +11,9 @@ import {
   UNAVAILABLE_LABEL,
   type ChartPoint,
   type DiagnosisState,
+  type AudioDiagnosis,
+  type AudioFacts,
+  type AudioPlaybackReport,
   type DiagnosticsSnapshot,
   type MetricSample,
   type PlaybackSample,
@@ -21,6 +24,7 @@ interface StatsPanelProps {
   /** FPS de track.getSettings(), só como valor solicitado. Nunca substitui o medido. */
   trackRequestedFps?: number | null;
   livePlayback?: PlaybackSample | null;
+  liveAudio?: AudioPlaybackReport | null;
   onClose: () => void;
   onExport: () => void;
   connections?: { connectionId: string; label: string }[];
@@ -33,6 +37,7 @@ export default function StatsPanel({
   snapshot,
   trackRequestedFps = null,
   livePlayback = null,
+  liveAudio = null,
   onClose,
   onExport,
   connections,
@@ -103,6 +108,8 @@ export default function StatsPanel({
           resolution={resolution}
           adaptiveState={snapshot?.adaptiveState ?? null}
           viewerCount={sample?.viewerCount ?? null}
+          audioDiagnosis={snapshot?.audioDiagnosis ?? null}
+          liveAudio={liveAudio}
         />
       ) : (
         <Technical
@@ -110,6 +117,8 @@ export default function StatsPanel({
           chart={snapshot?.chart ?? []}
           events={snapshot?.recentEvents ?? []}
           livePlayback={livePlayback}
+          liveAudio={liveAudio}
+          audioDiagnosis={snapshot?.audioDiagnosis ?? null}
         />
       )}
 
@@ -124,6 +133,20 @@ export default function StatsPanel({
   );
 }
 
+function audioLabel(diagnosis: AudioDiagnosis | null, live: AudioPlaybackReport | null): string {
+  if (diagnosis) return diagnosis.label;
+  if (live?.blocked) return 'Reprodução com som bloqueada';
+  if (live) return 'Sem RTP de áudio nesta vista';
+  return UNAVAILABLE_LABEL;
+}
+
+function audioClass(code: AudioDiagnosis['code'] | null): string {
+  if (code === 'PLAYING' || code === 'SENDING') return 'text-green-400';
+  if (code === 'DISABLED' || code === 'INSUFFICIENT' || code === null) return 'text-white/70';
+  if (code === 'RECEIVED_MUTED') return 'text-yellow-400';
+  return 'text-red-400';
+}
+
 function Summary({
   sample,
   fps,
@@ -132,8 +155,12 @@ function Summary({
   resolution,
   adaptiveState,
   viewerCount,
+  audioDiagnosis,
+  liveAudio,
 }: {
   sample: MetricSample | null;
+  audioDiagnosis: AudioDiagnosis | null;
+  liveAudio: AudioPlaybackReport | null;
   fps: ReturnType<typeof pipelineFps> | null;
   requested: number | null;
   requestedLabel: string;
@@ -161,12 +188,11 @@ function Summary({
       <Row label={sender ? 'Jitter RTCP' : 'Jitter'} value={formatOptional(jitter, 1, 'ms')} />
       <Row label={sender ? 'Perda RTCP' : 'Perda'} value={loss === null ? UNAVAILABLE_LABEL : `${loss.toFixed(1)}%`} />
       <Row label="Conexão" value={sample ? routeLabel(sample.network.route) : UNAVAILABLE_LABEL} />
-      <div className="flex items-center justify-between gap-4 pt-1 border-t border-white/5">
-        <span>Áudio</span>
-        <span className={sample?.hasAudio ? 'text-green-400' : 'text-red-400'}>
-          {sample ? (sample.hasAudio ? `${sample.audioCodec ?? 'áudio'} · ${formatBitrate(sample.audioBitrate)}` : 'Sem áudio') : UNAVAILABLE_LABEL}
-        </span>
-      </div>
+      <Row
+        label="Áudio"
+        value={audioLabel(audioDiagnosis, liveAudio)}
+        valueClass={audioClass(audioDiagnosis?.code ?? null)}
+      />
       {adaptiveState && <Row label="Bitrate adapt." value={adaptiveState} valueClass="text-cyan-400" />}
       {viewerCount !== null && <Row label="Espectadores" value={String(viewerCount)} />}
     </div>
@@ -178,11 +204,15 @@ function Technical({
   chart,
   events,
   livePlayback,
+  liveAudio,
+  audioDiagnosis,
 }: {
   sample: MetricSample | null;
   chart: ChartPoint[];
   events: DiagnosticsSnapshot['recentEvents'];
   livePlayback: PlaybackSample | null;
+  liveAudio: AudioPlaybackReport | null;
+  audioDiagnosis: AudioDiagnosis | null;
 }) {
   const out = sample?.outbound;
   const inn = sample?.inbound;
@@ -229,6 +259,7 @@ function Technical({
         <Row label="Congelamentos" value={formatOptional(inn?.freezes ?? null, 0, '')} />
         <Row label="Bitrate" value={formatBitrate(inn?.bitrate ?? null)} />
       </Layer>
+      <AudioLayers audio={sample?.audio ?? null} role={sample?.role ?? null} diagnosis={audioDiagnosis} liveAudio={liveAudio} />
       <Layer title="Reprodução">
         <Row label="FPS apresentado" value={formatMeasuredFps(play?.presentedFps ?? null, 1)} />
         <Row label="Descartados/s" value={formatOptional(play?.droppedFps ?? null, 1, '')} />
@@ -296,6 +327,51 @@ function linePoints(points: ChartPoint[], key: keyof ChartPoint, width: number, 
     const y = height - (item.value / max) * (height - 2) - 1;
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
+}
+
+function AudioLayers({
+  audio,
+  role,
+  diagnosis,
+  liveAudio,
+}: {
+  audio: AudioFacts | null;
+  role: 'sender' | 'receiver' | null;
+  diagnosis: AudioDiagnosis | null;
+  liveAudio: AudioPlaybackReport | null;
+}) {
+  const sender = role === 'sender';
+  const receiver = role === 'receiver';
+  const muted = receiver ? (audio?.playbackMuted ?? liveAudio?.muted ?? null) : null;
+  const volume = receiver ? (audio?.playbackVolume ?? liveAudio?.volume ?? null) : null;
+  const blocked = receiver ? (audio?.playbackBlocked ?? liveAudio?.blocked ?? null) : null;
+  const track = !sender || !audio || audio.trackReadyState === null
+    ? UNAVAILABLE_LABEL
+    : `${audio.trackReadyState} · ${audio.trackEnabled ? 'habilitada' : 'desabilitada'} · ${audio.trackMuted ? 'muted' : 'com sinal'}`;
+  return (
+    <>
+      <Layer title="Áudio — transmissor">
+        <Row label="Estado" value={sender ? (diagnosis?.label ?? UNAVAILABLE_LABEL) : UNAVAILABLE_LABEL} valueClass={sender ? audioClass(diagnosis?.code ?? null) : 'text-white/70'} />
+        <Row label="Captura pedida" value={sender && audio?.requested !== null && audio?.requested !== undefined ? (audio.requested ? 'sim' : 'não') : UNAVAILABLE_LABEL} />
+        <Row label="Tracks capturadas" value={sender && audio?.capturedTracks !== null && audio?.capturedTracks !== undefined ? String(audio.capturedTracks) : UNAVAILABLE_LABEL} />
+        <Row label="Estado da track" value={track} />
+        <Row label="Superfície" value={sender ? (audio?.displaySurface ?? UNAVAILABLE_LABEL) : UNAVAILABLE_LABEL} />
+        <Row label="Codec enviado" value={sender ? (audio?.codec ?? UNAVAILABLE_LABEL) : UNAVAILABLE_LABEL} />
+        <Row label="Bitrate enviado" value={sender ? formatBitrate(audio?.bitrate ?? null) : UNAVAILABLE_LABEL} />
+        <Row label="Pacotes/s" value={sender ? formatOptional(audio?.packetsPerSec ?? null, 1, '') : UNAVAILABLE_LABEL} />
+      </Layer>
+      <Layer title="Áudio — receptor">
+        <Row label="Estado" value={receiver ? (diagnosis?.label ?? UNAVAILABLE_LABEL) : UNAVAILABLE_LABEL} valueClass={receiver ? audioClass(diagnosis?.code ?? null) : 'text-white/70'} />
+        <Row label="Track recebida" value={receiver && audio?.remoteAudioTracks !== null && audio?.remoteAudioTracks !== undefined ? String(audio.remoteAudioTracks) : UNAVAILABLE_LABEL} />
+        <Row label="Codec recebido" value={receiver ? (audio?.codec ?? UNAVAILABLE_LABEL) : UNAVAILABLE_LABEL} />
+        <Row label="Bitrate recebido" value={receiver ? formatBitrate(audio?.bitrate ?? null) : UNAVAILABLE_LABEL} />
+        <Row label="Pacotes/s" value={receiver ? formatOptional(audio?.packetsPerSec ?? null, 1, '') : UNAVAILABLE_LABEL} />
+        <Row label="Reprodução" value={muted === null ? UNAVAILABLE_LABEL : blocked ? 'bloqueada' : muted ? 'silenciada' : 'ativa'} />
+        <Row label="Volume" value={volume === null ? UNAVAILABLE_LABEL : `${Math.round(volume * 100)}%`} />
+      </Layer>
+      {diagnosis && <span className="text-white/55 leading-snug">{diagnosis.reason}</span>}
+    </>
+  );
 }
 
 function Layer({ title, children }: { title: string; children: ReactNode }) {

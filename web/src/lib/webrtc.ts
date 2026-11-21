@@ -3,8 +3,13 @@ import type { ServerMessage, StreamInfo } from './types';
 import {
   AdaptiveBitrateController,
   ConnectionMonitor,
+  captureUnavailableMessage,
+  disabledAudioMessage,
+  negotiationFromSdp,
   reportFilename,
+  requestDisplayMedia,
   triggerJsonDownload,
+  type AudioPlaybackReport,
   type DiagnosticsSnapshot,
   type PeerConnectionLike,
   type PlaybackSample,
@@ -90,6 +95,19 @@ export class WebRTCManager {
   private notifiedPeers = new Set<string>();
   public hasAudioTrack = false;
   public onAudioStatus?: (captured: boolean) => void;
+  private audioCapture = {
+    requested: false,
+    trackCount: 0,
+    readyState: null as string | null,
+    enabled: null as boolean | null,
+    muted: null as boolean | null,
+    displaySurface: null as string | null,
+    message: null as string | null,
+  };
+  private audioLink = new Map<string, { senderAttached: boolean; negotiated: boolean | null; direction: string | null }>();
+  private remoteAudioTracks = new Map<string, number>();
+  private watchedRemoteStreams = new WeakSet<MediaStream>();
+  private pendingAudioEvents: { severity: 'info' | 'atenção' | 'crítico'; message: string; data: Record<string, number | string | null> }[] = [];
   private abrControllers = new Map<string, AdaptiveBitrateController>();
   private monitors = new Map<string, ConnectionMonitor>();
   private readonly sessionId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -133,38 +151,32 @@ export class WebRTCManager {
     const fps = cfg.frameRate;
     const wantsAudio = cfg.audio;
 
-    // getDisplayMedia: audio precisa ser simples (true/false).
-    // systemAudio DEVE ser top-level (Chromium 105+).
-    const displayMediaOptions: any = {
-      video: {
-        width: { ideal: res.width },
-        height: { ideal: res.height },
-        frameRate: { ideal: fps, max: fps },
-      },
-      audio: wantsAudio,
-      ...(wantsAudio ? { systemAudio: 'include' } : {}),
+    // Áudio fica boolean. echoCancellation/noiseSuppression fazem o Chrome descartar a faixa.
+    // systemAudio e windowAudio só pedem a opção no seletor; não garantem a track.
+    const videoConstraints = {
+      width: { ideal: res.width },
+      height: { ideal: res.height },
+      frameRate: { ideal: fps, max: fps },
     };
+    const stream = await requestDisplayMedia(
+      (options) => navigator.mediaDevices.getDisplayMedia(options as DisplayMediaStreamOptions),
+      videoConstraints,
+      wantsAudio,
+    ) as MediaStream;
 
-    console.log('[WebRTC] getDisplayMedia options:', JSON.stringify(displayMediaOptions));
-    const stream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions as DisplayMediaStreamOptions);
-
-    // Diagnóstico de áudio
+    this.localStream = stream;
     const audioTracks = stream.getAudioTracks();
     const videoTracks = stream.getVideoTracks();
-    console.log(`[WebRTC] Captura: ${videoTracks.length} vídeo, ${audioTracks.length} áudio`);
     this.hasAudioTrack = audioTracks.length > 0;
-
+    this.observeAudioTracks(stream);
+    this.refreshAudioCapture(stream);
+    if (this.audioCapture.message) console.warn(`[WebRTC] ${this.audioCapture.message}`);
     if (wantsAudio && audioTracks.length === 0) {
-      console.warn('[WebRTC] ⚠️ Áudio solicitado mas NÃO capturado!');
-      console.warn('[WebRTC] Dicas: 1) Compartilhe a TELA INTEIRA (não uma janela)');
-      console.warn('[WebRTC] 2) Marque "Compartilhar áudio do sistema" no diálogo do Chrome');
-      console.warn('[WebRTC] 3) Certifique-se de que algum som está tocando no sistema');
+      this.rememberAudio('crítico', 'Áudio indisponível na origem.', { superficie: this.audioCapture.displaySurface });
+    } else if (wantsAudio && audioTracks.length > 0) {
+      this.rememberAudio('info', 'Captura de áudio iniciada.', { tracks: audioTracks.length });
     }
     this.onAudioStatus?.(this.hasAudioTrack);
-
-    for (const at of audioTracks) {
-      console.log(`[WebRTC] Audio track: label="${at.label}", readyState=${at.readyState}, muted=${at.muted}, enabled=${at.enabled}`);
-    }
 
     // content hint: 'motion' para jogos/vídeos (prioriza fluidez sobre nitidez)
     const videoTrack = videoTracks[0];
@@ -172,13 +184,10 @@ export class WebRTCManager {
       videoTrack.contentHint = 'motion';
       const actualSettings = videoTrack.getSettings();
       console.log(`[WebRTC] Video track settings: ${actualSettings.width}x${actualSettings.height} @ ${actualSettings.frameRate}fps`);
+      videoTrack.onended = () => {
+        this.stopScreenShare();
+      };
     }
-
-    this.localStream = stream;
-
-    videoTrack.onended = () => {
-      this.stopScreenShare();
-    };
 
     this.signal.send({ type: 'start-sharing' });
     return stream;
@@ -195,6 +204,17 @@ export class WebRTCManager {
     }
 
     this.signal.send({ type: 'stop-sharing' });
+    this.audioCapture = {
+      requested: false,
+      trackCount: 0,
+      readyState: null,
+      enabled: null,
+      muted: null,
+      displaySurface: null,
+      message: null,
+    };
+    this.hasAudioTrack = false;
+    this.pendingAudioEvents = [];
   }
 
   requestStream(sharerId: string) {
@@ -247,9 +267,24 @@ export class WebRTCManager {
     const pc = this.createPeerConnection(viewerId, 'sender');
 
     const tracks = this.localStream.getTracks();
-    console.log(`[WebRTC] Enviando ${tracks.length} tracks para viewer ${viewerId}:`, tracks.map(t => `${t.kind}(${t.label}, enabled=${t.enabled})`));
+    let audioSenders = 0;
     for (const track of tracks) {
-      pc.addTrack(track, this.localStream);
+      try {
+        pc.addTrack(track, this.localStream);
+        if (track.kind === 'audio') audioSenders += 1;
+      } catch (err) {
+        console.warn(`[WebRTC] addTrack de ${track.kind} falhou:`, err);
+      }
+    }
+    const attached = pc.getSenders().some((sender) => sender.track?.kind === 'audio');
+    this.audioLink.set(viewerId, { senderAttached: attached, negotiated: null, direction: null });
+    if (audioSenders > 0 && attached) {
+      this.monitors.get(viewerId)?.recordEvent({
+        category: 'ÁUDIO',
+        severity: 'info',
+        message: 'Track de áudio adicionada ao sender.',
+        data: { tracks: audioSenders },
+      });
     }
 
     // Prefere H264 (hardware-accelerated)
@@ -358,6 +393,7 @@ export class WebRTCManager {
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
+    this.noteAudioNegotiation(fromId, pc);
 
     this.signal.send({
       type: 'answer',
@@ -373,6 +409,7 @@ export class WebRTCManager {
     const pc = this.connections.get(fromId);
     if (!pc) return;
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    this.noteAudioNegotiation(fromId, pc);
 
     // Agora que a negociação completou, configura bitrate e inicia ABR
     await this.configureVideoSender(pc, fromId);
@@ -406,8 +443,23 @@ export class WebRTCManager {
         configuredFps: role === 'sender' ? this.currentConfig.frameRate : null,
         streamConfig: role === 'sender' ? { ...this.currentConfig } : null,
         adaptiveState: this.abrControllers.get(remotePeerId)?.getState() ?? null,
+        audioCapture: role === 'sender' ? {
+          requested: this.audioCapture.requested,
+          trackCount: this.audioCapture.trackCount,
+          readyState: this.audioCapture.readyState,
+          enabled: this.audioCapture.enabled,
+          muted: this.audioCapture.muted,
+          displaySurface: this.audioCapture.displaySurface,
+        } : null,
+        audioLink: this.audioLink.get(remotePeerId) ?? null,
+        remoteAudioTracks: this.remoteAudioTracks.get(remotePeerId) ?? null,
       }),
     });
+    if (role === 'sender') {
+      for (const event of this.pendingAudioEvents) {
+        monitor.recordEvent({ category: 'ÁUDIO', severity: event.severity, message: event.message, data: event.data });
+      }
+    }
     this.monitors.set(remotePeerId, monitor);
     monitor.subscribeAny(() => {
       for (const listener of this.diagnosticsListeners) listener();
@@ -433,10 +485,29 @@ export class WebRTCManager {
     };
 
     pc.ontrack = (event) => {
-      console.log(`[WebRTC] Viewer recebeu track: kind=${event.track.kind}, label="${event.track.label}", readyState=${event.track.readyState}, enabled=${event.track.enabled}`);
-
       const [remoteStream] = event.streams;
       if (remoteStream) {
+        const updateRemoteAudio = () => {
+          this.remoteAudioTracks.set(remotePeerId, remoteStream.getAudioTracks().length);
+        };
+        updateRemoteAudio();
+        if (!this.watchedRemoteStreams.has(remoteStream)) {
+          this.watchedRemoteStreams.add(remoteStream);
+          remoteStream.addEventListener('addtrack', updateRemoteAudio);
+          remoteStream.addEventListener('removetrack', updateRemoteAudio);
+        }
+        if (event.track.kind === 'audio') {
+          monitor.recordEvent({
+            category: 'ÁUDIO',
+            severity: 'info',
+            message: 'Track de áudio recebida.',
+            data: {
+              estado: event.track.readyState,
+              enabled: event.track.enabled ? 1 : 0,
+              muted: event.track.muted ? 1 : 0,
+            },
+          });
+        }
         // Notify only once per peer
         if (!this.notifiedPeers.has(remotePeerId)) {
           this.notifiedPeers.add(remotePeerId);
@@ -454,6 +525,7 @@ export class WebRTCManager {
         };
 
         track.onmute = () => {
+          if (track.kind === 'audio') return;
           setTimeout(() => {
             if (track.muted && (track.readyState === 'ended' || pc.connectionState !== 'connected')) {
               this.closeConnection(remotePeerId);
@@ -512,6 +584,14 @@ export class WebRTCManager {
     return this.monitors.get(peerId)?.pushPlayback(sample) ?? false;
   }
 
+  pushAudioPlayback(peerId: string, report: AudioPlaybackReport): boolean {
+    return this.monitors.get(peerId)?.pushAudioPlayback(report) ?? false;
+  }
+
+  getAudioNotice(): string | null {
+    return this.audioCapture.message;
+  }
+
   getSenderSnapshots(): DiagnosticsSnapshot[] {
     const snapshots: DiagnosticsSnapshot[] = [];
     for (const monitor of this.monitors.values()) {
@@ -567,6 +647,74 @@ export class WebRTCManager {
     }
   }
 
+  private refreshAudioCapture(stream: MediaStream | null) {
+    const tracks = stream?.getAudioTracks() ?? [];
+    const track = tracks[0] ?? null;
+    const surface = stream?.getVideoTracks()[0]?.getSettings().displaySurface;
+    const displaySurface = surface === 'browser' || surface === 'window' || surface === 'monitor' ? surface : null;
+    const requested = this.currentConfig.audio;
+    this.audioCapture = {
+      requested,
+      trackCount: tracks.length,
+      readyState: track?.readyState ?? null,
+      enabled: track ? track.enabled : null,
+      muted: track ? track.muted : null,
+      displaySurface,
+      message: !requested
+        ? disabledAudioMessage()
+        : tracks.length === 0
+          ? captureUnavailableMessage(displaySurface)
+          : null,
+    };
+  }
+
+  private observeAudioTracks(stream: MediaStream) {
+    const refresh = () => this.refreshAudioCapture(this.localStream);
+    for (const track of stream.getAudioTracks()) {
+      track.addEventListener('mute', () => {
+        refresh();
+        this.rememberAudio('atenção', 'A track de áudio ficou muted na origem.', {});
+      });
+      track.addEventListener('unmute', () => {
+        refresh();
+        this.rememberAudio('info', 'A track de áudio saiu de muted.', {});
+      });
+      track.addEventListener('ended', () => {
+        refresh();
+        this.rememberAudio('crítico', 'A track de áudio encerrou.', {});
+      });
+    }
+  }
+
+  private rememberAudio(
+    severity: 'info' | 'atenção' | 'crítico',
+    message: string,
+    data: Record<string, number | string | null>,
+  ) {
+    this.pendingAudioEvents.push({ severity, message, data });
+    for (const monitor of this.monitors.values()) {
+      if (monitor.role !== 'sender' || monitor.isStopped) continue;
+      monitor.recordEvent({ category: 'ÁUDIO', severity, message, data });
+    }
+  }
+
+  private noteAudioNegotiation(peerId: string, pc: RTCPeerConnection) {
+    const result = negotiationFromSdp(pc.localDescription?.sdp, pc.remoteDescription?.sdp);
+    const current = this.audioLink.get(peerId);
+    const sender = this.monitors.get(peerId)?.role === 'sender';
+    this.audioLink.set(peerId, {
+      senderAttached: sender ? (current?.senderAttached ?? false) : false,
+      negotiated: result.negotiated,
+      direction: result.direction,
+    });
+    this.monitors.get(peerId)?.recordEvent({
+      category: 'ÁUDIO',
+      severity: result.negotiated ? 'info' : 'atenção',
+      message: result.negotiated ? 'Negociação de áudio concluída.' : 'Negociação sem seção de áudio.',
+      data: { direcao: result.direction, codec: result.codecs[0] ?? null },
+    });
+  }
+
   private closeConnection(peerId: string) {
     const monitor = this.monitors.get(peerId);
     if (monitor) {
@@ -579,6 +727,8 @@ export class WebRTCManager {
       this.connections.delete(peerId);
     }
     this.notifiedPeers.delete(peerId);
+    this.audioLink.delete(peerId);
+    this.remoteAudioTracks.delete(peerId);
 
     const abr = this.abrControllers.get(peerId);
     if (abr) {

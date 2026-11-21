@@ -1,6 +1,13 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import StatsPanel from './StatsPanel';
-import { PlaybackMonitor, type DiagnosticsSnapshot, type PlaybackSample } from '../lib/diagnostics/index';
+import {
+  PlaybackMonitor,
+  resolvePlayback,
+  shouldRebindSrcObject,
+  type AudioPlaybackReport,
+  type DiagnosticsSnapshot,
+  type PlaybackSample,
+} from '../lib/diagnostics/index';
 
 interface StreamViewerProps {
   stream: MediaStream;
@@ -12,6 +19,7 @@ interface StreamViewerProps {
   onVolumeChange: (v: number) => void;
   subscribeStats?: (cb: (snapshot: DiagnosticsSnapshot) => void) => () => void;
   pushPlayback?: (sample: PlaybackSample) => boolean;
+  pushAudioPlayback?: (report: AudioPlaybackReport) => boolean;
   onExportDiagnostics?: () => void;
 }
 
@@ -25,6 +33,7 @@ export default function StreamViewer({
   onVolumeChange,
   subscribeStats,
   pushPlayback,
+  pushAudioPlayback,
   onExportDiagnostics,
 }: StreamViewerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -35,6 +44,9 @@ export default function StreamViewer({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [crtState, setCrtState] = useState<'turning-on' | 'on' | 'turning-off' | 'off'>('turning-on');
   const [isLoading, setIsLoading] = useState(true);
+  const [audioBlocked, setAudioBlocked] = useState(false);
+  const [playError, setPlayError] = useState<string | null>(null);
+  const [liveAudio, setLiveAudio] = useState<AudioPlaybackReport | null>(null);
   const minLoaderDone = useRef(false);
   const streamReady = useRef(false);
 
@@ -61,18 +73,57 @@ export default function StreamViewer({
       // Listen BEFORE setting srcObject to catch early events (canvas streams fire instantly)
       video.addEventListener('playing', onPlaying);
 
-      // Inicia muted para autoplay funcionar (Chrome bloqueia autoplay com som).
-      // O useEffect de volume vai aplicar o volume correto logo em seguida.
-      video.muted = true;
-      video.srcObject = stream;
-
-      // Depois do play, aplica o volume real (unmute)
-      video.play().then(() => {
-        video.muted = volume === 0;
-        video.volume = volume;
-      }).catch(() => {
-        // autoplay bloqueado — mantém muted
-      });
+      const bindTracks = () => {
+        const nextIds = stream.getTracks().map((track) => track.id);
+        const current = video.srcObject instanceof MediaStream ? video.srcObject : null;
+        const currentIds = current ? current.getTracks().map((track) => track.id) : [];
+        if (shouldRebindSrcObject(currentIds, nextIds)) {
+          video.srcObject = new MediaStream(stream.getTracks());
+        }
+      };
+      const describePlayError = (err: unknown) => {
+        if (err instanceof DOMException || err instanceof Error) return `${err.name}: ${err.message}`;
+        return String(err);
+      };
+      const startPlayback = async () => {
+        bindTracks();
+        const level = volumeRef.current;
+        const wantSound = level > 0;
+        video.volume = wantSound ? level : 0;
+        video.muted = !wantSound;
+        let audibleError: string | null = null;
+        let mutedError: string | null = null;
+        try {
+          await video.play();
+        } catch (err) {
+          audibleError = describePlayError(err);
+          if (wantSound) {
+            video.muted = true;
+            try {
+              await video.play();
+            } catch (mutedErr) {
+              mutedError = describePlayError(mutedErr);
+            }
+          }
+        }
+        if (cancelled) return;
+        const result = resolvePlayback({
+          wantSound,
+          audibleError: wantSound ? audibleError : null,
+          mutedError: wantSound ? mutedError : audibleError,
+        });
+        video.muted = result.muted;
+        setAudioBlocked(result.blocked);
+        setPlayError(result.error);
+        if (result.error) console.warn('[WebRTC] play()', result.error);
+      };
+      let cancelled = false;
+      const onTrackChange = () => {
+        void startPlayback();
+      };
+      stream.addEventListener('addtrack', onTrackChange);
+      stream.addEventListener('removetrack', onTrackChange);
+      void startPlayback();
 
       // Minimum loader display time (lets CRT animation play)
       const minTimer = setTimeout(() => {
@@ -90,7 +141,10 @@ export default function StreamViewer({
       }, 100);
 
       return () => {
+        cancelled = true;
         video.removeEventListener('playing', onPlaying);
+        stream.removeEventListener('addtrack', onTrackChange);
+        stream.removeEventListener('removetrack', onTrackChange);
         clearTimeout(minTimer);
         clearInterval(fallbackCheck);
       };
@@ -104,13 +158,42 @@ export default function StreamViewer({
     return () => clearTimeout(timer);
   }, [stream]);
 
-  // ── Volume ──
+  // Volume 0 silencia. Desmutar fica no gesto (botão ou slider), não neste efeito.
+  const volumeRef = useRef(volume);
+  volumeRef.current = volume;
   useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.volume = volume;
-      videoRef.current.muted = volume === 0;
-    }
+    const video = videoRef.current;
+    if (!video) return;
+    video.volume = volume;
+    if (volume === 0) video.muted = true;
   }, [volume]);
+
+  const describePlayError = (err: unknown) => {
+    if (err instanceof DOMException || err instanceof Error) return `${err.name}: ${err.message}`;
+    return String(err);
+  };
+
+  const commitVolume = (value: number) => {
+    onVolumeChange(value);
+    const video = videoRef.current;
+    if (!video) return;
+    video.volume = value;
+    video.muted = value === 0;
+    if (value === 0) return;
+    video.play().then(() => {
+      setAudioBlocked(false);
+      setPlayError(null);
+    }).catch((err) => {
+      const text = describePlayError(err);
+      setPlayError(text);
+      setAudioBlocked(true);
+      console.warn('[WebRTC] play()', text);
+    });
+  };
+
+  const enableAudio = () => {
+    commitVolume(volumeRef.current > 0 ? volumeRef.current : 0.7);
+  };
 
   // ── Play/Pause ──
   const togglePause = useCallback(() => {
@@ -153,10 +236,16 @@ export default function StreamViewer({
   const showStatsRef = useRef(false);
   const latestPlayback = useRef<PlaybackSample | null>(null);
   const pushPlaybackRef = useRef(pushPlayback);
+  const pushAudioRef = useRef(pushAudioPlayback);
   const exportRef = useRef(onExportDiagnostics);
+  const blockedRef = useRef(false);
+  const playErrorRef = useRef<string | null>(null);
   showStatsRef.current = showStats;
   pushPlaybackRef.current = pushPlayback;
+  pushAudioRef.current = pushAudioPlayback;
   exportRef.current = onExportDiagnostics;
+  blockedRef.current = audioBlocked;
+  playErrorRef.current = playError;
 
   useEffect(() => {
     const video = videoRef.current;
@@ -167,7 +256,26 @@ export default function StreamViewer({
       if (showStatsRef.current && !accepted) setLivePlayback(sample);
     });
     monitor.start();
-    return () => monitor.stop();
+    const reportAudio = () => {
+      const current = video.srcObject instanceof MediaStream ? video.srcObject : stream;
+      const report: AudioPlaybackReport = {
+        muted: video.muted,
+        volume: video.volume,
+        paused: video.paused,
+        blocked: blockedRef.current,
+        playError: playErrorRef.current,
+        elementAudioTracks: current.getAudioTracks().length,
+        readyState: video.readyState,
+      };
+      const accepted = pushAudioRef.current?.(report) ?? false;
+      if (showStatsRef.current && !accepted) setLiveAudio(report);
+    };
+    reportAudio();
+    const audioTimer = setInterval(reportAudio, 1000);
+    return () => {
+      monitor.stop();
+      clearInterval(audioTimer);
+    };
   }, [stream]);
 
   useEffect(() => {
@@ -323,6 +431,7 @@ export default function StreamViewer({
             snapshot={snapshot}
             trackRequestedFps={trackRequestedFps}
             livePlayback={snapshot?.sample.playback ?? livePlayback}
+            liveAudio={snapshot?.sample.audio ? null : liveAudio}
             onClose={() => setShowStats(false)}
             onExport={() => exportRef.current?.()}
           />
@@ -334,6 +443,23 @@ export default function StreamViewer({
         <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
         <span className="text-[12px] font-body text-on-surface font-medium">{nickname}</span>
       </div>
+
+      {audioBlocked && (
+        <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center gap-1">
+          <button
+            type="button"
+            onClick={enableAudio}
+            className="h-10 px-4 rounded-full bg-primary text-on-primary font-label-md text-[13px] font-semibold shadow-2xl cursor-pointer"
+          >
+            Ativar áudio
+          </button>
+          {playError && (
+            <span className="max-w-sm text-center text-[11px] text-white bg-black/80 border border-white/10 rounded-lg px-2 py-1">
+              {playError}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* ── Floating Control Island ── */}
       <div
@@ -349,7 +475,7 @@ export default function StreamViewer({
               <span className="font-label-mono text-[11px] font-semibold text-primary">{Math.round(volume * 100)}%</span>
             </div>
             <div className="flex items-center gap-2.5">
-              <button className="text-outline hover:text-white cursor-pointer flex items-center justify-center shrink-0 w-4" onClick={() => onVolumeChange(volume === 0 ? 0.7 : 0)}>
+              <button className="text-outline hover:text-white cursor-pointer flex items-center justify-center shrink-0 w-4" onClick={() => commitVolume(volume === 0 ? 0.7 : 0)}>
                 <span className="material-symbols-outlined text-[16px]">{volume === 0 ? 'volume_off' : volume < 0.5 ? 'volume_down' : 'volume_up'}</span>
               </button>
               <input
@@ -358,7 +484,7 @@ export default function StreamViewer({
                 max={1}
                 step={0.05}
                 value={volume}
-                onChange={(e) => onVolumeChange(parseFloat(e.target.value))}
+                onChange={(e) => commitVolume(parseFloat(e.target.value))}
                 className="volume-slider flex-1 h-1.5 rounded-full appearance-none cursor-pointer"
                 style={{
                   background: `linear-gradient(to right, rgb(16, 185, 129) ${volume * 100}%, rgb(53, 55, 60) ${volume * 100}%)`
@@ -387,7 +513,7 @@ export default function StreamViewer({
           <div className="flex items-center rounded-full bg-white/5 hover:bg-white/10 border border-white/10 transition-colors">
             <button
               className="w-7 h-7 flex items-center justify-center text-white/80 hover:text-white transition-colors cursor-pointer"
-              onClick={() => onVolumeChange(volume === 0 ? 0.7 : 0)}
+              onClick={() => commitVolume(volume === 0 ? 0.7 : 0)}
               title="Silenciar / Ativar Áudio"
             >
               <span className="material-symbols-outlined text-[18px]">

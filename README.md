@@ -43,7 +43,7 @@ A comunicação é **peer-to-peer (P2P)** via WebRTC, ou seja, o vídeo vai dire
 3. Quem quiser compartilha a tela
 4. Todos assistem em tempo real, direto pelo navegador
 
-O painel de estatísticas do player mede, em cada navegador, onde o FPS cai: captura, codificação, rede, recepção, decodificação ou reprodução. O detalhe está em [`docs/diagnostics.md`](docs/diagnostics.md).
+O painel de estatísticas do player mede, em cada navegador, onde o FPS cai: captura, codificação, rede, recepção, decodificação ou reprodução. O detalhe está em [`docs/diagnostics.md`](docs/diagnostics.md). O áudio da aba ou do sistema, e o que fazer quando o seletor não entrega track, está em [`docs/audio.md`](docs/audio.md).
 
 ## Stack
 
@@ -105,7 +105,8 @@ telinha-do-botecao/
 │       │   └── types.ts           # Tipos TypeScript
 │       └── App.tsx        # Estado global da aplicação
 ├── docs/
-│   └── diagnostics.md     # Métricas, painel, exportação e testes
+│   ├── diagnostics.md     # Métricas, painel, exportação e testes
+│   └── audio.md           # Captura, reprodução e diagnóstico de áudio
 ├── render.yaml            # Config de deploy no Render
 └── package.json           # Scripts de dev e build
 ```

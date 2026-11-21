@@ -103,7 +103,7 @@ Eventos registrados, com cooldown de 10 segundos para não repetir o mesmo aviso
 
 O mesmo painel de antes, no botão de informações do player:
 
-- **Resumo:** diagnóstico, FPS solicitado, de origem, codificado, recebido, decodificado e apresentado, resolução, bitrate da direção local, codec, RTT, jitter, perda, tipo de conexão, áudio e o teto do ABR quando existe.
+- **Resumo:** diagnóstico, FPS solicitado, de origem, codificado, recebido, decodificado e apresentado, resolução, bitrate da direção local, codec, RTT, jitter, perda, tipo de conexão, estado do áudio e o teto do ABR quando existe. O estado do áudio não usa só a existência de um relatório RTP. O detalhe da captura e da reprodução está em [`audio.md`](audio.md).
 - **Técnico:** as quatro camadas, um gráfico SVG dos últimos 60 segundos (codificado, recebido, decodificado, apresentado) e os eventos recentes.
 - **Exportar JSON:** baixa o relatório no navegador, sem backend.
 

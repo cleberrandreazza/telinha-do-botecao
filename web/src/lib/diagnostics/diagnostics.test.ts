@@ -60,6 +60,8 @@ function sample(partial: Partial<MetricSample> & Pick<MetricSample, 'timestamp' 
     audioCodec: null,
     hasAudio: false,
     audioBitrate: null,
+    audioRtp: null,
+    audio: null,
     outbound: null,
     inbound: null,
     remoteInbound: null,

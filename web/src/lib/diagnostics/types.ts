@@ -160,8 +160,11 @@ export interface MetricSample {
   countersReset: boolean;
   videoCodec: string | null;
   audioCodec: string | null;
+  /** true só quando os bytes ou pacotes de áudio desta direção aumentaram no intervalo. */
   hasAudio: boolean;
   audioBitrate: number | null;
+  audioRtp: AudioRtp | null;
+  audio: AudioFacts | null;
   outbound: OutboundMetrics | null;
   inbound: InboundMetrics | null;
   remoteInbound: RemoteInboundMetrics | null;
@@ -182,10 +185,73 @@ export interface ChartPoint {
   jitterMs: number | null;
 }
 
+export type AudioCode =
+  | 'DISABLED'
+  | 'NOT_CAPTURED'
+  | 'CAPTURED_NOT_SENT'
+  | 'NOT_NEGOTIATED'
+  | 'NOT_RECEIVED'
+  | 'RECEIVED_MUTED'
+  | 'PLAYING'
+  | 'SENDING'
+  | 'INSUFFICIENT';
+
+/** Contadores de áudio desta direção. Relatório RTP sem bytes não conta como áudio funcionando. */
+export interface AudioRtp {
+  codec: string | null;
+  packets: number | null;
+  packetsPerSec: number | null;
+  bytes: number | null;
+  bitrate: number | null;
+  samples: number | null;
+  samplesPerSec: number | null;
+}
+
+export interface AudioFacts {
+  role: EndpointRole;
+  requested: boolean | null;
+  displaySurface: string | null;
+  capturedTracks: number | null;
+  trackReadyState: string | null;
+  trackEnabled: boolean | null;
+  trackMuted: boolean | null;
+  senderAttached: boolean | null;
+  negotiated: boolean | null;
+  direction: string | null;
+  remoteAudioTracks: number | null;
+  packetsPerSec: number | null;
+  bitrate: number | null;
+  samplesPerSec: number | null;
+  codec: string | null;
+  playbackMuted: boolean | null;
+  playbackVolume: number | null;
+  playbackPaused: boolean | null;
+  playbackBlocked: boolean | null;
+  playError: string | null;
+  elementAudioTracks: number | null;
+}
+
+export interface AudioDiagnosis {
+  code: AudioCode;
+  label: string;
+  reason: string;
+  timestamp: number;
+}
+
+export interface AudioPlaybackReport {
+  muted: boolean;
+  volume: number;
+  paused: boolean;
+  blocked: boolean;
+  playError: string | null;
+  elementAudioTracks: number;
+  readyState: number;
+}
+
 export interface DiagEvent {
   timestamp: number;
   connectionId: string;
-  category: DiagnosisCategory | 'SISTEMA' | 'ABR';
+  category: DiagnosisCategory | 'SISTEMA' | 'ABR' | 'ÁUDIO';
   severity: EventSeverity;
   message: string;
   data: Record<string, number | string | null>;
@@ -198,6 +264,7 @@ export interface DiagnosticsSnapshot {
   adaptiveState: string | null;
   sample: MetricSample;
   diagnosis: Diagnosis;
+  audioDiagnosis: AudioDiagnosis | null;
   chart: ChartPoint[];
   recentEvents: DiagEvent[];
 }

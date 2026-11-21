@@ -7,7 +7,7 @@ import Home from './components/Home';
 import Room from './components/Room';
 import StreamSettings from './components/StreamSettings';
 import type { StreamConfig } from './lib/webrtc';
-import type { DiagnosticsSnapshot, PlaybackSample } from './lib/diagnostics/index';
+import type { AudioPlaybackReport, DiagnosticsSnapshot, PlaybackSample } from './lib/diagnostics/index';
 import { isMockMode, generateMockData, generateMockStreamsDelayed } from './lib/mock';
 
 export default function App() {
@@ -25,6 +25,7 @@ export default function App() {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [isSharing, setIsSharing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [audioNotice, setAudioNotice] = useState<string | null>(null);
 
   // ── Refs para manter instâncias estáveis ──
   const signalRef = useRef<SignalingClient | null>(null);
@@ -192,15 +193,21 @@ export default function App() {
       if (stream) {
         setLocalStream(stream);
         setIsSharing(true);
+        setAudioNotice(rtcRef.current?.getAudioNotice() ?? null);
         // Atualiza o próprio peer na lista
         setPeers(prev => prev.map(p => p.id === myPeerId ? { ...p, isSharing: true } : p));
 
-        // Detecta se o usuário parou pelo dialog do browser
-        stream.getVideoTracks()[0].onended = () => {
-          setLocalStream(null);
-          setIsSharing(false);
-          setPeers(prev => prev.map(p => p.id === myPeerId ? { ...p, isSharing: false } : p));
-        };
+        const videoTrack = stream.getVideoTracks()[0];
+        if (videoTrack) {
+          const prior = videoTrack.onended;
+          videoTrack.onended = (event) => {
+            if (typeof prior === 'function') prior.call(videoTrack, event);
+            setLocalStream(null);
+            setIsSharing(false);
+            setAudioNotice(null);
+            setPeers(prev => prev.map(p => p.id === myPeerId ? { ...p, isSharing: false } : p));
+          };
+        }
       }
     } catch (err: any) {
       // Usuário cancelou o dialog de compartilhamento
@@ -214,6 +221,7 @@ export default function App() {
     rtcRef.current?.stopScreenShare();
     setLocalStream(null);
     setIsSharing(false);
+    setAudioNotice(null);
     // Atualiza o próprio peer na lista
     setPeers(prev => prev.map(p => p.id === myPeerId ? { ...p, isSharing: false } : p));
   };
@@ -277,6 +285,9 @@ export default function App() {
   const pushPlayback = useCallback((peerId: string, sample: PlaybackSample) => {
     return rtcRef.current?.pushPlayback(peerId, sample) ?? false;
   }, []);
+  const pushAudioPlayback = useCallback((peerId: string, report: AudioPlaybackReport) => {
+    return rtcRef.current?.pushAudioPlayback(peerId, report) ?? false;
+  }, []);
   const exportDiagnostics = useCallback((peerId: string) => {
     rtcRef.current?.downloadDiagnostics(peerId);
   }, []);
@@ -314,6 +325,8 @@ export default function App() {
           onLeaveRoom={handleLeaveRoom}
           subscribeStats={subscribeStats}
           pushPlayback={pushPlayback}
+          pushAudioPlayback={pushAudioPlayback}
+          audioNotice={audioNotice}
           exportDiagnostics={exportDiagnostics}
           subscribeSenderDiagnostics={subscribeSenderDiagnostics}
           getSenderSnapshots={getSenderSnapshots}

@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --test src/lib/diagnostics/diagnostics.test.ts"
+    "test": "node --experimental-strip-types --test src/lib/diagnostics/diagnostics.test.ts src/lib/diagnostics/audio.test.ts"
   },
   "dependencies": {
     "react": "^18.3.1",

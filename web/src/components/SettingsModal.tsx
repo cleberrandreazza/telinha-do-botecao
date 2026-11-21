@@ -240,7 +240,7 @@ export default function SettingsModal({ nickname, onClose, onSave }: SettingsMod
           <div className="flex items-center justify-between p-3.5 rounded-xl bg-surface-container border border-outline-variant/20">
             <div className="flex flex-col gap-0.5">
               <span className="font-body-md text-body-md text-on-surface font-medium leading-tight">Compartilhar áudio</span>
-              <span className="font-body-sm text-body-sm text-on-surface-variant">Compartilhar o áudio do sistema ou da aba</span>
+              <span className="font-body-sm text-body-sm text-on-surface-variant">Aba com áudio da guia, ou tela inteira com áudio do sistema. Janela no Windows normalmente fica sem áudio. Não captura microfone.</span>
             </div>
             <label className="relative inline-flex items-center cursor-pointer shrink-0">
               <input

@@ -10,6 +10,9 @@ export type {
   MetricSample,
   NetworkMetrics,
   OutboundMetrics,
+  AudioDiagnosis,
+  AudioFacts,
+  AudioPlaybackReport,
   PlaybackSample,
   StreamConfigSnapshot,
 } from './types.ts';
@@ -35,5 +38,19 @@ export {
 } from './format.ts';
 export { buildReport, triggerJsonDownload, reportFilename, sanitize, parseBrowser } from './export.ts';
 export type { DiagnosticReport } from './export.ts';
+export {
+  attachAudio,
+  audioEvents,
+  buildDisplayMediaOptions,
+  captureUnavailableMessage,
+  classifyAudio,
+  disabledAudioMessage,
+  inspectAudioSdp,
+  negotiationFromSdp,
+  requestDisplayMedia,
+  resolvePlayback,
+  shouldRebindSrcObject,
+} from './audio.ts';
+export type { AudioCaptureContext, AudioLinkContext, AudioSdpInfo } from './audio.ts';
 export { ConnectionMonitor } from './monitor.ts';
 export type { MonitorContext, PeerConnectionLike } from './monitor.ts';

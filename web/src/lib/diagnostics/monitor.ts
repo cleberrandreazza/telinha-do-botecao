@@ -1,3 +1,4 @@
+import { attachAudio, audioEvents, classifyAudio, type AudioCaptureContext, type AudioLinkContext } from './audio.ts';
 import { classifyDiagnosis } from './classify.ts';
 import { detectEvents, shouldEmit } from './events.ts';
 import { buildReport, type BrowserInfo, type DiagnosticReport } from './export.ts';
@@ -8,6 +9,8 @@ import type {
   Diagnosis,
   DiagnosticsSnapshot,
   EventSeverity,
+  AudioDiagnosis,
+  AudioPlaybackReport,
   MetricSample,
   PlaybackSample,
   StatsReportLike,
@@ -26,6 +29,9 @@ export interface MonitorContext {
   configuredFps: number | null;
   streamConfig: StreamConfigSnapshot | null;
   adaptiveState: string | null;
+  audioCapture?: AudioCaptureContext | null;
+  audioLink?: AudioLinkContext | null;
+  remoteAudioTracks?: number | null;
 }
 
 export interface MonitorOptions {
@@ -71,6 +77,8 @@ export class ConnectionMonitor {
   private streamConfig: StreamConfigSnapshot | null = null;
   private adaptiveState: string | null = null;
   private lastPlayback: PlaybackSample | null = null;
+  private playbackAudio: AudioPlaybackReport | null = null;
+  private lastAudio: AudioDiagnosis | null = null;
 
   constructor(options: MonitorOptions) {
     this.pc = options.pc;
@@ -105,6 +113,8 @@ export class ConnectionMonitor {
     this.counters = emptyCounters();
     this.lastDiagnosis = null;
     this.lastPlayback = null;
+    this.playbackAudio = null;
+    this.lastAudio = null;
     this.eventCooldown.clear();
   }
 
@@ -141,6 +151,27 @@ export class ConnectionMonitor {
       this.reclassify();
     }
     this.emit();
+    return true;
+  }
+
+  pushAudioPlayback(report: AudioPlaybackReport): boolean {
+    if (this.stopped) return false;
+    const previous = this.history[this.history.length - 1]?.audio ?? null;
+    this.playbackAudio = report;
+    const latest = this.history[this.history.length - 1];
+    if (latest?.audio) {
+      latest.audio = {
+        ...latest.audio,
+        playbackMuted: report.muted,
+        playbackVolume: report.volume,
+        playbackPaused: report.paused,
+        playbackBlocked: report.blocked,
+        playError: report.playError,
+        elementAudioTracks: report.elementAudioTracks,
+      };
+      this.noteAudio(previous, latest.audio);
+      this.emit();
+    }
     return true;
   }
 
@@ -186,6 +217,8 @@ export class ConnectionMonitor {
       audioCodec: null,
       hasAudio: false,
       audioBitrate: null,
+      audioRtp: null,
+      audio: null,
       outbound: null,
       inbound: null,
       remoteInbound: null,
@@ -209,6 +242,7 @@ export class ConnectionMonitor {
       adaptiveState: this.adaptiveState,
       sample: { ...baseSample, playback: baseSample.playback ?? this.lastPlayback },
       diagnosis,
+      audioDiagnosis: this.lastAudio,
       chart: buildChart(this.history.slice(-CHART_LIMIT), this.playbackHistory.slice(-CHART_LIMIT)),
       recentEvents: this.events.slice(-8).reverse(),
     };
@@ -251,6 +285,16 @@ export class ConnectionMonitor {
         playback: this.lastPlayback,
       });
       if (this.stopped || generation !== this.generation) return;
+      const previousAudio = this.history[this.history.length - 1]?.audio ?? null;
+      built.sample.audio = attachAudio({
+        role: this.role,
+        rtp: built.sample.audioRtp,
+        capture: context.audioCapture ?? null,
+        link: context.audioLink ?? null,
+        remoteAudioTracks: context.remoteAudioTracks ?? null,
+        playback: this.playbackAudio,
+      });
+      this.noteAudio(previousAudio, built.sample.audio);
       this.counters = built.counters;
       const previous = this.history[this.history.length - 1] ?? null;
       this.history.push(built.sample);
@@ -263,6 +307,25 @@ export class ConnectionMonitor {
       // getStats falha durante renegociação ou fechamento
     } finally {
       this.inFlight = false;
+    }
+  }
+
+  private noteAudio(previous: MetricSample['audio'], current: MetricSample['audio']) {
+    this.lastAudio = classifyAudio(current);
+    for (const draft of audioEvents(previous, current)) {
+      const key = `ÁUDIO:${draft.message}`;
+      const prev = this.eventCooldown.get(key);
+      const now = Date.now();
+      if (!shouldEmit(prev?.at, now, draft.severity, prev?.severity)) continue;
+      this.eventCooldown.set(key, { at: now, severity: draft.severity });
+      this.pushEvent({
+        timestamp: now,
+        connectionId: this.connectionId,
+        category: 'ÁUDIO',
+        severity: draft.severity,
+        message: draft.message,
+        data: { estado: this.lastAudio.code },
+      });
     }
   }
 
