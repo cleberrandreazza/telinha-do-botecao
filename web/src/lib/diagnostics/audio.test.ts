@@ -565,12 +565,17 @@ test('SDP Opus declara preferências de recepção a 320 kbps sem confundir o pa
   ok(senderSdp.includes('a=rtpmap:96 H264/90000'));
   equal(configureOpusSenderSdp(senderSdp, 2), senderSdp);
 
-  const receiverSdp = configureOpusReceiverSdp(withFmtp);
+  const receiverSdp = configureOpusReceiverSdp(withFmtp, true);
   ok(receiverSdp.includes('stereo=1'));
   ok(receiverSdp.includes('maxaveragebitrate=320000'));
   equal(receiverSdp.includes('sprop-stereo='), false);
   ok(receiverSdp.includes('useinbandfec=1'));
   equal(configureOpusReceiverSdp(receiverSdp), receiverSdp);
+
+  const monoReceiverSdp = configureOpusReceiverSdp(withFmtp, false);
+  ok(monoReceiverSdp.includes('stereo=0'));
+  ok(monoReceiverSdp.includes('maxaveragebitrate=320000'));
+  equal(monoReceiverSdp.includes('sprop-stereo='), false);
 
   const replaced = configureOpusReceiverSdp(
     'a=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;maxaveragebitrate=32000\r\n',
