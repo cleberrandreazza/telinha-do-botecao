@@ -18,12 +18,18 @@ export interface AbrDecision {
   state: AbrState;
 }
 
-const LOW_FPS_THRESHOLD = 0.6;
-const HIGH_FPS_THRESHOLD = 0.85;
+// Com degradationPreference='balanced', o Chrome intencionalmente reduz FPS
+// para preservar resolução. Thresholds antigos (60%/85%) causavam espiral de
+// morte: 17 FPS < 18 threshold → ABR reduzia bitrate → Chrome reduzia FPS mais
+// → cascata até 0.5 Mbps / 0 FPS.
+// Novos thresholds: 25% permite FPS cair até ~7 sem reduzir bitrate (normal em
+// balanced a 1080p). 90% com 15 polls garante recuperação conservadora.
+const LOW_FPS_THRESHOLD = 0.25;
+const HIGH_FPS_THRESHOLD = 0.90;
 const DECREASE_STEP = 0.7;
 const INCREASE_STEP = 1.15;
-const MIN_LOW_POLLS = 3;
-const MIN_HIGH_POLLS = 10;
+const MIN_LOW_POLLS = 5;
+const MIN_HIGH_POLLS = 15;
 
 export function initialAbrState(targetFps: number, maxBitrate: number, minBitrate = 500_000): AbrState {
   return {
