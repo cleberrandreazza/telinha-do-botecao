@@ -8,6 +8,12 @@ function num(value: number | null | undefined, digits = 1): number | null {
   return roundTo(value, digits);
 }
 
+function isPlaybackFreeze(sample: MetricSample): boolean {
+  const play = sample.playback;
+  if (!play || play.visibilityState === 'hidden' || play.paused) return false;
+  return play.freezeSuspected;
+}
+
 function fpsOf(sample: MetricSample): number | null {
   if (sample.role === 'sender') {
     return sample.outbound?.encodedFps ?? sample.outbound?.reportedFps ?? null;
@@ -86,8 +92,9 @@ export function detectEvents(prev: MetricSample | null, curr: MetricSample): Dra
     });
   }
 
-  const freezeNow = (curr.playback?.freezeSuspected && !curr.playback.paused) || (curr.inbound?.freezes ?? 0) > 0;
-  const freezeBefore = (prev.playback?.freezeSuspected && !prev.playback.paused) || (prev.inbound?.freezes ?? 0) > 0;
+  const playbackFreeze = isPlaybackFreeze(curr);
+  const freezeNow = playbackFreeze || (curr.inbound?.freezes ?? 0) > 0;
+  const freezeBefore = isPlaybackFreeze(prev) || (prev.inbound?.freezes ?? 0) > 0;
   if (freezeNow && !freezeBefore) {
     events.push({
       timestamp: curr.timestamp,

@@ -133,6 +133,7 @@ export function buildReport(input: {
       'Endereços IP, credenciais e conteúdo da tela não fazem parte deste arquivo.',
       'Áudio funcionando exige pacotes em movimento e, no receptor, o elemento desmutado. A existência de um relatório RTP não basta.',
       'Resolução solicitada, da track, da origem WebRTC, codificada e recebida são medidas distintas. Um null não é preenchido com o número de outra etapa.',
+      'presentedFps conta callbacks de requestVideoFrameCallback, não quadros pintados na tela. totalPresentedFrames é totalVideoFrames e inclui descartes. Sem a API, o valor fica null, não zero. Aba oculta não é congelamento.',
     ],
   };
   return sanitize(report);

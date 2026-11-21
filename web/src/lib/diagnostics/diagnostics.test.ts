@@ -9,7 +9,7 @@ import { selectNetwork } from './ice.ts';
 import { avgMsPerFrame, bitrateFromBytes, diffCounter, lossPercent, perSecond } from './math.ts';
 import { ConnectionMonitor } from './monitor.ts';
 import { buildSample, emptyCounters } from './parse.ts';
-import { PlaybackMonitor, type PlaybackVideo } from './playback.ts';
+import { PlaybackMonitor, type PlaybackVideo, type VideoFrameMetadataLike } from './playback.ts';
 import type { InboundMetrics, MetricSample, OutboundMetrics, PlaybackSample, StatsReportLike } from './types.ts';
 
 function outbound(partial: Partial<OutboundMetrics> = {}): OutboundMetrics {
@@ -43,6 +43,10 @@ function playback(partial: Partial<PlaybackSample> = {}): PlaybackSample {
     presentedFps: null, presentedFrames: null, totalPresentedFrames: null, droppedFrames: null,
     droppedFps: null, corruptedFrames: null, corruptedFps: null, irregularIntervals: 0,
     freezeSuspected: false, paused: false, api: 'rvfc',
+    visibilityState: 'visible', hasFocus: true, videoWidth: null, videoHeight: null,
+    currentTime: null, readyState: 4, qualityTotalDelta: null, qualityDisplayedEstimate: null,
+    maxMediaTimeGapSec: null, processingDuration: null, compositionLeadSec: null,
+    lastFrame: null, stall: 'none',
     ...partial,
   };
 }
@@ -594,9 +598,12 @@ test('playback tem fallback, limpa callback na troca e não marca pausa como con
   quality.corrupted = 1;
   const recovered = fallback.collect();
   equal(recovered.api, 'playback-quality');
-  equal(recovered.presentedFps, 30);
+  equal(recovered.presentedFps, null);
+  equal(recovered.qualityTotalDelta, 30);
   equal(recovered.droppedFps, 3);
+  equal(recovered.qualityDisplayedEstimate, 27);
   equal(recovered.corruptedFps, 1);
+  equal(recovered.stall, 'dropped-frames');
   fallback.stop();
 
   const bare = { paused: false, readyState: 4 };
@@ -615,7 +622,132 @@ test('playback tem fallback, limpa callback na troca e não marca pausa como con
   equal(pausedSample.presentedFps, 0);
   equal(pausedSample.freezeSuspected, false);
   equal(pausedSample.paused, true);
+  equal(pausedSample.stall, 'paused');
   paused.stop();
+});
+
+test('reprodução distingue aba visível, oculta, pausa, descartes e APIs ausentes', () => {
+  const visible = () => ({ visibilityState: 'visible', hasFocus: true });
+  const normal = fakeVideo();
+  normal.videoWidth = 1920;
+  normal.videoHeight = 1080;
+  normal.currentTime = 4.5;
+  const playing = new PlaybackMonitor(normal, () => {}, 60_000, visible);
+  playing.start();
+  normal.emit(10, 0, { presentedFrames: 1, expectedDisplayTime: 10.016, presentationTime: 10, processingDuration: 0.004 });
+  normal.emit(26, 0.016, { presentedFrames: 2 });
+  const healthy = playing.collect();
+  equal(healthy.visibilityState, 'visible');
+  equal(healthy.hasFocus, true);
+  equal(healthy.videoWidth, 1920);
+  equal(healthy.videoHeight, 1080);
+  equal(healthy.currentTime, 4.5);
+  equal(healthy.readyState, 4);
+  equal(healthy.presentedFps, 2);
+  equal(healthy.freezeSuspected, false);
+  equal(healthy.stall, 'none');
+  equal(healthy.lastFrame?.presentedFrames, 2);
+  equal(healthy.lastFrame?.processingDuration, null);
+  equal(healthy.lastFrame?.callbackTime, 26);
+  playing.stop();
+
+  const hiddenVideo = fakeVideo();
+  const hidden = new PlaybackMonitor(hiddenVideo, () => {}, 60_000, () => ({ visibilityState: 'hidden', hasFocus: false }));
+  hidden.start();
+  hiddenVideo.emit(0, 0);
+  hidden.collect();
+  const occluded = hidden.collect();
+  equal(occluded.presentedFps, 0);
+  equal(occluded.freezeSuspected, false);
+  equal(occluded.stall, 'hidden');
+  equal(occluded.hasFocus, false);
+  hidden.stop();
+
+  const stalledVideo = fakeVideo();
+  const stallMonitor = new PlaybackMonitor(stalledVideo, () => {}, 60_000, visible);
+  stallMonitor.start();
+  stalledVideo.emit(0, 0);
+  stallMonitor.collect();
+  const noCallbacks = stallMonitor.collect();
+  equal(noCallbacks.presentedFps, 0);
+  equal(noCallbacks.stall, 'no-callbacks');
+  equal(noCallbacks.freezeSuspected, true);
+  stallMonitor.stop();
+
+  const slow = fakeVideo();
+  const delay = new PlaybackMonitor(slow, () => {}, 60_000, visible);
+  delay.start();
+  slow.emit(100, 1, { processingDuration: 0.08, expectedDisplayTime: 100.12, presentationTime: 100 });
+  const late = delay.collect();
+  equal(late.stall, 'composition-delay');
+  equal(late.freezeSuspected, false);
+  equal(late.processingDuration, 0.08);
+  equal(Math.round((late.compositionLeadSec ?? 0) * 1000), 120);
+  delay.stop();
+
+  const jumpy = fakeVideo();
+  const gaps = new PlaybackMonitor(jumpy, () => {}, 60_000, visible);
+  gaps.start();
+  for (let i = 0; i < 7; i += 1) jumpy.emit(i * 16, i * 0.016);
+  jumpy.emit(400, 0.5);
+  const irregular = gaps.collect();
+  equal(irregular.irregularIntervals, 1);
+  equal(irregular.freezeSuspected, false);
+  equal(irregular.stall, 'irregular-media-time');
+  equal(irregular.maxMediaTimeGapSec !== null && irregular.maxMediaTimeGapSec > 0.2, true);
+  gaps.stop();
+
+  const bare = { paused: false, readyState: 4 };
+  const missingApi = new PlaybackMonitor(bare, () => {}, 60_000, visible);
+  missingApi.start();
+  const unavailable = missingApi.collect();
+  equal(unavailable.api, 'none');
+  equal(unavailable.presentedFps, null);
+  equal(unavailable.qualityTotalDelta, null);
+  equal(unavailable.qualityDisplayedEstimate, null);
+  equal(unavailable.stall, 'measurement-unavailable');
+  equal(unavailable.freezeSuspected, false);
+  missingApi.stop();
+});
+
+test('decoder estável com compositor mais baixo é reprodução, e aba oculta não é congelamento', () => {
+  const degraded = [
+    ...repeat(6, (i) => sample({
+      timestamp: i * 1000, role: 'receiver',
+      inbound: inbound({ receivedFps: 28, decodedFps: 28, lossPct: 0, jitterMs: 4 }),
+      playback: playback({ timestamp: i * 1000, presentedFps: 28, droppedFps: 0, visibilityState: 'visible' }),
+    })),
+    ...repeat(3, (i) => sample({
+      timestamp: (6 + i) * 1000, role: 'receiver',
+      inbound: inbound({ receivedFps: 28, decodedFps: 28, lossPct: 0, jitterMs: 4 }),
+      playback: playback({ timestamp: (6 + i) * 1000, presentedFps: 17, droppedFps: 9, visibilityState: 'visible', stall: 'dropped-frames' }),
+    })),
+  ];
+  const playbackIssue = classifyDiagnosis(degraded);
+  equal(playbackIssue.category, 'REPRODUÇÃO');
+  equal(playbackIssue.state === 'CRÍTICO' || playbackIssue.state === 'ATENÇÃO', true);
+
+  const hiddenHistory = repeat(8, (i) => sample({
+    timestamp: i * 1000, role: 'receiver',
+    inbound: inbound({ receivedFps: 28, decodedFps: 28, lossPct: 0, jitterMs: 4 }),
+    playback: playback({ timestamp: i * 1000, presentedFps: 0, droppedFps: 0, visibilityState: 'hidden', stall: 'hidden', freezeSuspected: false }),
+  }));
+  const hiddenDiagnosis = classifyDiagnosis(hiddenHistory);
+  equal(hiddenDiagnosis.state, 'INDETERMINADO');
+  ok(hiddenDiagnosis.reason.includes('oculta'));
+
+  const prev = sample({
+    timestamp: 1000, role: 'receiver',
+    inbound: inbound({ receivedFps: 28, decodedFps: 28, lossPct: 0, jitterMs: 4 }),
+    playback: playback({ presentedFps: 28, irregularIntervals: 0, visibilityState: 'visible' }),
+  });
+  const oneGap = sample({
+    timestamp: 2000, role: 'receiver',
+    inbound: inbound({ receivedFps: 28, decodedFps: 28, lossPct: 0, jitterMs: 4 }),
+    playback: playback({ presentedFps: 27, irregularIntervals: 1, stall: 'irregular-media-time', visibilityState: 'visible' }),
+  });
+  const gapEvents = detectEvents(prev, oneGap);
+  equal(gapEvents.some((event) => event.message === 'Congelamento detectado.'), false);
 });
 
 test('eventos de queda e exportação sem IP', () => {
@@ -656,13 +788,16 @@ test('eventos de queda e exportação sem IP', () => {
   ok(!('credential' in ((dirty as { nested: object }).nested)));
 });
 
-function fakeVideo(): PlaybackVideo & { emit: (now: number, mediaTime: number) => void; cancelled: boolean } {
-  let callback: ((now: number, metadata: { mediaTime: number }) => void) | null = null;
+function fakeVideo(): PlaybackVideo & {
+  emit: (now: number, mediaTime: number, extra?: Partial<VideoFrameMetadataLike>) => void;
+  cancelled: boolean;
+} {
+  let callback: ((now: number, metadata: VideoFrameMetadataLike) => void) | null = null;
   const video = {
     paused: false,
     readyState: 4,
     cancelled: false,
-    requestVideoFrameCallback(cb: (now: number, metadata: { mediaTime: number }) => void) {
+    requestVideoFrameCallback(cb: (now: number, metadata: VideoFrameMetadataLike) => void) {
       callback = cb;
       return 7;
     },
@@ -670,8 +805,8 @@ function fakeVideo(): PlaybackVideo & { emit: (now: number, mediaTime: number) =
       video.cancelled = true;
       callback = null;
     },
-    emit(now: number, mediaTime: number) {
-      callback?.(now, { mediaTime });
+    emit(now: number, mediaTime: number, extra: Partial<VideoFrameMetadataLike> = {}) {
+      callback?.(now, { mediaTime, ...extra });
     },
   };
   return video;

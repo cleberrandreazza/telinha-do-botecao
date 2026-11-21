@@ -311,7 +311,10 @@ function classifyReceiver(recent: MetricSample[], baseline: MetricSample[], last
   const items: [string, number | string | null, string?][] = [
     ['FPS recebido', recvCurrent, 'fps'],
     ['FPS decodificado', decCurrent, 'fps'],
-    ['FPS apresentado', presentCurrent, 'fps'],
+    ['Callbacks do compositor', presentCurrent, 'fps'],
+    ['visibilidade', last.playback?.visibilityState ?? null],
+    ['foco', last.playback?.hasFocus === null || last.playback?.hasFocus === undefined ? null : last.playback.hasFocus ? 'sim' : 'não'],
+    ['situação da reprodução', last.playback?.stall ?? null],
     ['perda', lossAvg, '%'],
     ['jitter', last.inbound?.jitterMs ?? null, 'ms'],
     ['RTT', last.network.rttMs, 'ms'],
@@ -392,13 +395,26 @@ function classifyReceiver(recent: MetricSample[], baseline: MetricSample[], last
     );
   }
 
+  const hiddenTab = last.playback?.visibilityState === 'hidden'
+    || (playbackSamples.length > 0 && playbackSamples.every((sample) => sample.playback?.visibilityState === 'hidden'));
+  if (hiddenTab && !networkBad && !(rtp && recv.dropped)) {
+    return make(
+      last,
+      'NENHUMA',
+      'INDETERMINADO',
+      'baixo',
+      'A aba do espectador está oculta. O navegador pode reduzir os callbacks do compositor; isso não é congelamento da transmissão.',
+      items,
+    );
+  }
+
   if (!paused && ((presentGap || presentZero) || (decStable && ((droppedAvg !== null && droppedAvg >= 3) || freeze)))) {
     return make(
       last,
       'REPRODUÇÃO',
       presentZero || presented.severe || (presentCurrent !== null && decCurrent !== null && presentCurrent < decCurrent * 0.5) ? 'CRÍTICO' : 'ATENÇÃO',
       decStable ? 'alto' : 'baixo',
-      'A decodificação se manteve e a apresentação caiu ou passou a descartar frames. A indicação é a reprodução no elemento de vídeo.',
+      'A decodificação se manteve, mas os callbacks do compositor ficaram atrás ou o elemento passou a descartar quadros. Callback não prova que o quadro foi pintado.',
       items,
     );
   }

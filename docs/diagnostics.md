@@ -17,10 +17,11 @@ Não há banco, serviço externo nem tráfego novo no servidor de sinalização.
 
 A reprodução é medida no `StreamViewer`, no elemento `<video>`:
 
-- `requestVideoFrameCallback` conta os frames apresentados. O callback não chama `setState`.
-- Uma vez por segundo o contador vira FPS, descartes e um indício de congelamento.
-- Sem `requestVideoFrameCallback`, a queda é `getVideoPlaybackQuality()` (`totalVideoFrames`, `droppedVideoFrames`, `corruptedVideoFrames`).
-- Sem as duas APIs, o FPS apresentado fica `n/d`.
+- `requestVideoFrameCallback` conta callbacks do compositor. O callback não chama `setState` e não prova que o quadro foi pintado na tela.
+- Uma vez por segundo essa contagem vira `presentedFps`. Zero é uma contagem real de callbacks. Sem essa API o campo fica `null`, não zero.
+- `getVideoPlaybackQuality()` entra em separado: `totalVideoFrames` (inclui descartes), `droppedVideoFrames` e `corruptedVideoFrames`, com delta por intervalo. `qualityDisplayedEstimate` é o total menos os descartes. Não é FPS pintado.
+- Sem as duas APIs, os FPS de reprodução ficam `n/d` e a situação é `measurement-unavailable`.
+- Aba oculta (`document.visibilityState`) e falta de foco ficam em campos próprios. Aba oculta não é congelamento da transmissão. Um único intervalo irregular de `mediaTime` também não dispara alerta crítico.
 - Trocar de stream, fechar o player ou desmontar o componente cancela o callback e o intervalo.
 
 O ABR continua avaliando a cada **2 segundos** (a cada duas amostras de 1 segundo). Os limiares antigos foram mantidos: reduz 30% depois de 3 avaliações abaixo de 60% do FPS alvo, e sobe 15% depois de 10 avaliações acima de 85%, entre 500 kbps e o bitrate inicial da resolução. A decisão usa só o FPS **codificado** (`framesEncoded` no intervalo, ou `framesPerSecond` do `outbound-rtp` se o intervalo ainda não existe). FPS inbound não entra. FPS `0` conta como queda. FPS ausente (`null`) não altera o bitrate.
@@ -51,8 +52,11 @@ O ABR continua avaliando a cada **2 segundos** (a cada duas amostras de 1 segund
 | Bitrate | Delta de `bytesSent` ou `bytesReceived` × 8 / segundos | Direção do papel. Não mistura os dois |
 | RTT | `currentRoundTripTime` do par ICE selecionado, em ms | Não é “qualquer par succeeded” |
 | Rota | Tipos dos candidatos do par selecionado | `host`/`srflx`/`prflx` = direta; algum `relay` = TURN/Relay |
-| FPS apresentado | Contagem do `requestVideoFrameCallback`, ou delta de `totalVideoFrames` | Frames que o elemento de vídeo mostrou |
-| Descartes / corrompidos | Delta de `droppedVideoFrames` e `corruptedVideoFrames` | Só a reprodução |
+| Callbacks do compositor | Contagem de `requestVideoFrameCallback` no intervalo (`presentedFps`) | Vezes que o compositor entregou um quadro ao callback. Não é quadro pintado. Sem a API, `null` |
+| Total considerado/s | Delta de `totalVideoFrames` | Quadros que o elemento considerou, incluindo os descartados |
+| Estimativa sem descarte/s | `qualityTotalDelta` menos `droppedFps` | Estimativa. Não prova pintura na tela |
+| Descartes / corrompidos | Delta de `droppedVideoFrames` e `corruptedVideoFrames` | Só o elemento de vídeo |
+| Visibilidade e foco | `document.visibilityState` e `document.hasFocus()` | Medição do navegador, separada do congelamento |
 
 Intervalo válido: entre 200 ms e 5 s. Fora disso a taxa daquele ciclo fica n/d, mas o contador é atualizado para o ciclo seguinte não herdar um buraco.
 
@@ -68,15 +72,21 @@ Se houver vários pares só com `state === 'succeeded'` e nenhum desses sinais, 
 
 TURN/Relay não é tratado como conexão ruim. É só o tipo da rota.
 
-## FPS recebido, decodificado e apresentado
+## FPS recebido, decodificado, compositor e descarte
 
-São três momentos diferentes:
+São medidas diferentes. Nenhuma copia a outra quando falta:
 
-- **Recebido:** o pacote de vídeo chegou e o jitter buffer contabilizou o frame.
-- **Decodificado:** o decoder terminou o frame. Pode ser menor que o recebido se o decoder não acompanha.
-- **Apresentado:** o `<video>` desenhou o frame. Pode ser menor que o decodificado se a página descarta ou congela na composição.
+- **Recebido:** o pacote de vídeo chegou e o jitter buffer contabilizou o frame (`inbound-rtp.framesReceived`).
+- **Decodificado:** o decoder terminou o frame (`framesDecoded`). Pode ser menor que o recebido se o decoder não acompanha.
+- **Callbacks do compositor:** `presentedFps`, a contagem de `requestVideoFrameCallback` naquele segundo. O Chrome chama isso quando o quadro está pronto para composição. Não significa que o pixel ficou visível o tempo todo, nem que a aba estava em primeiro plano.
+- **Descarte do elemento:** delta de `droppedVideoFrames`. `totalVideoFrames` inclui esses descartes, então não é o total exibido.
+- **Intervalo de `mediaTime`:** a distância entre os `mediaTime` de callbacks seguidos. Um salto isolado fica em `irregularIntervals` e não vira alerta crítico sozinho.
 
 O `framesPerSecond` do `inbound-rtp` no Chrome é o ritmo decodificado, não o recebido. Por isso o painel mostra os dois, calculados pelos contadores.
+
+`freezeSuspected` só fica verdadeiro quando a aba está visível (ou a visibilidade é desconhecida), o vídeo está tocando, já houve pelo menos um callback e o intervalo seguinte chegou a zero callbacks. Aba oculta usa `stall: "hidden"`. Vídeo pausado usa `stall: "paused"`. Sem as APIs, `stall: "measurement-unavailable"` e os FPS ficam `null`.
+
+No JSON, `presentedFps` deixou de ser o delta de `totalVideoFrames` quando só existe `getVideoPlaybackQuality`. Esse delta agora é `qualityTotalDelta`. Os campos antigos (`presentedFps`, `droppedFps`, `totalPresentedFrames`, `freezeSuspected`, `api`) continuam no objeto; os novos descrevem visibilidade, foco, tamanho do vídeo, `currentTime`, `readyState`, a estimativa sem descarte e o último callback (`presentedFrames`, `mediaTime`, `expectedDisplayTime`, `presentationTime`, `processingDuration`, horário do callback).
 
 ## Diagnóstico
 
@@ -108,8 +118,8 @@ Eventos registrados, com cooldown de 10 segundos para não repetir o mesmo aviso
 
 O mesmo painel de antes, no botão de informações do player:
 
-- **Resumo:** diagnóstico, FPS solicitado, de origem, codificado, recebido, decodificado e apresentado, resolução, bitrate da direção local, codec, RTT, jitter, perda, tipo de conexão, estado do áudio e o teto do ABR quando existe. O estado do áudio não usa só a existência de um relatório RTP. A camada técnica também mostra o modo pedido (`off`, `source` ou `system`), a superfície, a política, as tracks devolvidas, as autorizadas e o motivo de descarte. O detalhe está em [`audio.md`](audio.md).
-- **Técnico:** as quatro camadas, um gráfico SVG dos últimos 60 segundos (codificado, recebido, decodificado, apresentado) e os eventos recentes.
+- **Resumo:** diagnóstico, FPS solicitado, de origem, codificado, recebido, decodificado e callbacks do compositor, resolução, bitrate da direção local, codec, RTT, jitter, perda, tipo de conexão, estado do áudio e o teto do ABR quando existe. O estado do áudio não usa só a existência de um relatório RTP. A camada técnica também mostra o modo pedido (`off`, `source` ou `system`), a superfície, a política, as tracks devolvidas, as autorizadas e o motivo de descarte. O detalhe está em [`audio.md`](audio.md).
+- **Técnico:** as quatro camadas, um gráfico SVG dos últimos 60 segundos (codificado, recebido, decodificado, callbacks do compositor) e os eventos recentes. A camada de reprodução também mostra visibilidade, foco, total considerado, estimativa sem descarte e a situação (`stall`).
 - **Exportar JSON:** baixa o relatório no navegador, sem backend.
 
 Quem compartilha abre o mesmo painel pelo botão **Diagnóstico** na sala. Sem espectador conectado ainda não existe `PeerConnection`, então não há FPS codificado para medir — a captura pedida ao sistema não é o FPS real.
@@ -142,22 +152,22 @@ npm test
 npm run build
 ```
 
-`npm test` usa o executor do Node (`node:test`) sobre `src/lib/diagnostics/diagnostics.test.ts`, `src/lib/diagnostics/audio.test.ts` e `src/lib/diagnostics/resolution.test.ts`. Cobre FPS normal e zero, queda, contadores e reset, perda, jitter, tempo de decode, descartes de reprodução, API ausente, fechamento, troca de stream, coleta com o painel fechado, consulta sobreposta, limite de 120 amostras, duas conexões, separação inbound/outbound, par ICE selecionado, o tratamento de FPS zero no ABR, o escopo da captura de áudio e a separação entre resolução pedida, capturada, de origem, codificada e recebida. O teste de escuta no Chrome ou no Edge está separado, em [`audio.md`](audio.md), e não é substituído por estes testes.
+`npm test` usa o executor do Node (`node:test`) sobre `src/lib/diagnostics/diagnostics.test.ts`, `src/lib/diagnostics/audio.test.ts` e `src/lib/diagnostics/resolution.test.ts`. Cobre FPS normal e zero, queda, contadores e reset, perda, jitter, tempo de decode, descartes de reprodução, API ausente, aba visível, aba oculta, vídeo pausado, decoder estável com compositor mais baixo, ausência de callbacks, intervalo irregular, fechamento, troca de stream, coleta com o painel fechado, consulta sobreposta, limite de 120 amostras, duas conexões, separação inbound/outbound, par ICE selecionado, o tratamento de FPS zero no ABR, o escopo da captura de áudio e a separação entre resolução pedida, capturada, de origem, codificada e recebida. O teste de escuta no Chrome ou no Edge está separado, em [`audio.md`](audio.md), e não é substituído por estes testes. Estes testes não observam um `<video>` real no Chrome.
 
 ## Roteiro manual (Chrome ou Edge)
 
 1. Suba com `npm run dev`. Abra duas janelas na mesma sala.
 2. Compartilhe a tela inteira em 1080p / 30 fps, com áudio se quiser.
 3. No espectador, **não** abra o painel por 20 segundos. Abra depois: o gráfico de 60 segundos já deve ter pontos. Isso mostra que a coleta não depende do painel.
-4. Confira no resumo que FPS recebido, decodificado e apresentado aparecem separados. Se um deles for 0, o número mostrado é 0, não 30.
+4. Confira no resumo que FPS recebido, decodificado e compositor aparecem separados. Se um deles for 0, o número mostrado é 0, não 30. Na camada técnica, “Total considerado/s” inclui descartes; “Callbacks do compositor” não é quadro pintado.
 5. No transmissor, abra **Diagnóstico**. FPS de origem e FPS codificado são dessa máquina. No espectador esses dois ficam `n/d`.
 6. Anote RTT e o tipo de conexão (Direta ou TURN/Relay). Não deve aparecer IP.
 7. Exporte o JSON dos dois lados. Abra os arquivos e procure: sem IP, sem apelido, com `role` diferente em cada um.
-8. Pause o player. O FPS apresentado pode ir a 0; o diagnóstico não deve chamar isso de falha de reprodução.
+8. Pause o player. Os callbacks podem ir a 0; o diagnóstico não deve chamar isso de falha de reprodução. Esconder a aba também não deve gerar “Congelamento detectado”.
 9. Troque de stream ou feche o player e compartilhe de novo. O painel não pode continuar contando o vídeo anterior (o FPS apresentado zera e recomeça).
 10. No DevTools, Performance ou na aba do console: não deve haver um `getStats` extra do ABR além do ciclo de 1 segundo, nem erro novo ao fechar a sala.
 
-Para um teste visual sem segunda pessoa, `http://localhost:3000/?mock` mostra o player. Ali não há WebRTC, então recebido/decodificado ficam `n/d` e só o FPS apresentado tem número. Isso é o comportamento esperado.
+Para um teste visual sem segunda pessoa, `http://localhost:3000/?mock` mostra o player. Ali não há WebRTC, então recebido/decodificado ficam `n/d`. Callbacks do compositor só aparecem se o navegador entregar frames ao `<video>`. Isso é o comportamento esperado.
 
 ## Limitações que continuam
 
@@ -171,3 +181,5 @@ Para um teste visual sem segunda pessoa, `http://localhost:3000/?mock` mostra o 
 - O ABR não ficou mais agressivo. Ele só passou a usar a medição certa, inclusive o zero.
 - Não há métrica de “FPS da captura” fora de uma conexão WebRTC. `getSettings().frameRate` é o que a track informou na captura; o FPS codificado continua vindo do `outbound-rtp`.
 - A linha “Resolução” do painel continua sendo o tamanho codificado (ou o da origem, se o frame codificado ainda não existe). O JSON é que separa o 1080p pedido da track, da origem, do encoder e do espectador. Um desses campos em `null` não é completado com outro.
+- `presentedFps` é a taxa de callbacks do compositor, não a taxa pintada na tela. `totalPresentedFrames` é `totalVideoFrames` e inclui quadros descartados. Sem `requestVideoFrameCallback`, `presentedFps` fica `null`; o delta de `totalVideoFrames` vai para `qualityTotalDelta`.
+- Aba em segundo plano e um único salto de `mediaTime` não são, sozinhos, congelamento da transmissão.

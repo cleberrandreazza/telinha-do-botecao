@@ -23,6 +23,32 @@ export type IceSelectionSource = 'transport' | 'selected' | 'nominated' | 'none'
 export type PlaybackApi = 'rvfc' | 'playback-quality' | 'none';
 
 /**
+ * Por que a reprodução deste intervalo não parece contínua.
+ * `hidden` e `paused` não são congelamento da transmissão.
+ * `irregular-media-time` com um único intervalo não dispara alerta crítico.
+ */
+export type PlaybackStall =
+  | 'none'
+  | 'hidden'
+  | 'paused'
+  | 'no-callbacks'
+  | 'dropped-frames'
+  | 'irregular-media-time'
+  | 'composition-delay'
+  | 'measurement-unavailable';
+
+/** Último callback de requestVideoFrameCallback neste intervalo. Não prova que o quadro foi pintado. */
+export interface CompositorFrameInfo {
+  presentedFrames: number | null;
+  mediaTime: number | null;
+  expectedDisplayTime: number | null;
+  presentationTime: number | null;
+  processingDuration: number | null;
+  callbackTime: number | null;
+  wallTime: number | null;
+}
+
+/**
  * null = métrica não suportada ou ainda sem intervalo válido.
  * 0 = medição real de zero. Nunca substituir 0 pelo FPS configurado.
  */
@@ -128,17 +154,41 @@ export interface NetworkMetrics {
 
 export interface PlaybackSample {
   timestamp: number;
+  /**
+   * Callbacks de requestVideoFrameCallback neste intervalo.
+   * Não é FPS recebido, nem decodificado, nem quadro pintado na tela.
+   * Fica null quando essa API não está em uso. Zero é uma contagem real de callbacks.
+   */
   presentedFps: number | null;
   presentedFrames: number | null;
+  /** Acumulado de totalVideoFrames. Inclui quadros descartados. Não é o total exibido. */
   totalPresentedFrames: number | null;
+  /** Acumulado de droppedVideoFrames. */
   droppedFrames: number | null;
   droppedFps: number | null;
   corruptedFrames: number | null;
   corruptedFps: number | null;
   irregularIntervals: number;
+  /** Ausência de callbacks com a aba visível e o vídeo tocando. Aba oculta não marca isto. */
   freezeSuspected: boolean;
   paused: boolean;
   api: PlaybackApi;
+  visibilityState: string | null;
+  hasFocus: boolean | null;
+  videoWidth: number | null;
+  videoHeight: number | null;
+  currentTime: number | null;
+  readyState: number | null;
+  /** Delta de totalVideoFrames no intervalo. Inclui descartes. null no primeiro ciclo. */
+  qualityTotalDelta: number | null;
+  /** totalVideoFrames menos droppedVideoFrames no intervalo. Não prova pintura na tela. */
+  qualityDisplayedEstimate: number | null;
+  maxMediaTimeGapSec: number | null;
+  processingDuration: number | null;
+  /** expectedDisplayTime menos presentationTime, em segundos, quando os dois existem. */
+  compositionLeadSec: number | null;
+  lastFrame: CompositorFrameInfo | null;
+  stall: PlaybackStall;
 }
 
 export interface StreamConfigSnapshot {

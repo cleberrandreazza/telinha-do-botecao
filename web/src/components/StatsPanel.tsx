@@ -181,7 +181,7 @@ function Summary({
       <FpsRow label="Codificado" value={fps?.encoded ?? null} color={fpsColor(fps?.encoded ?? null, ref)} />
       <FpsRow label="Recebido" value={fps?.received ?? null} color={fpsColor(fps?.received ?? null, ref)} />
       <FpsRow label="Decodificado" value={fps?.decoded ?? null} color={fpsColor(fps?.decoded ?? null, ref)} />
-      <FpsRow label="Apresentado" value={fps?.presented ?? null} color={fpsColor(fps?.presented ?? null, ref)} />
+      <FpsRow label="Compositor" value={fps?.presented ?? null} color={fpsColor(fps?.presented ?? null, ref)} />
       <Row label="Resolução" value={resolution.width !== null && resolution.height !== null ? `${resolution.width}×${resolution.height}` : UNAVAILABLE_LABEL} />
       <Row label={sender ? 'Bitrate enviado' : 'Bitrate recebido'} value={formatBitrate(bitrate)} />
       <Row label="Codec" value={sample?.videoCodec ?? UNAVAILABLE_LABEL} />
@@ -262,10 +262,15 @@ function Technical({
       </Layer>
       <AudioLayers audio={sample?.audio ?? null} role={sample?.role ?? null} diagnosis={audioDiagnosis} liveAudio={liveAudio} />
       <Layer title="Reprodução">
-        <Row label="FPS apresentado" value={formatMeasuredFps(play?.presentedFps ?? null, 1)} />
+        <Row label="Callbacks do compositor" value={formatMeasuredFps(play?.presentedFps ?? null, 1)} />
+        <Row label="Total considerado/s" value={formatOptional(play?.qualityTotalDelta ?? null, 1, '')} />
+        <Row label="Estimativa sem descarte/s" value={formatOptional(play?.qualityDisplayedEstimate ?? null, 1, '')} />
         <Row label="Descartados/s" value={formatOptional(play?.droppedFps ?? null, 1, '')} />
         <Row label="Corrompidos/s" value={formatOptional(play?.corruptedFps ?? null, 1, '')} />
         <Row label="Intervalos irregulares" value={play ? String(play.irregularIntervals) : UNAVAILABLE_LABEL} />
+        <Row label="Visibilidade" value={play?.visibilityState ?? UNAVAILABLE_LABEL} />
+        <Row label="Foco" value={play?.hasFocus === null || play?.hasFocus === undefined ? UNAVAILABLE_LABEL : play.hasFocus ? 'sim' : 'não'} />
+        <Row label="Situação" value={play?.stall ?? UNAVAILABLE_LABEL} />
         <Row label="Congelamento" value={play ? (play.freezeSuspected ? 'sim' : 'não') : UNAVAILABLE_LABEL} />
         <Row label="API" value={play?.api ?? UNAVAILABLE_LABEL} />
       </Layer>
