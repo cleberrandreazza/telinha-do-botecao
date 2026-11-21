@@ -14,13 +14,19 @@ export interface AudioSdpInfo {
   codecs: string[];
 }
 
+export type AudioMode = 'off' | 'source' | 'system';
+
 export interface AudioCaptureContext {
   requested: boolean;
+  audioMode: AudioMode | null;
   trackCount: number;
+  returnedTracks: number | null;
   readyState: string | null;
   enabled: boolean | null;
   muted: boolean | null;
   displaySurface: string | null;
+  policy: string | null;
+  discardReason: string | null;
 }
 
 export interface AudioLinkContext {
@@ -79,35 +85,182 @@ export function negotiationFromSdp(localSdp: string | null | undefined, remoteSd
   };
 }
 
-/** Pedido ao getDisplayMedia. Áudio é boolean: constraint de processamento faz o Chrome descartar a faixa. */
-export function buildDisplayMediaOptions(
-  video: Record<string, unknown>,
-  wantsAudio: boolean,
-  includeWindowAudio = true,
-): Record<string, unknown> {
-  const options: Record<string, unknown> = { video, audio: wantsAudio };
-  if (wantsAudio) {
-    options.systemAudio = 'include';
-    if (includeWindowAudio) options.windowAudio = 'system';
+/** Preferência antiga `shareAudio: true` vira `source`. Nunca vira `system`. */
+export function migrateAudioMode(stored: { audioMode?: unknown; shareAudio?: unknown } | null | undefined): AudioMode {
+  if (stored?.audioMode === 'off' || stored?.audioMode === 'source' || stored?.audioMode === 'system') {
+    return stored.audioMode;
   }
-  return options;
+  if (stored?.shareAudio === false) return 'off';
+  if (stored?.shareAudio === true) return 'source';
+  return 'source';
 }
 
-export async function requestDisplayMedia(
-  getDisplayMedia: (options: Record<string, unknown>) => Promise<{ getAudioTracks: () => unknown[] }>,
+export function audioModeFromConfig(config: { audio?: boolean; audioMode?: AudioMode | null }): AudioMode {
+  if (config.audioMode === 'off' || config.audioMode === 'source' || config.audioMode === 'system') return config.audioMode;
+  if (config.audio === false) return 'off';
+  return 'source';
+}
+
+/**
+ * Pedido ao getDisplayMedia. Áudio é boolean: processamento (echoCancellation etc.) faz o Chrome descartar a faixa.
+ * `exclude` limita o escopo. `windowAudio: 'system'` não é usado.
+ */
+export function buildDisplayMediaOptions(
   video: Record<string, unknown>,
-  wantsAudio: boolean,
-): Promise<{ getAudioTracks: () => unknown[] }> {
-  const full = buildDisplayMediaOptions(video, wantsAudio, true);
-  try {
-    return await getDisplayMedia(full);
-  } catch (err) {
-    const name = err && typeof err === 'object' && 'name' in err ? String((err as { name: unknown }).name) : '';
-    if (wantsAudio && (name === 'TypeError' || name === 'NotSupportedError')) {
-      return getDisplayMedia(buildDisplayMediaOptions(video, wantsAudio, false));
-    }
-    throw err;
+  mode: AudioMode,
+): Record<string, unknown> {
+  if (mode === 'off') return { video, audio: false };
+  if (mode === 'system') {
+    return { video, audio: true, systemAudio: 'include', windowAudio: 'exclude' };
   }
+  return { video, audio: true, systemAudio: 'exclude', windowAudio: 'exclude' };
+}
+
+function errorName(err: unknown): string {
+  return err && typeof err === 'object' && 'name' in err ? String((err as { name: unknown }).name) : '';
+}
+
+const CANCELLED = new Set(['NotAllowedError', 'AbortError']);
+const UNSUPPORTED = new Set(['TypeError', 'NotSupportedError', 'OverconstrainedError']);
+
+export async function requestDisplayMedia<T>(
+  getDisplayMedia: (options: Record<string, unknown>) => Promise<T>,
+  video: Record<string, unknown>,
+  mode: AudioMode,
+): Promise<{ stream: T; audioScopeFallback: boolean }> {
+  const full = buildDisplayMediaOptions(video, mode);
+  try {
+    return { stream: await getDisplayMedia(full), audioScopeFallback: false };
+  } catch (err) {
+    const name = errorName(err);
+    if (mode === 'off' || CANCELLED.has(name) || !UNSUPPORTED.has(name)) throw err;
+    // Uma segunda tentativa, só vídeo. Não se tira `exclude` e se segue com áudio.
+    const stream = await getDisplayMedia(buildDisplayMediaOptions(video, 'off'));
+    return { stream, audioScopeFallback: true };
+  }
+}
+
+export interface AudioScopeDecision {
+  keepAudio: boolean;
+  policy: string;
+  message: string | null;
+}
+
+export function decideAudioScope(mode: AudioMode, surface: string): AudioScopeDecision {
+  if (mode === 'off') {
+    return { keepAudio: false, policy: 'off', message: disabledAudioMessage() };
+  }
+  if (surface !== 'browser' && surface !== 'window' && surface !== 'monitor') {
+    return {
+      keepAudio: false,
+      policy: 'unknown-surface',
+      message: 'Áudio não capturado pela superfície selecionada. A superfície não foi identificada, então nenhum áudio é transmitido.',
+    };
+  }
+  if (mode === 'source') {
+    if (surface === 'browser') return { keepAudio: true, policy: 'tab-audio', message: null };
+    if (surface === 'window') {
+      return {
+        keepAudio: false,
+        policy: 'window-no-global',
+        message: 'Áudio global desabilitado para janelas. O vídeo segue, sem áudio. O navegador não entrega o som exclusivo dessa janela.',
+      };
+    }
+    return {
+      keepAudio: false,
+      policy: 'source-blocks-monitor',
+      message: 'Áudio não capturado pela superfície selecionada. Neste modo a tela inteira não transmite o áudio do Windows.',
+    };
+  }
+  if (surface === 'monitor') return { keepAudio: true, policy: 'system-monitor', message: null };
+  return {
+    keepAudio: false,
+    policy: 'system-requires-monitor',
+    message: 'Áudio do Windows exige compartilhamento da tela inteira. O vídeo foi mantido e o áudio foi descartado.',
+  };
+}
+
+export function policyLabel(policy: string | null): string {
+  switch (policy) {
+    case 'tab-audio': return 'Áudio da aba disponível.';
+    case 'system-monitor': return 'Áudio do Windows na tela inteira.';
+    case 'window-no-global': return 'Áudio global desabilitado para janelas.';
+    case 'source-blocks-monitor': return 'Áudio não capturado pela superfície selecionada.';
+    case 'system-requires-monitor': return 'Áudio do Windows exige compartilhamento da tela inteira.';
+    case 'unknown-surface': return 'Áudio não capturado pela superfície selecionada.';
+    case 'scope-unsupported': return 'Navegador não oferece opções suficientes para garantir o escopo solicitado.';
+    case 'off': return 'Áudio desligado.';
+    default: return 'n/d';
+  }
+}
+
+export interface ScopeTrack {
+  stop: () => void;
+}
+
+export interface ScopeStream {
+  getAudioTracks: () => ScopeTrack[];
+  getVideoTracks: () => { getSettings: () => { displaySurface?: string } }[];
+  removeTrack: (track: ScopeTrack) => void;
+}
+
+export function readDisplaySurface(stream: ScopeStream): string {
+  const surface = stream.getVideoTracks()[0]?.getSettings().displaySurface;
+  return surface === 'browser' || surface === 'window' || surface === 'monitor' ? surface : 'unknown';
+}
+
+export function stripDisallowedAudio(stream: ScopeStream, keepAudio: boolean): { returned: number; kept: number } {
+  const tracks = [...stream.getAudioTracks()];
+  if (keepAudio) return { returned: tracks.length, kept: tracks.length };
+  for (const track of tracks) {
+    track.stop();
+    stream.removeTrack(track);
+  }
+  return { returned: tracks.length, kept: stream.getAudioTracks().length };
+}
+
+/**
+ * Tira o áudio fora do escopo, e só então entrega o stream e anuncia a transmissão.
+ * `start-sharing` não corre antes da atribuição local.
+ */
+export function commitPreparedShare(args: {
+  stream: ScopeStream;
+  mode: AudioMode;
+  scopeUnsupported?: boolean;
+  assignLocal: (stream: ScopeStream, prepared: PreparedShare) => void;
+  startSharing: () => void;
+}): PreparedShare {
+  const surface = readDisplaySurface(args.stream);
+  const decision = args.scopeUnsupported
+    ? {
+      keepAudio: false,
+      policy: 'scope-unsupported',
+      message: 'Navegador não oferece opções suficientes para garantir o escopo solicitado. A transmissão segue só com vídeo.',
+    }
+    : decideAudioScope(args.mode, surface);
+  const counts = stripDisallowedAudio(args.stream, decision.keepAudio);
+  let message = decision.message;
+  if (decision.keepAudio && counts.kept === 0) {
+    message = captureUnavailableMessage(surface === 'unknown' ? null : surface);
+  }
+  const prepared: PreparedShare = {
+    surface,
+    decision,
+    returned: counts.returned,
+    kept: counts.kept,
+    message,
+  };
+  args.assignLocal(args.stream, prepared);
+  args.startSharing();
+  return prepared;
+}
+
+export interface PreparedShare {
+  surface: string;
+  decision: AudioScopeDecision;
+  returned: number;
+  kept: number;
+  message: string | null;
 }
 
 export function captureUnavailableMessage(surface: string | null): string {
@@ -118,7 +271,7 @@ export function captureUnavailableMessage(surface: string | null): string {
     return 'AUDIO_CAPTURE_UNAVAILABLE. A tela inteira veio sem áudio. Marque "Compartilhar áudio do sistema" no seletor. Isso não é microfone.';
   }
   if (surface === 'window') {
-    return 'AUDIO_CAPTURE_UNAVAILABLE. No Windows, Chrome e Edge em geral não entregam áudio de uma janela. Use uma aba com "Compartilhar áudio da guia" ou a tela inteira com "Compartilhar áudio do sistema".';
+    return 'AUDIO_CAPTURE_UNAVAILABLE. Áudio global desabilitado para janelas. Chrome e Edge no Windows não entregam o áudio exclusivo de uma janela.';
   }
   return 'AUDIO_CAPTURE_UNAVAILABLE. O áudio foi pedido e o navegador devolveu zero tracks. A transmissão segue só com vídeo.';
 }
@@ -173,7 +326,12 @@ export function attachAudio(input: {
   return {
     role: input.role,
     requested: input.capture?.requested ?? null,
+    audioMode: input.capture?.audioMode ?? null,
     displaySurface: input.capture?.displaySurface ?? null,
+    policy: input.capture?.policy ?? null,
+    returnedTracks: input.capture?.returnedTracks ?? null,
+    authorizedTracks: input.capture?.trackCount ?? null,
+    discardReason: input.capture?.discardReason ?? null,
     capturedTracks: input.capture?.trackCount ?? null,
     trackReadyState: input.capture?.readyState ?? null,
     trackEnabled: input.capture?.enabled ?? null,
@@ -219,7 +377,7 @@ export function classifyAudio(facts: AudioFacts | null, timestamp = Date.now()):
     return diagnosis(
       'NOT_CAPTURED',
       'ÁUDIO NÃO CAPTURADO',
-      captureUnavailableMessage(facts.displaySurface),
+      facts.discardReason ?? captureUnavailableMessage(facts.displaySurface),
       timestamp,
     );
   }

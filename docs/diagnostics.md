@@ -103,7 +103,7 @@ Eventos registrados, com cooldown de 10 segundos para não repetir o mesmo aviso
 
 O mesmo painel de antes, no botão de informações do player:
 
-- **Resumo:** diagnóstico, FPS solicitado, de origem, codificado, recebido, decodificado e apresentado, resolução, bitrate da direção local, codec, RTT, jitter, perda, tipo de conexão, estado do áudio e o teto do ABR quando existe. O estado do áudio não usa só a existência de um relatório RTP. O detalhe da captura e da reprodução está em [`audio.md`](audio.md).
+- **Resumo:** diagnóstico, FPS solicitado, de origem, codificado, recebido, decodificado e apresentado, resolução, bitrate da direção local, codec, RTT, jitter, perda, tipo de conexão, estado do áudio e o teto do ABR quando existe. O estado do áudio não usa só a existência de um relatório RTP. A camada técnica também mostra o modo pedido (`off`, `source` ou `system`), a superfície, a política, as tracks devolvidas, as autorizadas e o motivo de descarte. O detalhe está em [`audio.md`](audio.md).
 - **Técnico:** as quatro camadas, um gráfico SVG dos últimos 60 segundos (codificado, recebido, decodificado, apresentado) e os eventos recentes.
 - **Exportar JSON:** baixa o relatório no navegador, sem backend.
 
@@ -134,7 +134,7 @@ npm test
 npm run build
 ```
 
-`npm test` usa o executor do Node (`node:test`) sobre `src/lib/diagnostics/diagnostics.test.ts`. Cobre FPS normal e zero, queda, contadores e reset, perda, jitter, tempo de decode, descartes de reprodução, API ausente, fechamento, troca de stream, coleta com o painel fechado, consulta sobreposta, limite de 120 amostras, duas conexões, separação inbound/outbound, par ICE selecionado e o tratamento de FPS zero no ABR.
+`npm test` usa o executor do Node (`node:test`) sobre `src/lib/diagnostics/diagnostics.test.ts` e `src/lib/diagnostics/audio.test.ts`. Cobre FPS normal e zero, queda, contadores e reset, perda, jitter, tempo de decode, descartes de reprodução, API ausente, fechamento, troca de stream, coleta com o painel fechado, consulta sobreposta, limite de 120 amostras, duas conexões, separação inbound/outbound, par ICE selecionado, o tratamento de FPS zero no ABR e o escopo da captura de áudio. O teste de escuta no Chrome ou no Edge está separado, em [`audio.md`](audio.md), e não é substituído por estes testes.
 
 ## Roteiro manual (Chrome ou Edge)
 

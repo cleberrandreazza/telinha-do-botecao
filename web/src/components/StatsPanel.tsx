@@ -7,6 +7,7 @@ import {
   formatOptional,
   fpsColor,
   pipelineFps,
+  policyLabel,
   routeLabel,
   UNAVAILABLE_LABEL,
   type ChartPoint,
@@ -352,10 +353,13 @@ function AudioLayers({
     <>
       <Layer title="Áudio — transmissor">
         <Row label="Estado" value={sender ? (diagnosis?.label ?? UNAVAILABLE_LABEL) : UNAVAILABLE_LABEL} valueClass={sender ? audioClass(diagnosis?.code ?? null) : 'text-white/70'} />
-        <Row label="Captura pedida" value={sender && audio?.requested !== null && audio?.requested !== undefined ? (audio.requested ? 'sim' : 'não') : UNAVAILABLE_LABEL} />
-        <Row label="Tracks capturadas" value={sender && audio?.capturedTracks !== null && audio?.capturedTracks !== undefined ? String(audio.capturedTracks) : UNAVAILABLE_LABEL} />
-        <Row label="Estado da track" value={track} />
+        <Row label="Modo pedido" value={sender ? (audio?.audioMode ?? UNAVAILABLE_LABEL) : UNAVAILABLE_LABEL} />
         <Row label="Superfície" value={sender ? (audio?.displaySurface ?? UNAVAILABLE_LABEL) : UNAVAILABLE_LABEL} />
+        <Row label="Política" value={sender ? policyLabel(audio?.policy ?? null) : UNAVAILABLE_LABEL} />
+        <Row label="Tracks devolvidas" value={sender && audio?.returnedTracks !== null && audio?.returnedTracks !== undefined ? String(audio.returnedTracks) : UNAVAILABLE_LABEL} />
+        <Row label="Tracks autorizadas" value={sender && audio?.authorizedTracks !== null && audio?.authorizedTracks !== undefined ? String(audio.authorizedTracks) : UNAVAILABLE_LABEL} />
+        <Row label="Descarte" value={sender ? (audio?.discardReason ?? 'nenhum') : UNAVAILABLE_LABEL} />
+        <Row label="Estado da track" value={track} />
         <Row label="Codec enviado" value={sender ? (audio?.codec ?? UNAVAILABLE_LABEL) : UNAVAILABLE_LABEL} />
         <Row label="Bitrate enviado" value={sender ? formatBitrate(audio?.bitrate ?? null) : UNAVAILABLE_LABEL} />
         <Row label="Pacotes/s" value={sender ? formatOptional(audio?.packetsPerSec ?? null, 1, '') : UNAVAILABLE_LABEL} />

@@ -10,17 +10,36 @@ Havia dois defeitos no código, independentes do seletor do navegador.
 
 2. **Track tardia.** O `ontrack` de vídeo publica a `MediaStream` assim que ela chega. O áudio pode entrar nessa mesma stream depois. O Chromium não passa a reproduzir uma track adicionada a uma stream que já está em `srcObject`. O vídeo seguia; o áudio não.
 
-A captura em si já pedia `audio: true`. Isso não cria a track. O Chrome e o Edge só a entregam se a pessoa marcar a caixa do seletor, e a caixa muda conforme a superfície:
+A captura pede `audio: true` ou `audio: false`. Isso não cria a track. O Chrome e o Edge só a entregam se a pessoa marcar a caixa do seletor, e a caixa muda conforme a superfície. Os hints não obrigam o navegador a devolver áudio.
 
-| Superfície | O que o seletor oferece no Windows | O que a track contém |
+Há três modos, gravados em `localStorage` como `audioMode`:
+
+| Modo | Pedido ao navegador | O que pode ser transmitido |
 | --- | --- | --- |
-| Aba (`browser`) | “Compartilhar áudio da guia” | O som daquela aba |
-| Tela inteira (`monitor`) | “Compartilhar áudio do sistema” | O áudio do sistema, não o microfone |
-| Janela (`window`) | Em geral nenhuma opção de áudio | Zero tracks |
+| `off` | `audio: false` | Só vídeo |
+| `source` (padrão) | `audio: true`, `systemAudio: "exclude"`, `windowAudio: "exclude"` | Áudio da aba, se o seletor devolver a track |
+| `system` | `audio: true`, `systemAudio: "include"`, `windowAudio: "exclude"` | Áudio do Windows, e só se a superfície confirmada for a tela inteira |
 
-`systemAudio: "include"` e `windowAudio: "system"` só pedem que o seletor mostre a opção. Não garantem a track. Se o navegador rejeitar `windowAudio`, a chamada é repetida sem esse campo. Constraints de processamento (`echoCancellation`, `noiseSuppression`, `autoGainControl`) não são enviadas: no Chrome elas fazem a captura de áudio da tela ser ignorada.
+`windowAudio: "system"` não é usado. Esse valor pedia o áudio de todo o Windows quando a pessoa escolhia uma janela. Uma preferência antiga `shareAudio: true` migra para `source`. `shareAudio: false` migra para `off`. Nada migra sozinho para `system`.
 
-Se o áudio foi pedido e voltaram zero tracks, o estado é `AUDIO_CAPTURE_UNAVAILABLE`. A transmissão continua em vídeo e a sala mostra o motivo. Não é apresentada como transmissão com áudio.
+Constraints de processamento (`echoCancellation`, `noiseSuppression`, `autoGainControl`) não são enviadas: no Chrome elas fazem a captura de áudio da tela ser ignorada.
+
+Se o navegador rejeitar uma opção com `TypeError`, `NotSupportedError` ou `OverconstrainedError`, há uma segunda tentativa, só com vídeo. A restrição `exclude` não é retirada para seguir com áudio. Cancelamento (`NotAllowedError`) não é repetido. Uma falha só de áudio não cancela o vídeo.
+
+Depois que a pessoa confirma o seletor, e antes de `localStream` e de `start-sharing`, o código lê `videoTrack.getSettings().displaySurface` e aplica a política. Track descartada é interrompida com `stop()` e removida da stream. Não se usa `track.label`.
+
+| Modo | Superfície | Áudio transmitido |
+| --- | --- | --- |
+| `source` | `browser` | A track da aba, se existir |
+| `source` | `window` | Nenhum. O navegador não oferece o áudio exclusivo da janela |
+| `source` | `monitor` | Nenhum. Áudio global fica de fora neste modo |
+| `source` | desconhecida | Nenhum |
+| `system` | `monitor` | A track, se o seletor a devolveu |
+| `system` | `browser` ou `window` | Nenhum. O aviso diz que o áudio do Windows exige a tela inteira |
+| `system` | desconhecida | Nenhum |
+| `off` | qualquer | Nenhum |
+
+Mensagens possíveis: “Áudio da aba disponível.”, “Áudio não capturado pela superfície selecionada.”, “Áudio global desabilitado para janelas.”, “Áudio do Windows exige compartilhamento da tela inteira.” e “Navegador não oferece opções suficientes para garantir o escopo solicitado.” Existir uma track não significa que o áudio está sendo enviado. O painel separa modo, superfície, política, tracks devolvidas, tracks autorizadas e o motivo do descarte. O estado **ÁUDIO SENDO ENVIADO** continua exigindo pacotes ou bytes em avanço.
 
 ## Como o som chega ao espectador
 
@@ -48,16 +67,40 @@ O painel não trata “existe um relatório `inbound-rtp` de áudio” como áud
 
 Eventos locais, também no JSON: captura iniciada, áudio indisponível, track adicionada ao sender, negociação, áudio recebido, áudio interrompido, reprodução bloqueada, áudio ativado pelo usuário.
 
-## O que este ambiente não conseguiu ouvir
+## O que os testes automatizados cobrem
 
-A correção foi verificada por testes do classificador, do SDP, da recusa de `play()` e da reatribuição da stream, mais build TypeScript. Ouvir o áudio de uma aba real em um segundo navegador depende de uma pessoa marcar a caixa do seletor e confirmar o som. Isso não foi executado daqui. O roteiro está abaixo.
+`npm test` cobre os modos de `getDisplayMedia`, a política por superfície, a ordem (descarte antes de `localStream` e de `start-sharing`), o fallback que não alarga o escopo, a migração de `shareAudio` e o classificador. Isso não é um teste auditivo.
 
-## Roteiro manual no Chrome e no Edge (Windows)
+## Roteiro físico no Chrome e no Edge (Windows 11)
 
-1. Abra uma aba tocando áudio (um vídeo, por exemplo) e outra com a Telinha.
-2. Compartilhe **a aba do vídeo** e marque “Compartilhar áudio da guia”. O painel de quem transmite, com um espectador conectado, deve ir a **ÁUDIO SENDO ENVIADO**, com pacotes/s acima de zero. Sem a caixa, a sala deve mostrar `AUDIO_CAPTURE_UNAVAILABLE` e zero tracks.
-3. Compartilhe a **tela inteira** com “Compartilhar áudio do sistema”. O estado de captura usa a superfície `monitor`. Sem a caixa, zero tracks e o aviso correspondente.
-4. Compartilhe uma **janela**. Se o seletor não oferecer áudio, a track não vem. O aviso deve dizer que janela no Windows em geral não entrega áudio. Não trate isso como falha de rede.
-5. No outro navegador, o vídeo e o áudio estão no mesmo elemento. Se aparecer **Ativar áudio**, clique nele. O som tem que sair nesse clique, e o slider precisa abaixar e cortar o volume.
-6. Repita com dois espectadores. Cada conexão tem o próprio diagnóstico. Um lado mudo não silencia o outro.
-7. O teste só passa quando o espectador **ouve**. Codec `opus` no painel, sozinho, não conta.
+Estes quatro testes precisam ser ouvidos por uma pessoa. Não marque como aprovado sem essa execução. O seletor do navegador é quem escolhe a superfície.
+
+**Teste A — aba**
+
+1. Reproduza áudio na aba que será compartilhada.
+2. Reproduza outro áudio em um aplicativo externo do Windows.
+3. Na Telinha, deixe o modo **Áudio da aba**.
+4. Compartilhe somente essa aba e marque “Compartilhar áudio da guia”.
+5. O espectador deve ouvir só o áudio da aba. O aplicativo externo não pode aparecer no som dele.
+6. No painel de quem transmite, a superfície é `browser`, a política é “Áudio da aba disponível.” e **ÁUDIO SENDO ENVIADO** só aparece com pacotes/s acima de zero.
+
+**Teste B — janela**
+
+1. Reproduza som na janela escolhida e também em outro aplicativo.
+2. Compartilhe a janela, no modo **Áudio da aba**.
+3. O espectador não recebe áudio global. O vídeo continua.
+4. O aviso deve dizer que o áudio global está desabilitado para janelas. O Chrome e o Edge no Windows não entregam o áudio exclusivo dessa janela.
+
+**Teste C — tela inteira**
+
+1. Selecione explicitamente **Áudio de todo o Windows**.
+2. Compartilhe a tela inteira e marque o áudio do sistema no seletor.
+3. O espectador deve ouvir o áudio do Windows. A superfície no painel é `monitor`.
+
+**Teste D — privacidade**
+
+1. Volte ao modo **Áudio da aba**.
+2. Compartilhe uma janela, com som em um aplicativo que não é essa janela.
+3. Nenhum som de aplicativo externo chega ao espectador.
+
+Se aparecer **Ativar áudio** no espectador, o clique é que libera o som. Codec no painel, sozinho, não conta.

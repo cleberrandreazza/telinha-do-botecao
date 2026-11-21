@@ -145,6 +145,7 @@ export interface StreamConfigSnapshot {
   resolution: string;
   frameRate: number;
   audio: boolean;
+  audioMode?: string;
 }
 
 export interface MetricSample {
@@ -210,7 +211,12 @@ export interface AudioRtp {
 export interface AudioFacts {
   role: EndpointRole;
   requested: boolean | null;
+  audioMode: string | null;
   displaySurface: string | null;
+  policy: string | null;
+  returnedTracks: number | null;
+  authorizedTracks: number | null;
+  discardReason: string | null;
   capturedTracks: number | null;
   trackReadyState: string | null;
   trackEnabled: boolean | null;

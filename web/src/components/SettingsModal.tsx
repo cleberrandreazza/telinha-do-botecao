@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { getInitials } from '../lib/profile';
+import { migrateAudioMode, type AudioMode } from '../lib/diagnostics/audio';
 
 const STORAGE_KEY = 'botecao-settings';
 
@@ -8,7 +9,7 @@ export interface BotecaoSettings {
   avatarUrl: string | null;
   resolution: '2160p' | '1080p' | '720p' | '480p';
   fps: 30 | 15 | 5;
-  shareAudio: boolean;
+  audioMode: AudioMode;
 }
 
 const DEFAULT_SETTINGS: BotecaoSettings = {
@@ -16,19 +17,33 @@ const DEFAULT_SETTINGS: BotecaoSettings = {
   avatarUrl: null,
   resolution: '1080p',
   fps: 30,
-  shareAudio: true,
+  audioMode: 'source',
 };
+
+const AUDIO_MODES: { key: AudioMode; label: string; desc: string }[] = [
+  { key: 'off', label: 'Sem áudio', desc: 'Só vídeo.' },
+  { key: 'source', label: 'Áudio da aba', desc: 'Padrão. Som da guia. Janela e tela inteira neste modo saem sem áudio global.' },
+  { key: 'system', label: 'Áudio de todo o Windows', desc: 'Separado do padrão. Só vale ao compartilhar a tela inteira.' },
+];
 
 export function loadSettings(): BotecaoSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = JSON.parse(raw) as { audioMode?: unknown; shareAudio?: unknown };
+      return { ...DEFAULT_SETTINGS, ...parsed, audioMode: migrateAudioMode(parsed) };
+    }
   } catch { /* ignore */ }
   return { ...DEFAULT_SETTINGS };
 }
 
 function saveSettings(settings: BotecaoSettings) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+  const audioMode = migrateAudioMode(settings);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({
+    ...settings,
+    audioMode,
+    shareAudio: audioMode !== 'off',
+  }));
 }
 
 const RES_OPTIONS: { key: BotecaoSettings['resolution']; label: string; badge: string; desc: string }[] = [
@@ -90,7 +105,7 @@ export default function SettingsModal({ nickname, onClose, onSave }: SettingsMod
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-surface-container-lowest/80 backdrop-blur-md"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="relative w-full max-w-lg rounded-2xl bg-[#18191c] border border-surface-container-highest shadow-2xl p-6 flex flex-col gap-5 animate-in">
+      <div className="relative w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl bg-[#18191c] border border-surface-container-highest shadow-2xl p-6 flex flex-col gap-5 animate-in">
         {/* Header */}
         <div className="flex items-center justify-between pb-1">
           <div className="flex items-center gap-2 text-on-surface">
@@ -236,21 +251,29 @@ export default function SettingsModal({ nickname, onClose, onSave }: SettingsMod
             </div>
           </div>
 
-          {/* Audio sharing toggle */}
-          <div className="flex items-center justify-between p-3.5 rounded-xl bg-surface-container border border-outline-variant/20">
-            <div className="flex flex-col gap-0.5">
-              <span className="font-body-md text-body-md text-on-surface font-medium leading-tight">Compartilhar áudio</span>
-              <span className="font-body-sm text-body-sm text-on-surface-variant">Aba com áudio da guia, ou tela inteira com áudio do sistema. Janela no Windows normalmente fica sem áudio. Não captura microfone.</span>
+          <div className="flex flex-col gap-2">
+            <span className="font-label-md text-[11px] font-bold uppercase tracking-wider text-outline">ÁUDIO</span>
+            <div className="grid grid-cols-1 gap-2">
+              {AUDIO_MODES.map((opt) => {
+                const active = settings.audioMode === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => update('audioMode', opt.key)}
+                    className={`flex flex-col items-start px-3 py-2.5 rounded-xl text-left transition-all cursor-pointer ${
+                      active
+                        ? 'bg-primary/10 border-2 border-primary shadow-sm'
+                        : 'bg-surface-container border border-transparent hover:border-outline-variant'
+                    }`}
+                  >
+                    <span className={`font-body-md text-body-md font-medium ${active ? 'text-primary' : 'text-on-surface'}`}>{opt.label}</span>
+                    <span className="text-[11px] pt-0.5 text-on-surface-variant">{opt.desc}</span>
+                  </button>
+                );
+              })}
             </div>
-            <label className="relative inline-flex items-center cursor-pointer shrink-0">
-              <input
-                type="checkbox"
-                className="sr-only peer"
-                checked={settings.shareAudio}
-                onChange={(e) => update('shareAudio', e.target.checked)}
-              />
-              <div className="w-11 h-6 bg-surface-container-highest peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-on-surface after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-container peer-checked:after:bg-on-primary" />
-            </label>
+            <span className="font-body-sm text-body-sm text-on-surface-variant">Não captura microfone. Uma janela não transmite o áudio do Windows.</span>
           </div>
         </div>
 

@@ -1,11 +1,19 @@
 import { useState } from 'react';
+import type { AudioMode } from '../lib/diagnostics/audio';
 import { loadSettings, type BotecaoSettings } from './SettingsModal';
 
 export interface StreamConfig {
   resolution: '2160' | '1080' | '720' | '480';
   frameRate: 30 | 15 | 5;
   audio: boolean;
+  audioMode: AudioMode;
 }
+
+const AUDIO_MODES: { value: AudioMode; label: string; desc: string }[] = [
+  { value: 'off', label: 'Sem áudio', desc: 'Só vídeo.' },
+  { value: 'source', label: 'Áudio da aba', desc: 'Padrão. Som da guia. Janela e tela inteira saem sem áudio global.' },
+  { value: 'system', label: 'Áudio de todo o Windows', desc: 'Separado do padrão. Só quando a superfície for a tela inteira.' },
+];
 
 const RESOLUTIONS = [
   { value: '2160', label: '4K', desc: '2160p' },
@@ -35,11 +43,11 @@ export default function StreamSettings({ onStart, onCancel }: StreamSettingsProp
   const saved = loadSettings();
   const [resolution, setResolution] = useState<StreamConfig['resolution']>(settingsResToStreamRes(saved.resolution));
   const [frameRate, setFrameRate] = useState<StreamConfig['frameRate']>(saved.fps);
-  const [audio, setAudio] = useState(saved.shareAudio);
+  const [audioMode, setAudioMode] = useState<AudioMode>(saved.audioMode);
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-surface-container border border-outline-variant/30 rounded-2xl w-full max-w-md mx-4 p-5 shadow-2xl">
+      <div className="bg-surface-container border border-outline-variant/30 rounded-2xl w-full max-w-md max-h-[90vh] overflow-y-auto mx-4 p-5 shadow-2xl">
         {/* Header */}
         <div className="flex items-center gap-3 mb-4">
           <div className="w-9 h-9 rounded-xl bg-primary/10 border border-primary/30 flex items-center justify-center">
@@ -97,33 +105,28 @@ export default function StreamSettings({ onStart, onCancel }: StreamSettingsProp
           </div>
         </div>
 
-        {/* Audio toggle */}
-        <div className="mb-5">
-          <button
-            onClick={() => setAudio(!audio)}
-            className="flex items-center justify-between w-full px-3 py-2.5 rounded-xl border border-outline-variant/20 bg-surface-container-high/40 hover:bg-surface-container-high transition-all cursor-pointer"
-          >
-            <div className="flex items-center gap-2.5">
-              <span className="material-symbols-outlined text-[20px] text-on-surface-variant">
-                {audio ? 'volume_up' : 'volume_off'}
-              </span>
-              <div className="text-left">
-                <span className="block text-sm font-body font-medium text-on-surface">Compartilhar áudio</span>
-                <span className="block text-[11px] font-body text-outline">Aba ou sistema. Não usa microfone.</span>
-              </div>
-            </div>
-            <label className="relative inline-flex items-center cursor-pointer shrink-0" onClick={(e) => e.stopPropagation()}>
-              <input
-                type="checkbox"
-                className="sr-only peer"
-                checked={audio}
-                onChange={(e) => setAudio(e.target.checked)}
-              />
-              <div className="w-11 h-6 bg-surface-container-highest peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-on-surface after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-container peer-checked:after:bg-on-primary" />
-            </label>
-          </button>
-          <p className="mt-2 text-[11px] leading-snug text-outline">
-            Aba do Chrome ou Edge: marque “Compartilhar áudio da guia”. Tela inteira: marque “Compartilhar áudio do sistema”. Uma janela, no Windows, em geral não entrega áudio — o seletor simplesmente não oferece a opção.
+        <div className="mb-5 flex flex-col gap-2">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-outline">Áudio</span>
+          {AUDIO_MODES.map((opt) => {
+            const active = audioMode === opt.value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setAudioMode(opt.value)}
+                className={`flex flex-col items-start w-full px-3 py-2.5 rounded-xl text-left transition-all cursor-pointer ${
+                  active
+                    ? 'border-2 border-primary bg-primary/10'
+                    : 'border border-outline-variant/20 bg-surface-container-high/40 hover:bg-surface-container-high'
+                }`}
+              >
+                <span className="block text-sm font-body font-medium text-on-surface">{opt.label}</span>
+                <span className="block text-[11px] font-body text-outline">{opt.desc}</span>
+              </button>
+            );
+          })}
+          <p className="text-[11px] leading-snug text-outline">
+            Aba: marque “Compartilhar áudio da guia”. Janela: o vídeo sai sem áudio. Tela inteira só leva o som do Windows no modo separado. Não usa microfone.
           </p>
         </div>
 
@@ -136,7 +139,7 @@ export default function StreamSettings({ onStart, onCancel }: StreamSettingsProp
             Cancelar
           </button>
           <button
-            onClick={() => onStart({ resolution, frameRate, audio })}
+            onClick={() => onStart({ resolution, frameRate, audio: audioMode !== 'off', audioMode })}
             className="flex-1 px-4 py-2.5 rounded-xl bg-primary hover:bg-primary-container text-on-primary-container transition-all text-sm font-body font-semibold cursor-pointer shadow-sm"
           >
             Compartilhar

@@ -43,7 +43,7 @@ A comunicação é **peer-to-peer (P2P)** via WebRTC, ou seja, o vídeo vai dire
 3. Quem quiser compartilha a tela
 4. Todos assistem em tempo real, direto pelo navegador
 
-O painel de estatísticas do player mede, em cada navegador, onde o FPS cai: captura, codificação, rede, recepção, decodificação ou reprodução. O detalhe está em [`docs/diagnostics.md`](docs/diagnostics.md). O áudio da aba ou do sistema, e o que fazer quando o seletor não entrega track, está em [`docs/audio.md`](docs/audio.md).
+O painel de estatísticas do player mede, em cada navegador, onde o FPS cai: captura, codificação, rede, recepção, decodificação ou reprodução. O detalhe está em [`docs/diagnostics.md`](docs/diagnostics.md). O áudio tem três modos: desligado, áudio da aba (padrão) e áudio de todo o Windows, este último só na tela inteira. Compartilhar uma janela não transmite o áudio global. O roteiro está em [`docs/audio.md`](docs/audio.md).
 
 ## Stack
 

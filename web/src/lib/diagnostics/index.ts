@@ -41,16 +41,21 @@ export type { DiagnosticReport } from './export.ts';
 export {
   attachAudio,
   audioEvents,
+  audioModeFromConfig,
   buildDisplayMediaOptions,
   captureUnavailableMessage,
   classifyAudio,
+  commitPreparedShare,
+  decideAudioScope,
   disabledAudioMessage,
   inspectAudioSdp,
+  migrateAudioMode,
   negotiationFromSdp,
+  policyLabel,
   requestDisplayMedia,
   resolvePlayback,
   shouldRebindSrcObject,
 } from './audio.ts';
-export type { AudioCaptureContext, AudioLinkContext, AudioSdpInfo } from './audio.ts';
+export type { AudioCaptureContext, AudioLinkContext, AudioMode, AudioSdpInfo, PreparedShare, ScopeStream } from './audio.ts';
 export { ConnectionMonitor } from './monitor.ts';
 export type { MonitorContext, PeerConnectionLike } from './monitor.ts';
