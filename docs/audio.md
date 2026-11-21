@@ -77,7 +77,7 @@ Um bitrate de cerca de 128 kbps e cerca de 50 pacotes por segundo só dizem que 
 | Sample rate da captura | `getSettings().sampleRate`, se o navegador informar | Clock rate do SDP |
 | Canais negociados | O terceiro número de `opus/48000/2`, ou `channels` no relatório `codec` | Prova de que os dois canais estão saindo ou chegando |
 | Canais capturados | `channelCount` em `getSettings()`, quando existe | O número pedido no SDP |
-| `stereo=1` e `sprop-stereo=1` | Parâmetros `fmtp` que a oferta ou a resposta declarou | Estéreo de fato, nem confirmação de que os dois canais atravessaram a rede |
+| `stereo` e `sprop-stereo` | Preferência do receptor e indicação da capacidade provável do transmissor (`0` ou `1`) | Estéreo de fato, nem confirmação de que os dois canais atravessaram a rede |
 | `maxaveragebitrate=320000` | Teto médio de recepção declarado no `fmtp` | Bitrate medido, garantia de 320 kbps ou nitidez |
 | Energia (`totalAudioEnergy`) | Soma de energia do relatório de origem, no transmissor, ou do `inbound-rtp`, no espectador | Espectro, agudos ou “som abafado” |
 | Nível (`audioLevel`) | Nível instantâneo informado por aquele relatório | Qualidade |
