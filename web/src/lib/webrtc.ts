@@ -99,7 +99,7 @@ export class WebRTCManager {
     const fps = cfg.frameRate;
     const wantsAudio = cfg.audio;
 
-    const stream = await navigator.mediaDevices.getDisplayMedia({
+    const displayMediaOptions: DisplayMediaStreamOptions & { systemAudio?: string } = {
       video: {
         width: { ideal: res.width },
         height: { ideal: res.height },
@@ -110,11 +110,17 @@ export class WebRTCManager {
             echoCancellation: false,
             noiseSuppression: false,
             autoGainControl: false,
-            // Chromium 105+ — captura áudio do sistema mesmo ao compartilhar tela inteira
-            // @ts-ignore
-            systemAudio: 'include',
           }
         : false,
+    };
+
+    // systemAudio é top-level no getDisplayMedia (Chromium 105+)
+    if (wantsAudio) {
+      // @ts-ignore — propriedade existe mas não está nos tipos TS
+      displayMediaOptions.systemAudio = 'include';
+    }
+
+    const stream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions as DisplayMediaStreamOptions);
     });
 
     // Otimiza a track de vídeo para screen sharing com movimento (jogos, vídeos)

@@ -52,7 +52,19 @@ export default function StreamViewer({
 
       // Listen BEFORE setting srcObject to catch early events (canvas streams fire instantly)
       video.addEventListener('playing', onPlaying);
+
+      // Inicia muted para autoplay funcionar (Chrome bloqueia autoplay com som).
+      // O useEffect de volume vai aplicar o volume correto logo em seguida.
+      video.muted = true;
       video.srcObject = stream;
+
+      // Depois do play, aplica o volume real (unmute)
+      video.play().then(() => {
+        video.muted = volume === 0;
+        video.volume = volume;
+      }).catch(() => {
+        // autoplay bloqueado — mantém muted
+      });
 
       // Minimum loader display time (lets CRT animation play)
       const minTimer = setTimeout(() => {
