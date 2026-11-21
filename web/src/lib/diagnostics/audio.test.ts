@@ -15,6 +15,7 @@ import {
   shouldRebindSrcObject,
 } from './audio.ts';
 import { buildSample, emptyCounters } from './parse.ts';
+import { mungeOpusStereo } from '../opus.ts';
 import type { AudioFacts, AudioPlaybackReport, StatsReportLike } from './types.ts';
 
 function facts(partial: Partial<AudioFacts> & Pick<AudioFacts, 'role'>): AudioFacts {
@@ -90,6 +91,7 @@ test('modo source exclui áudio global e áudio de janela, e ainda pede áudio d
   equal(source.audio, true);
   equal(source.systemAudio, 'exclude');
   equal(source.windowAudio, 'exclude');
+  equal(source.suppressLocalAudioPlayback, true);
   ok(!('echoCancellation' in source));
   ok(!('noiseSuppression' in source));
   ok(!('autoGainControl' in source));
@@ -98,12 +100,14 @@ test('modo source exclui áudio global e áudio de janela, e ainda pede áudio d
   equal(system.audio, true);
   equal(system.systemAudio, 'include');
   equal(system.windowAudio, 'exclude');
+  equal(system.suppressLocalAudioPlayback, true);
   ok(system.windowAudio !== 'system');
 
   const off = buildDisplayMediaOptions({}, 'off');
   equal(off.audio, false);
   equal(off.systemAudio, undefined);
   equal(off.windowAudio, undefined);
+  equal(off.suppressLocalAudioPlayback, undefined);
 });
 
 test('política de superfície descarta áudio fora do escopo e preserva o vídeo', () => {
@@ -527,4 +531,27 @@ test('track de áudio que chega depois exige reatribuir o srcObject', () => {
   equal(shouldRebindSrcObject(['video'], ['video']), false);
   equal(shouldRebindSrcObject(['video'], ['video', 'audio']), true);
   equal(shouldRebindSrcObject(['video', 'audio'], ['video']), true);
+});
+
+test('SDP de Opus pede estéreo a 128 kbps sem duplicar e sem mexer no vídeo', () => {
+  const untouched = 'v=0\r\na=rtpmap:96 H264/90000\r\n';
+  equal(mungeOpusStereo(untouched), untouched);
+
+  const withFmtp = [
+    'a=rtpmap:111 opus/48000/2',
+    'a=fmtp:111 minptime=10;useinbandfec=1',
+    'a=rtpmap:96 H264/90000',
+  ].join('\r\n');
+  const once = mungeOpusStereo(withFmtp);
+  ok(once.includes('a=fmtp:111 minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=128000'));
+  ok(once.includes('a=rtpmap:96 H264/90000'));
+  equal(mungeOpusStereo(once), once);
+
+  const replaced = mungeOpusStereo('a=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;maxaveragebitrate=32000\r\n');
+  equal(replaced.includes('maxaveragebitrate=32000'), false);
+  equal(replaced.includes('maxaveragebitrate=128000'), true);
+  equal(replaced.split('maxaveragebitrate').length, 2);
+
+  const created = mungeOpusStereo('a=rtpmap:111 opus/48000/2\na=rtpmap:96 H264/90000\n');
+  ok(created.includes('a=rtpmap:111 opus/48000/2\na=fmtp:111 minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=128000\n'));
 });

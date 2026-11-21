@@ -1,4 +1,5 @@
 import { SignalingClient } from './signaling';
+import { mungeOpusStereo } from './opus';
 import type { ServerMessage, StreamInfo } from './types';
 import {
   AdaptiveBitrateController,
@@ -51,12 +52,12 @@ const RESOLUTION_MAP: Record<string, { width: number; height: number }> = {
   '480': { width: 854, height: 480 },
 };
 
-/** Bitrate limits per resolution (bits/s) */
+/** Bitrate limits per resolution (bits/s). 30 fps recebe o teto inteiro em cada frame. */
 const BITRATE_MAP: Record<string, number> = {
-  '2160': 12_000_000,
-  '1080': 6_000_000,
-  '720': 3_000_000,
-  '480': 1_500_000,
+  '2160': 16_000_000,
+  '1080': 8_000_000,
+  '720': 4_000_000,
+  '480': 2_000_000,
 };
 
 /**
@@ -214,7 +215,7 @@ export class WebRTCManager {
             frameRate: this.currentConfig.frameRate,
           }, videoTrack);
           console.info('[WebRTC] Captura', this.captureProbe);
-          videoTrack.contentHint = 'detail';
+          videoTrack.contentHint = 'motion';
           const actualSettings = videoTrack.getSettings();
           console.log(`[WebRTC] Video track settings: ${actualSettings.width}x${actualSettings.height} @ ${actualSettings.frameRate}fps`);
           videoTrack.onended = () => {
@@ -302,8 +303,8 @@ export class WebRTCManager {
   }
 
   /**
-   * SHARER: criar PeerConnection + offer para um viewer
-   * NÃO usa SDP munging — controla bitrate SOMENTE via setParameters (mais confiável)
+   * SHARER: criar PeerConnection + offer para um viewer.
+   * O bitrate de vídeo continua só no setParameters. O único ajuste de SDP é o Opus estéreo.
    */
   private async createOfferForViewer(viewerId: string) {
     if (!this.localStream) return;
@@ -342,9 +343,12 @@ export class WebRTCManager {
     // Prefere H264 (hardware-accelerated)
     this.preferH264(pc);
 
-    // Cria offer SEM SDP munging — bitrate será controlado via setParameters após answer
     const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
+    const mungedOffer = new RTCSessionDescription({
+      type: offer.type,
+      sdp: mungeOpusStereo(offer.sdp || ''),
+    });
+    await pc.setLocalDescription(mungedOffer);
 
     this.signal.send({
       type: 'offer',
@@ -395,19 +399,19 @@ export class WebRTCManager {
         params.encodings = [{}];
       }
 
-      const maxBitrate = BITRATE_MAP[this.currentConfig.resolution] || 6_000_000;
+      const maxBitrate = BITRATE_MAP[this.currentConfig.resolution] || 8_000_000;
       params.encodings[0].maxBitrate = maxBitrate;
       params.encodings[0].maxFramerate = this.currentConfig.frameRate;
+      params.encodings[0].scaleResolutionDownBy = 1.0;
 
-      // Screen sharing prioriza resolução (texto legível) sobre framerate alto.
-      // 'balanced' permite ao Chrome reduzir FPS quando a banda aperta, em vez de
-      // destruir a resolução (que é o que 'maintain-framerate' fazia: 1080p → 398x188).
+      // 30 fps é a prioridade. Se a banda apertar, o Chrome reduz resolução
+      // em vez de derrubar o framerate. O ABR continua podendo baixar o teto.
       // @ts-ignore - degradationPreference exists but TypeScript doesn't know about it
-      params.degradationPreference = 'balanced';
+      params.degradationPreference = 'maintain-framerate';
 
       await videoSender.setParameters(params);
 
-      console.log(`[WebRTC] ✅ Sender configurado: maxBitrate=${(maxBitrate / 1_000_000).toFixed(1)}Mbps, maxFps=${this.currentConfig.frameRate}, degradation=balanced`);
+      console.log(`[WebRTC] ✅ Sender configurado: maxBitrate=${(maxBitrate / 1_000_000).toFixed(1)}Mbps, maxFps=${this.currentConfig.frameRate}, degradation=maintain-framerate`);
 
       // Verify params were applied
       const check = videoSender.getParameters();
@@ -460,7 +464,11 @@ export class WebRTCManager {
 
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
     const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
+    const mungedAnswer = new RTCSessionDescription({
+      type: answer.type,
+      sdp: mungeOpusStereo(answer.sdp || ''),
+    });
+    await pc.setLocalDescription(mungedAnswer);
     this.noteAudioNegotiation(fromId, pc);
 
     this.signal.send({

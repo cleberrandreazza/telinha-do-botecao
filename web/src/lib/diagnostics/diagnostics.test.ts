@@ -443,9 +443,14 @@ test('ABR usa FPS outbound, trata zero e ignora métrica ausente', () => {
   state = evaluateAbr(state, 0).state;
   state = evaluateAbr(state, 0).state;
   const third = evaluateAbr(state, 0);
-  equal(third.action, 'decrease');
-  equal(third.nextBitrate, 700_000);
-  equal(third.fps, 0);
+  equal(third.action, 'hold');
+  equal(third.reason, 'low-fps');
+  state = third.state;
+  state = evaluateAbr(state, 0).state;
+  const fifth = evaluateAbr(state, 0);
+  equal(fifth.action, 'decrease');
+  equal(fifth.nextBitrate, 700_000);
+  equal(fifth.fps, 0);
 
   const mixed = sample({
     timestamp: 1,
@@ -462,13 +467,13 @@ test('ABR usa FPS outbound, trata zero e ignora métrica ausente', () => {
     1_000_000,
   );
   const low = sample({ timestamp: 0, role: 'sender', outbound: outbound({ encodedFps: 0 }) });
-  for (let i = 0; i < 5; i += 1) controller.onSample({ ...low, timestamp: i });
+  for (let i = 0; i < 9; i += 1) controller.onSample({ ...low, timestamp: i });
   equal(applied.length, 0);
-  controller.onSample({ ...low, timestamp: 5 });
+  controller.onSample({ ...low, timestamp: 9 });
   equal(applied.length, 1);
   equal(applied[0], 700_000);
   controller.onSample(sample({
-    timestamp: 6,
+    timestamp: 10,
     role: 'receiver',
     inbound: inbound({ receivedFps: 1, reportedFps: 1 }),
   }));

@@ -102,7 +102,9 @@ export function audioModeFromConfig(config: { audio?: boolean; audioMode?: Audio
 }
 
 /**
- * Pedido ao getDisplayMedia. Áudio é boolean: processamento (echoCancellation etc.) faz o Chrome descartar a faixa.
+ * Pedido ao getDisplayMedia. Áudio continua boolean: um objeto de processamento
+ * (echoCancellation etc.) faz o Chrome descartar a faixa.
+ * `suppressLocalAudioPlayback` fica no topo das opções e só impede o eco local de quem compartilha.
  * `exclude` limita o escopo. `windowAudio: 'system'` não é usado.
  */
 export function buildDisplayMediaOptions(
@@ -111,9 +113,9 @@ export function buildDisplayMediaOptions(
 ): Record<string, unknown> {
   if (mode === 'off') return { video, audio: false };
   if (mode === 'system') {
-    return { video, audio: true, systemAudio: 'include', windowAudio: 'exclude' };
+    return { video, audio: true, systemAudio: 'include', windowAudio: 'exclude', suppressLocalAudioPlayback: true };
   }
-  return { video, audio: true, systemAudio: 'exclude', windowAudio: 'exclude' };
+  return { video, audio: true, systemAudio: 'exclude', windowAudio: 'exclude', suppressLocalAudioPlayback: true };
 }
 
 function errorName(err: unknown): string {
