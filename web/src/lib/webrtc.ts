@@ -214,7 +214,7 @@ export class WebRTCManager {
             frameRate: this.currentConfig.frameRate,
           }, videoTrack);
           console.info('[WebRTC] Captura', this.captureProbe);
-          videoTrack.contentHint = 'motion';
+          videoTrack.contentHint = 'detail';
           const actualSettings = videoTrack.getSettings();
           console.log(`[WebRTC] Video track settings: ${actualSettings.width}x${actualSettings.height} @ ${actualSettings.frameRate}fps`);
           videoTrack.onended = () => {
@@ -310,11 +310,19 @@ export class WebRTCManager {
 
     const pc = this.createPeerConnection(viewerId, 'sender');
 
+    // Clona a video track para cada PC para que cada encoder opere de forma
+    // independente. Sem o clone, Chrome compartilha o encoder interno e quando
+    // um PC reduz a resolução, a source track dos outros PCs também é afetada.
+    // Áudio não precisa de clone — compartilhar a mesma track é seguro.
     const tracks = this.localStream.getTracks();
     let audioSenders = 0;
     for (const track of tracks) {
       try {
-        pc.addTrack(track, this.localStream);
+        const trackToAdd = track.kind === 'video' ? track.clone() : track;
+        if (track.kind === 'video' && trackToAdd.contentHint !== track.contentHint) {
+          trackToAdd.contentHint = track.contentHint;
+        }
+        pc.addTrack(trackToAdd, this.localStream);
         if (track.kind === 'audio') audioSenders += 1;
       } catch (err) {
         console.warn(`[WebRTC] addTrack de ${track.kind} falhou:`, err);
@@ -391,13 +399,15 @@ export class WebRTCManager {
       params.encodings[0].maxBitrate = maxBitrate;
       params.encodings[0].maxFramerate = this.currentConfig.frameRate;
 
-      // Prioriza manter framerate quando a rede aperta (reduz resolução em vez de FPS)
+      // Screen sharing prioriza resolução (texto legível) sobre framerate alto.
+      // 'balanced' permite ao Chrome reduzir FPS quando a banda aperta, em vez de
+      // destruir a resolução (que é o que 'maintain-framerate' fazia: 1080p → 398x188).
       // @ts-ignore - degradationPreference exists but TypeScript doesn't know about it
-      params.degradationPreference = 'maintain-framerate';
+      params.degradationPreference = 'balanced';
 
       await videoSender.setParameters(params);
 
-      console.log(`[WebRTC] ✅ Sender configurado: maxBitrate=${(maxBitrate / 1_000_000).toFixed(1)}Mbps, maxFps=${this.currentConfig.frameRate}, degradation=maintain-framerate`);
+      console.log(`[WebRTC] ✅ Sender configurado: maxBitrate=${(maxBitrate / 1_000_000).toFixed(1)}Mbps, maxFps=${this.currentConfig.frameRate}, degradation=balanced`);
 
       // Verify params were applied
       const check = videoSender.getParameters();
@@ -842,7 +852,15 @@ export class WebRTCManager {
         this.timeline.viewerDisconnected(monitor.connectionId);
       }
     }
-    if (pc) pc.close();
+    if (pc) {
+      // Para tracks de vídeo clonadas (criadas em createOfferForViewer)
+      for (const sender of pc.getSenders()) {
+        if (sender.track?.kind === 'video' && sender.track !== this.localStream?.getVideoTracks()[0]) {
+          sender.track.stop();
+        }
+      }
+      pc.close();
+    }
     this.notifiedPeers.delete(peerId);
     this.audioLink.delete(peerId);
     this.remoteAudioTracks.delete(peerId);

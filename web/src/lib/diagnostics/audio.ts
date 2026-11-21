@@ -395,11 +395,16 @@ export function classifyAudio(facts: AudioFacts | null, timestamp = Date.now()):
   if (facts.negotiated === false) {
     return diagnosis('NOT_NEGOTIATED', 'ÁUDIO NÃO NEGOCIADO', 'O SDP negociado não tem uma seção de áudio aceita.', timestamp);
   }
-  if (facts.role === 'sender' && (facts.direction === 'inactive' || facts.direction === 'recvonly')) {
-    return diagnosis('NOT_NEGOTIATED', 'ÁUDIO NÃO NEGOCIADO', `A direção negociada é ${facts.direction}, que não envia áudio.`, timestamp);
+  // A direction vem do SDP remoto (negotiationFromSdp retorna remote.direction).
+  // Para o sender: remote 'recvonly' = viewer aceita receber áudio (correto).
+  //                remote 'sendonly' = viewer quer enviar, não receber (problema).
+  // Para o receiver: remote 'sendonly' = sender envia áudio (correto).
+  //                  remote 'recvonly' = sender quer receber, não enviar (problema).
+  if (facts.role === 'sender' && (facts.direction === 'inactive' || facts.direction === 'sendonly')) {
+    return diagnosis('NOT_NEGOTIATED', 'ÁUDIO NÃO NEGOCIADO', `A direção negociada (remota) é ${facts.direction}, que não aceita receber áudio do sender.`, timestamp);
   }
-  if (facts.role === 'receiver' && (facts.direction === 'inactive' || facts.direction === 'sendonly')) {
-    return diagnosis('NOT_NEGOTIATED', 'ÁUDIO NÃO NEGOCIADO', `A direção negociada é ${facts.direction}, que não recebe áudio.`, timestamp);
+  if (facts.role === 'receiver' && (facts.direction === 'inactive' || facts.direction === 'recvonly')) {
+    return diagnosis('NOT_NEGOTIATED', 'ÁUDIO NÃO NEGOCIADO', `A direção negociada (remota) é ${facts.direction}, que não envia áudio para o receiver.`, timestamp);
   }
 
   const flow = flowing(facts);
