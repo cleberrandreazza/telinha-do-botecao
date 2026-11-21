@@ -6,7 +6,7 @@ import { detectEvents } from './events.ts';
 import { buildReport, parseBrowser, sanitize } from './export.ts';
 import { formatMeasuredFps, pipelineFps } from './format.ts';
 import { selectNetwork } from './ice.ts';
-import { avgMsPerFrame, bitrateFromBytes, diffCounter, lossPercent, perSecond } from './math.ts';
+import { avgMsPerFrame, bitrateFromBytes, diffCounter, lossPercent, perSecond, rmsFromEnergy } from './math.ts';
 import { ConnectionMonitor } from './monitor.ts';
 import { buildSample, emptyCounters } from './parse.ts';
 import { PlaybackMonitor, type PlaybackVideo, type VideoFrameMetadataLike } from './playback.ts';
@@ -792,6 +792,30 @@ test('eventos de queda e exportação sem IP', () => {
   equal((dirty as { candidateType: string }).candidateType, 'host');
   ok(!('address' in (dirty as object)));
   ok(!('credential' in ((dirty as { nested: object }).nested)));
+  ok(report.limitations.some((item) => item.includes('não medem fidelidade')));
+});
+
+test('estatística de áudio ausente não vira zero e não usa o contador de vídeo', () => {
+  const built = buildSample({
+    reports: [
+      { id: 'vin', type: 'inbound-rtp', kind: 'video', timestamp: 1_000, packetsLost: 4, bytesReceived: 100, framesReceived: 10 },
+    ],
+    previous: emptyCounters(),
+    role: 'receiver',
+    wallTime: 1_000,
+    connectionId: 'rx',
+    viewerCount: null,
+    configuredFps: null,
+    connectionState: 'connected',
+    iceConnectionState: 'connected',
+    playback: null,
+  });
+  equal(built.sample.audioRtp, null);
+  equal(built.sample.audioBitrate, null);
+  equal(built.sample.inbound?.packetsLost, 4);
+  equal(rmsFromEnergy(0.25, 1).rms, 0.5);
+  equal(rmsFromEnergy(0.25, 1).dbFs, 20 * Math.log10(0.5));
+  equal(rmsFromEnergy(0, 1).dbFs, null);
 });
 
 function fakeVideo(): PlaybackVideo & {

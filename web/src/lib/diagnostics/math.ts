@@ -34,6 +34,26 @@ export function lossPercent(lostDelta: number | null, receivedDelta: number | nu
   return (lostDelta / total) * 100;
 }
 
+/**
+ * RMS do intervalo: sqrt(delta de energia / delta de duração).
+ * Energia negativa, duração não positiva ou resultado não finito devolvem null.
+ * RMS 0 existe; dBFS dele não, porque log10(0) não é um número.
+ */
+export function rmsFromEnergy(
+  energyDelta: number | null,
+  durationDelta: number | null,
+): { rms: number | null; dbFs: number | null } {
+  if (energyDelta === null || durationDelta === null) return { rms: null, dbFs: null };
+  if (!Number.isFinite(energyDelta) || !Number.isFinite(durationDelta)) return { rms: null, dbFs: null };
+  if (energyDelta < 0 || durationDelta <= 0) return { rms: null, dbFs: null };
+  const rms = Math.sqrt(energyDelta / durationDelta);
+  if (!Number.isFinite(rms)) return { rms: null, dbFs: null };
+  if (rms <= 0) return { rms, dbFs: null };
+  const dbFs = 20 * Math.log10(rms);
+  if (!Number.isFinite(dbFs)) return { rms, dbFs: null };
+  return { rms, dbFs };
+}
+
 /** totalSecondsDelta é o delta de totalEncodeTime/totalDecodeTime (segundos). */
 export function avgMsPerFrame(totalSecondsDelta: number | null, frameDelta: number | null): number | null {
   if (totalSecondsDelta === null || frameDelta === null) return null;

@@ -1,7 +1,10 @@
+import { parseOpusFmtp } from './audio.ts';
 import { selectNetwork } from './ice.ts';
-import { avgMsPerFrame, bitrateFromBytes, diffCounter, lossPercent, perSecond } from './math.ts';
+import { avgMsPerFrame, bitrateFromBytes, diffCounter, lossPercent, perSecond, rmsFromEnergy } from './math.ts';
 import { readNumber, readString } from './read.ts';
 import type {
+  AudioInboundQuality,
+  AudioSignalStats,
   EndpointRole,
   InboundMetrics,
   LimitationDurations,
@@ -9,6 +12,7 @@ import type {
   OutboundMetrics,
   PlaybackSample,
   RemoteInboundMetrics,
+  RtpCodecInfo,
   StatsReportLike,
 } from './types.ts';
 
@@ -42,6 +46,18 @@ export interface CounterSnapshot {
   audioBytesIn: number | null;
   audioPackets: number | null;
   audioSamples: number | null;
+  audioPacketsLost: number | null;
+  audioConcealedSamples: number | null;
+  audioConcealmentEvents: number | null;
+  audioSilentConcealed: number | null;
+  audioFecReceived: number | null;
+  audioFecDiscarded: number | null;
+  audioRemovedSamples: number | null;
+  audioInsertedSamples: number | null;
+  audioEnergy: number | null;
+  audioEnergyDuration: number | null;
+  audioJitterDelay: number | null;
+  audioJitterEmitted: number | null;
 }
 
 export function emptyCounters(): CounterSnapshot {
@@ -75,6 +91,18 @@ export function emptyCounters(): CounterSnapshot {
     audioBytesIn: null,
     audioPackets: null,
     audioSamples: null,
+    audioPacketsLost: null,
+    audioConcealedSamples: null,
+    audioConcealmentEvents: null,
+    audioSilentConcealed: null,
+    audioFecReceived: null,
+    audioFecDiscarded: null,
+    audioRemovedSamples: null,
+    audioInsertedSamples: null,
+    audioEnergy: null,
+    audioEnergyDuration: null,
+    audioJitterDelay: null,
+    audioJitterEmitted: null,
   };
 }
 
@@ -130,6 +158,28 @@ function codecName(reports: StatsReportLike[], codecId: string | null): string |
   const mime = codec ? readString(codec, 'mimeType') : null;
   if (!mime) return null;
   return mime.replace(/^video\//, '').replace(/^audio\//, '');
+}
+
+function rtpCodecInfo(reports: StatsReportLike[], codecId: string | null): RtpCodecInfo | null {
+  if (!codecId) return null;
+  const codec = reports.find((report) => report.type === 'codec' && report.id === codecId);
+  if (!codec) return null;
+  return {
+    mimeType: readString(codec, 'mimeType'),
+    clockRate: readNumber(codec, 'clockRate'),
+    channels: readNumber(codec, 'channels'),
+    fmtp: parseOpusFmtp(readString(codec, 'sdpFmtpLine')),
+  };
+}
+
+/** Origem de áudio. O media-source de vídeo, mesmo com o mesmo id, não entra aqui. */
+function audioMediaSource(reports: StatsReportLike[], audioOutbound: StatsReportLike | null): StatsReportLike | null {
+  const sourceId = audioOutbound ? readString(audioOutbound, 'mediaSourceId') : null;
+  if (sourceId) {
+    return reports.find((report) => report.id === sourceId && report.type === 'media-source' && report.kind === 'audio') ?? null;
+  }
+  const audios = reports.filter((report) => report.type === 'media-source' && report.kind === 'audio');
+  return audios.length === 1 ? audios[0] : null;
 }
 
 function limitationDurations(report: StatsReportLike | null): LimitationDurations | null {
@@ -231,11 +281,27 @@ export function buildSample(input: BuildSampleInput): BuildSampleResult {
     : diffCounter(readNumber(audioReport, 'packetsReceived'), prev?.audioPackets ?? null);
   const sampleKey = input.role === 'sender' ? 'totalSamplesSent' : 'totalSamplesReceived';
   const audioSamples = diffCounter(readNumber(audioReport, sampleKey), prev?.audioSamples ?? null);
+  const energyReport = input.role === 'sender' ? audioMediaSource(reports, audioReport) : audioReport;
+  const audioPacketsLost = diffCounter(readNumber(audioReport, 'packetsLost'), prev?.audioPacketsLost ?? null);
+  const audioConcealed = diffCounter(readNumber(audioReport, 'concealedSamples'), prev?.audioConcealedSamples ?? null);
+  const audioConcealmentEvents = diffCounter(readNumber(audioReport, 'concealmentEvents'), prev?.audioConcealmentEvents ?? null);
+  const audioSilent = diffCounter(readNumber(audioReport, 'silentConcealedSamples'), prev?.audioSilentConcealed ?? null);
+  const audioFecReceived = diffCounter(readNumber(audioReport, 'fecPacketsReceived'), prev?.audioFecReceived ?? null);
+  const audioFecDiscarded = diffCounter(readNumber(audioReport, 'fecPacketsDiscarded'), prev?.audioFecDiscarded ?? null);
+  const audioRemoved = diffCounter(readNumber(audioReport, 'removedSamplesForAcceleration'), prev?.audioRemovedSamples ?? null);
+  const audioInserted = diffCounter(readNumber(audioReport, 'insertedSamplesForDeceleration'), prev?.audioInsertedSamples ?? null);
+  const audioEnergy = diffCounter(readNumber(energyReport, 'totalAudioEnergy'), prev?.audioEnergy ?? null);
+  const audioEnergyDuration = diffCounter(readNumber(energyReport, 'totalSamplesDuration'), prev?.audioEnergyDuration ?? null);
+  const audioJitterDelay = diffCounter(readNumber(audioReport, 'jitterBufferDelay'), prev?.audioJitterDelay ?? null);
+  const audioJitterEmitted = diffCounter(readNumber(audioReport, 'jitterBufferEmittedCount'), prev?.audioJitterEmitted ?? null);
 
   const resets = [
     encoded, encodeTime, bytesSent, keyOut, nackOut, pliOut, firOut,
     received, decoded, dropped, decodeTime, packetsReceived, packetsLost, bytesReceived,
-    jitterDelay, jitterEmitted, freezes, freezeDuration, keyIn, nackIn, pliIn, firIn, audioBytes, audioPackets, audioSamples,
+    jitterDelay, jitterEmitted, freezes, freezeDuration, keyIn, nackIn, pliIn, firIn,
+    audioBytes, audioPackets, audioSamples, audioPacketsLost, audioConcealed, audioConcealmentEvents,
+    audioSilent, audioFecReceived, audioFecDiscarded, audioRemoved, audioInserted,
+    audioEnergy, audioEnergyDuration, audioJitterDelay, audioJitterEmitted,
   ];
   const countersReset = resets.some((item) => item.reset);
 
@@ -346,9 +412,52 @@ export function buildSample(input: BuildSampleInput): BuildSampleResult {
     audioBytesIn: input.role === 'receiver' ? audioBytesNow : prev?.audioBytesIn ?? null,
     audioPackets: readNumber(audioReport, input.role === 'sender' ? 'packetsSent' : 'packetsReceived'),
     audioSamples: readNumber(audioReport, sampleKey),
+    audioPacketsLost: readNumber(audioReport, 'packetsLost'),
+    audioConcealedSamples: readNumber(audioReport, 'concealedSamples'),
+    audioConcealmentEvents: readNumber(audioReport, 'concealmentEvents'),
+    audioSilentConcealed: readNumber(audioReport, 'silentConcealedSamples'),
+    audioFecReceived: readNumber(audioReport, 'fecPacketsReceived'),
+    audioFecDiscarded: readNumber(audioReport, 'fecPacketsDiscarded'),
+    audioRemovedSamples: readNumber(audioReport, 'removedSamplesForAcceleration'),
+    audioInsertedSamples: readNumber(audioReport, 'insertedSamplesForDeceleration'),
+    audioEnergy: readNumber(energyReport, 'totalAudioEnergy'),
+    audioEnergyDuration: readNumber(energyReport, 'totalSamplesDuration'),
+    audioJitterDelay: readNumber(audioReport, 'jitterBufferDelay'),
+    audioJitterEmitted: readNumber(audioReport, 'jitterBufferEmittedCount'),
   };
   const audioDtMs = audioDt ?? dtMs;
   const audioFlowing = (audioBytes.delta ?? 0) > 0 || (audioPackets.delta ?? 0) > 0;
+  const signal: AudioSignalStats | null = audioReport ? {
+    audioLevel: readNumber(energyReport, 'audioLevel'),
+    totalAudioEnergy: readNumber(energyReport, 'totalAudioEnergy'),
+    totalSamplesDuration: readNumber(energyReport, 'totalSamplesDuration'),
+    ...rmsFromEnergy(audioEnergy.delta, audioEnergyDuration.delta),
+  } : null;
+  const audioJitterSec = readNumber(audioReport, 'jitter');
+  const inboundAudio: AudioInboundQuality | null = input.role === 'receiver' && audioReport ? {
+    packetsReceived: readNumber(audioReport, 'packetsReceived'),
+    packetsLost: readNumber(audioReport, 'packetsLost'),
+    packetsLostDelta: audioPacketsLost.delta,
+    jitterMs: audioJitterSec === null ? null : audioJitterSec * 1000,
+    concealedSamples: readNumber(audioReport, 'concealedSamples'),
+    concealedSamplesDelta: audioConcealed.delta,
+    concealmentEvents: readNumber(audioReport, 'concealmentEvents'),
+    concealmentEventsDelta: audioConcealmentEvents.delta,
+    silentConcealedSamples: readNumber(audioReport, 'silentConcealedSamples'),
+    silentConcealedSamplesDelta: audioSilent.delta,
+    fecPacketsReceived: readNumber(audioReport, 'fecPacketsReceived'),
+    fecPacketsReceivedDelta: audioFecReceived.delta,
+    fecPacketsDiscarded: readNumber(audioReport, 'fecPacketsDiscarded'),
+    fecPacketsDiscardedDelta: audioFecDiscarded.delta,
+    removedSamplesForAcceleration: readNumber(audioReport, 'removedSamplesForAcceleration'),
+    removedSamplesDelta: audioRemoved.delta,
+    insertedSamplesForDeceleration: readNumber(audioReport, 'insertedSamplesForDeceleration'),
+    insertedSamplesDelta: audioInserted.delta,
+    totalSamplesReceived: readNumber(audioReport, 'totalSamplesReceived'),
+    jitterBufferDelay: readNumber(audioReport, 'jitterBufferDelay'),
+    jitterBufferEmittedCount: readNumber(audioReport, 'jitterBufferEmittedCount'),
+    jitterBufferAvgDelayMs: avgMsPerFrame(audioJitterDelay.delta, audioJitterEmitted.delta),
+  } : null;
 
   const sample: MetricSample = {
     timestamp: input.wallTime,
@@ -372,6 +481,9 @@ export function buildSample(input: BuildSampleInput): BuildSampleResult {
       bitrate: bitrateFromBytes(audioBytes.delta, audioDtMs),
       samples: readNumber(audioReport, sampleKey),
       samplesPerSec: perSecond(audioSamples.delta, audioDtMs),
+      codecInfo: rtpCodecInfo(reports, readString(audioReport, 'codecId')),
+      signal,
+      inbound: inboundAudio,
     } : null,
     audio: null,
     outbound,

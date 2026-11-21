@@ -139,13 +139,17 @@ O arquivo traz:
 - `capture`: pedido, `getSettings`, `getConstraints`, `getCapabilities` (ou `null` se o navegador não tiver), `readyState` e `contentHint` de antes de ajustarmos o hint
 - `encoder`: por `connectionId`, `maxBitrate`, `maxFramerate`, `scaleResolutionDownBy` e `degradationPreference` antes e depois de `setParameters`. `after: null` significa que a aplicação falhou
 - `resolution`: solicitada, track capturada, origem WebRTC, codificada e recebida, cada uma com `null` quando aquela etapa não existe neste navegador
+- `audio.captureFormat`: `getSettings`, `getConstraints` e `getCapabilities` da track de áudio autorizada, mais `suppressLocalAudioPlayback` da superfície quando o navegador informa. Cada grupo fica separado
+- `audio.localNegotiation` e `audio.remoteNegotiation`: codec, payload, clock rate, canais e os parâmetros Opus permitidos. O SDP bruto não entra
+- `audio.codecInfo`: `mimeType`, `clockRate`, `channels` e o `fmtp` já filtrado do relatório `codec`
+- `audio.signal` e `audio.inbound`: nível, energia, RMS, dBFS, perda, jitter, amostras ocultadas, FEC e atraso do jitter buffer de áudio. Contador de vídeo não preenche esses campos
 - histórico, eventos, diagnósticos
 - rota ICE sem IP
 - `collectedFrom` e `collectedTo`
 - `sessionStartedAt`, `connectionCreatedAt`, `monitorStartedAt`, `firstConnectedAt`, `firstSampleAt`
 - `timeline`: a sessão inteira em cada JSON do remetente; no receptor, só os eventos desta conexão e os que não têm `connectionId`
 
-Não entram CPF, apelido, IP, conteúdo da tela, senha, token, SDP ou `peerId`. A linha do tempo usa `connectionId`. Chaves como `address`, `credential`, `nickname` e `peerId` são removidas antes do download. Para comparar uma queda, exporte os dois lados com os horários alinhados.
+Não entram CPF, apelido, IP, conteúdo da tela, senha, token, SDP completo, rótulo de dispositivo, id de track ou `peerId`. O `fmtp` guardado é só a lista de parâmetros Opus conhecida. Bitrate, clock rate, `stereo=1` e o estado **ÁUDIO RECEBIDO E REPRODUZINDO** não provam fidelidade. A linha do tempo usa `connectionId`. Chaves como `address`, `credential`, `nickname` e `peerId` são removidas antes do download. Para comparar uma queda, exporte os dois lados com os horários alinhados.
 
 ## Linha do tempo e horários
 
@@ -179,7 +183,7 @@ npm test
 npm run build
 ```
 
-`npm test` usa o executor do Node (`node:test`) sobre `src/lib/diagnostics/diagnostics.test.ts`, `src/lib/diagnostics/audio.test.ts`, `src/lib/diagnostics/resolution.test.ts` e `src/lib/diagnostics/timeline.test.ts`. Cobre FPS normal e zero, queda, contadores e reset, perda, jitter, tempo de decode, descartes de reprodução, API ausente, aba visível, aba oculta, vídeo pausado, decoder estável com compositor mais baixo, ausência de callbacks, intervalo irregular, fechamento, troca de stream, coleta com o painel fechado, consulta sobreposta, retenção de 600 amostras, dois monitores com horários diferentes, a entrada do segundo espectador depois de 60 segundos, reconexão, saída, a linha do tempo compartilhada nos JSON do remetente, separação inbound/outbound, par ICE selecionado, o tratamento de FPS zero no ABR, o escopo da captura de áudio e a separação entre resolução pedida, capturada, de origem, codificada e recebida. O teste de escuta no Chrome ou no Edge está separado, em [`audio.md`](audio.md), e não é substituído por estes testes. Estes testes não observam um `<video>` real no Chrome nem uma sala com dois espectadores de verdade.
+`npm test` usa o executor do Node (`node:test`) sobre `src/lib/diagnostics/diagnostics.test.ts`, `src/lib/diagnostics/audio.test.ts`, `src/lib/diagnostics/resolution.test.ts` e `src/lib/diagnostics/timeline.test.ts`. Cobre FPS normal e zero, queda, contadores e reset, perda, jitter, tempo de decode, descartes de reprodução, API ausente, aba visível, aba oculta, vídeo pausado, decoder estável com compositor mais baixo, ausência de callbacks, intervalo irregular, fechamento, troca de stream, coleta com o painel fechado, consulta sobreposta, retenção de 600 amostras, dois monitores com horários diferentes, a entrada do segundo espectador depois de 60 segundos, reconexão, saída, a linha do tempo compartilhada nos JSON do remetente, separação inbound/outbound, par ICE selecionado, o tratamento de FPS zero no ABR, o escopo da captura de áudio, a leitura de settings/constraints/capabilities, o `fmtp` Opus sem SDP bruto, concealment, energia, RMS e a separação entre resolução pedida, capturada, de origem, codificada e recebida. O teste de escuta no Chrome ou no Edge está separado, em [`audio.md`](audio.md), e não é substituído por estes testes. Estes testes não observam um `<video>` real no Chrome nem uma sala com dois espectadores de verdade.
 
 ## Roteiro manual (Chrome ou Edge)
 
@@ -211,3 +215,4 @@ Para um teste visual sem segunda pessoa, `http://localhost:3000/?mock` mostra o 
 - A linha “Resolução” do painel continua sendo o tamanho codificado (ou o da origem, se o frame codificado ainda não existe). O JSON é que separa o 1080p pedido da track, da origem, do encoder e do espectador. Um desses campos em `null` não é completado com outro.
 - `presentedFps` é a taxa de callbacks do compositor, não a taxa pintada na tela. `totalPresentedFrames` é `totalVideoFrames` e inclui quadros descartados. Sem `requestVideoFrameCallback`, `presentedFps` fica `null`; o delta de `totalVideoFrames` vai para `qualityTotalDelta`.
 - Aba em segundo plano e um único salto de `mediaTime` não são, sozinhos, congelamento da transmissão.
+- O diagnóstico de áudio não mede espectro nem aprova a escuta. Chrome, Edge e Firefox podem omitir `getCapabilities`, `audioLevel`, `concealedSamples`, `channels` e `suppressLocalAudioPlayback`. O que falta fica `null` no JSON e `n/d` no painel, nunca zero presumido. `clockRate` do Opus não é o sample rate da captura.

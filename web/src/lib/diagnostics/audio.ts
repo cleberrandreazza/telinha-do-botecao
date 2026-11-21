@@ -1,18 +1,17 @@
 import type {
+  AudioCaptureObservation,
   AudioCode,
   AudioDiagnosis,
   AudioFacts,
+  AudioFormatFields,
   AudioPlaybackReport,
   AudioRtp,
+  AudioSdpInfo,
   EndpointRole,
+  OpusFmtp,
 } from './types.ts';
 
-export interface AudioSdpInfo {
-  present: boolean;
-  rejected: boolean;
-  direction: 'sendrecv' | 'sendonly' | 'recvonly' | 'inactive' | null;
-  codecs: string[];
-}
+export type { AudioSdpInfo } from './types.ts';
 
 export type AudioMode = 'off' | 'source' | 'system';
 
@@ -27,22 +26,218 @@ export interface AudioCaptureContext {
   displaySurface: string | null;
   policy: string | null;
   discardReason: string | null;
+  /** Leitura única de getSettings, getConstraints e getCapabilities no momento da captura. */
+  format?: AudioCaptureObservation | null;
 }
 
 export interface AudioLinkContext {
   senderAttached: boolean;
   negotiated: boolean | null;
   direction: string | null;
+  local?: AudioSdpInfo | null;
+  remote?: AudioSdpInfo | null;
+}
+
+export interface AudioInspectTrack {
+  getSettings?: () => unknown;
+  getConstraints?: () => unknown;
+  getCapabilities?: () => unknown;
+}
+
+const FMTP_FIELD: Record<string, keyof OpusFmtp> = {
+  stereo: 'stereo',
+  'sprop-stereo': 'spropStereo',
+  maxaveragebitrate: 'maxaveragebitrate',
+  maxplaybackrate: 'maxplaybackrate',
+  'sprop-maxcapturerate': 'spropMaxcapturerate',
+  useinbandfec: 'useinbandfec',
+  usedtx: 'usedtx',
+  ptime: 'ptime',
+  maxptime: 'maxptime',
+};
+
+export function emptyOpusFmtp(): OpusFmtp {
+  return {
+    stereo: null,
+    spropStereo: null,
+    maxaveragebitrate: null,
+    maxplaybackrate: null,
+    spropMaxcapturerate: null,
+    useinbandfec: null,
+    usedtx: null,
+    ptime: null,
+    maxptime: null,
+  };
+}
+
+/** Só os parâmetros Opus conhecidos. O restante da linha, inclusive o SDP, é descartado. */
+export function parseOpusFmtp(line: string | null | undefined): OpusFmtp {
+  const out = emptyOpusFmtp();
+  if (!line) return out;
+  let body = line.trim();
+  const prefixed = body.toLowerCase().startsWith('a=fmtp:');
+  if (prefixed) {
+    const space = body.indexOf(' ');
+    body = space === -1 ? '' : body.slice(space + 1);
+  }
+  for (const part of body.split(';')) {
+    const item = part.trim();
+    if (!item) continue;
+    const eq = item.indexOf('=');
+    if (eq <= 0) continue;
+    const field = FMTP_FIELD[item.slice(0, eq).trim().toLowerCase()];
+    const value = item.slice(eq + 1).trim();
+    if (!field || value.length === 0) continue;
+    out[field] = value;
+  }
+  return out;
+}
+
+function emptyAudioSdp(): AudioSdpInfo {
+  return {
+    present: false,
+    rejected: false,
+    direction: null,
+    codecs: [],
+    codec: null,
+    payloadType: null,
+    clockRate: null,
+    channels: null,
+    fmtp: emptyOpusFmtp(),
+  };
+}
+
+function emptyAudioFormat(): AudioFormatFields {
+  return {
+    sampleRate: null,
+    sampleSize: null,
+    channelCount: null,
+    latency: null,
+    echoCancellation: null,
+    noiseSuppression: null,
+    autoGainControl: null,
+    suppressLocalAudioPlayback: null,
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object') return null;
+  return value as Record<string, unknown>;
+}
+
+function callRecord(fn: (() => unknown) | undefined): { called: boolean; record: Record<string, unknown> | null } {
+  if (typeof fn !== 'function') return { called: false, record: null };
+  try {
+    return { called: true, record: asRecord(fn()) };
+  } catch {
+    return { called: true, record: null };
+  }
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function settingNumber(record: Record<string, unknown> | null, key: string): number | null {
+  if (!record || !(key in record)) return null;
+  return finiteNumber(record[key]);
+}
+
+function settingBoolean(record: Record<string, unknown> | null, key: string): boolean | null {
+  if (!record || !(key in record)) return null;
+  return typeof record[key] === 'boolean' ? record[key] : null;
+}
+
+function requestedNumber(record: Record<string, unknown> | null, key: string): number | null {
+  if (!record || !(key in record)) return null;
+  const value = record[key];
+  const bare = finiteNumber(value);
+  if (bare !== null) return bare;
+  const obj = asRecord(value);
+  if (!obj) return null;
+  const exact = finiteNumber(obj.exact);
+  if (exact !== null) return exact;
+  return finiteNumber(obj.ideal);
+}
+
+function requestedBoolean(record: Record<string, unknown> | null, key: string): boolean | null {
+  if (!record || !(key in record)) return null;
+  const value = record[key];
+  if (typeof value === 'boolean') return value;
+  const obj = asRecord(value);
+  if (!obj) return null;
+  if (typeof obj.exact === 'boolean') return obj.exact;
+  if (typeof obj.ideal === 'boolean') return obj.ideal;
+  return null;
+}
+
+/** Faixa numérica só vira um número quando min e max são o mesmo valor. */
+function capabilityNumber(record: Record<string, unknown> | null, key: string): number | null {
+  if (!record || !(key in record)) return null;
+  const value = record[key];
+  const bare = finiteNumber(value);
+  if (bare !== null) return bare;
+  const obj = asRecord(value);
+  if (!obj) return null;
+  const min = finiteNumber(obj.min);
+  const max = finiteNumber(obj.max);
+  if (min !== null && max !== null && min === max) return min;
+  return null;
+}
+
+function capabilityBoolean(record: Record<string, unknown> | null, key: string): boolean | null {
+  if (!record || !(key in record)) return null;
+  return typeof record[key] === 'boolean' ? record[key] : null;
+}
+
+function readFormat(record: Record<string, unknown> | null, mode: 'settings' | 'constraints' | 'capabilities'): AudioFormatFields {
+  const numberOf = mode === 'settings' ? settingNumber : mode === 'constraints' ? requestedNumber : capabilityNumber;
+  const booleanOf = mode === 'settings' ? settingBoolean : mode === 'constraints' ? requestedBoolean : capabilityBoolean;
+  return {
+    sampleRate: numberOf(record, 'sampleRate'),
+    sampleSize: numberOf(record, 'sampleSize'),
+    channelCount: numberOf(record, 'channelCount'),
+    latency: numberOf(record, 'latency'),
+    echoCancellation: booleanOf(record, 'echoCancellation'),
+    noiseSuppression: booleanOf(record, 'noiseSuppression'),
+    autoGainControl: booleanOf(record, 'autoGainControl'),
+    suppressLocalAudioPlayback: booleanOf(record, 'suppressLocalAudioPlayback'),
+  };
+}
+
+/**
+ * Lê a track autorizada sem inventar campo ausente.
+ * getCapabilities inexistente deixa `capabilities` null. Um método que existe e não devolve campos deixa os campos null.
+ */
+export function readAudioCapture(
+  track: AudioInspectTrack | null | undefined,
+  surfaceSettings?: Record<string, unknown> | null,
+): AudioCaptureObservation | null {
+  if (!track) return null;
+  const settingsCall = callRecord(track.getSettings);
+  const constraintsCall = callRecord(track.getConstraints);
+  const capabilitiesCall = callRecord(track.getCapabilities);
+  let surface: boolean | null = null;
+  if (surfaceSettings && typeof surfaceSettings === 'object' && 'suppressLocalAudioPlayback' in surfaceSettings) {
+    const value = surfaceSettings.suppressLocalAudioPlayback;
+    surface = typeof value === 'boolean' ? value : null;
+  }
+  return {
+    settings: settingsCall.called ? readFormat(settingsCall.record, 'settings') : emptyAudioFormat(),
+    constraints: constraintsCall.called ? readFormat(constraintsCall.record, 'constraints') : null,
+    capabilities: capabilitiesCall.called ? readFormat(capabilitiesCall.record, 'capabilities') : null,
+    surfaceSuppressLocalAudioPlayback: surface,
+  };
 }
 
 const DIRECTION = /^(sendrecv|sendonly|recvonly|inactive)$/;
 
 /**
- * Lê a seção de áudio do SDP já negociado. Não altera o SDP.
- * Porta 0 significa que a seção foi rejeitada.
+ * Lê a seção de áudio do SDP já negociado. Não altera o SDP e não o devolve.
+ * Porta 0 significa que a seção foi rejeitada. `opus/48000` sem o terceiro número deixa canais null.
  */
 export function inspectAudioSdp(sdp: string | null | undefined): AudioSdpInfo {
-  if (!sdp) return { present: false, rejected: false, direction: null, codecs: [] };
+  if (!sdp) return emptyAudioSdp();
   const lines = sdp.replace(/\r\n/g, '\n').split('\n');
   let inAudio = false;
   let present = false;
@@ -50,8 +245,13 @@ export function inspectAudioSdp(sdp: string | null | undefined): AudioSdpInfo {
   let direction: AudioSdpInfo['direction'] = null;
   const payloads: string[] = [];
   const codecs: string[] = [];
+  const maps: { payload: string; name: string; clockRate: number | null; channels: number | null }[] = [];
+  const fmtpByPayload = new Map<string, OpusFmtp>();
+  let ptime: string | null = null;
+  let maxptime: string | null = null;
   for (const line of lines) {
     if (line.startsWith('m=')) {
+      if (inAudio) break;
       inAudio = line.startsWith('m=audio');
       if (!inAudio) continue;
       present = true;
@@ -61,19 +261,49 @@ export function inspectAudioSdp(sdp: string | null | undefined): AudioSdpInfo {
       continue;
     }
     if (!inAudio) continue;
-    const rtpmap = line.match(/^a=rtpmap:(\d+)\s+([^/\s]+)/);
-    if (rtpmap && payloads.includes(rtpmap[1])) codecs.push(rtpmap[2]);
+    const rtpmap = line.match(/^a=rtpmap:(\d+)\s+([^/\s]+)(?:\/(\d+))?(?:\/(\d+))?/);
+    if (rtpmap && payloads.includes(rtpmap[1])) {
+      codecs.push(rtpmap[2]);
+      maps.push({
+        payload: rtpmap[1],
+        name: rtpmap[2],
+        clockRate: rtpmap[3] !== undefined ? Number(rtpmap[3]) : null,
+        channels: rtpmap[4] !== undefined ? Number(rtpmap[4]) : null,
+      });
+    }
+    const fmtp = line.match(/^a=fmtp:(\d+)\s+(.+)$/);
+    if (fmtp && payloads.includes(fmtp[1])) fmtpByPayload.set(fmtp[1], parseOpusFmtp(fmtp[2]));
     const dir = line.match(/^a=(sendrecv|sendonly|recvonly|inactive)$/);
     if (dir && DIRECTION.test(dir[1])) direction = dir[1] as AudioSdpInfo['direction'];
+    const pt = line.match(/^a=ptime:(\d+(?:\.\d+)?)$/);
+    if (pt) ptime = pt[1];
+    const mpt = line.match(/^a=maxptime:(\d+(?:\.\d+)?)$/);
+    if (mpt) maxptime = mpt[1];
   }
   if (present && !direction) direction = 'sendrecv';
-  return { present, rejected, direction, codecs };
+  const chosen = maps.find((item) => item.name.toLowerCase() === 'opus') ?? maps[0] ?? null;
+  const fmtp = chosen ? { ...(fmtpByPayload.get(chosen.payload) ?? emptyOpusFmtp()) } : emptyOpusFmtp();
+  if (fmtp.ptime === null && ptime !== null) fmtp.ptime = ptime;
+  if (fmtp.maxptime === null && maxptime !== null) fmtp.maxptime = maxptime;
+  return {
+    present,
+    rejected,
+    direction,
+    codecs,
+    codec: chosen ? chosen.name.toLowerCase() : null,
+    payloadType: chosen?.payload ?? null,
+    clockRate: chosen?.clockRate ?? null,
+    channels: chosen?.channels ?? null,
+    fmtp,
+  };
 }
 
 export function negotiationFromSdp(localSdp: string | null | undefined, remoteSdp: string | null | undefined): {
   negotiated: boolean;
   direction: string | null;
   codecs: string[];
+  local: AudioSdpInfo;
+  remote: AudioSdpInfo;
 } {
   const local = inspectAudioSdp(localSdp);
   const remote = inspectAudioSdp(remoteSdp);
@@ -82,6 +312,8 @@ export function negotiationFromSdp(localSdp: string | null | undefined, remoteSd
     negotiated,
     direction: remote.direction ?? local.direction,
     codecs: remote.codecs.length > 0 ? remote.codecs : local.codecs,
+    local,
+    remote,
   };
 }
 
@@ -104,7 +336,9 @@ export function audioModeFromConfig(config: { audio?: boolean; audioMode?: Audio
 /**
  * Pedido ao getDisplayMedia. Áudio continua boolean: um objeto de processamento
  * (echoCancellation etc.) faz o Chrome descartar a faixa.
- * `suppressLocalAudioPlayback` fica no topo das opções e só impede o eco local de quem compartilha.
+ * `suppressLocalAudioPlayback` pertence a `audio` na especificação de screen capture.
+ * Não pedimos essa restrição: o valor antigo no topo das opções era inválido, e
+ * colocá-lo dentro de `audio` nesta etapa mudaria o que a pessoa ouve localmente.
  * `exclude` limita o escopo. `windowAudio: 'system'` não é usado.
  */
 export function buildDisplayMediaOptions(
@@ -113,9 +347,9 @@ export function buildDisplayMediaOptions(
 ): Record<string, unknown> {
   if (mode === 'off') return { video, audio: false };
   if (mode === 'system') {
-    return { video, audio: true, systemAudio: 'include', windowAudio: 'exclude', suppressLocalAudioPlayback: true };
+    return { video, audio: true, systemAudio: 'include', windowAudio: 'exclude' };
   }
-  return { video, audio: true, systemAudio: 'exclude', windowAudio: 'exclude', suppressLocalAudioPlayback: true };
+  return { video, audio: true, systemAudio: 'exclude', windowAudio: 'exclude' };
 }
 
 function errorName(err: unknown): string {
@@ -352,6 +586,12 @@ export function attachAudio(input: {
     playbackBlocked: input.playback?.blocked ?? null,
     playError: input.playback?.playError ?? null,
     elementAudioTracks: input.playback?.elementAudioTracks ?? null,
+    captureFormat: input.capture?.format ?? null,
+    localNegotiation: input.link?.local ?? null,
+    remoteNegotiation: input.link?.remote ?? null,
+    codecInfo: input.rtp?.codecInfo ?? null,
+    signal: input.rtp?.signal ?? null,
+    inbound: input.rtp?.inbound ?? null,
   };
 }
 
@@ -426,7 +666,7 @@ export function classifyAudio(facts: AudioFacts | null, timestamp = Date.now()):
     return diagnosis(
       'SENDING',
       'ÁUDIO SENDO ENVIADO',
-      'Os pacotes de áudio desta conexão estão aumentando. Isso não prova que o espectador está ouvindo.',
+      'Os pacotes de áudio desta conexão estão aumentando. Isso não prova que o espectador está ouvindo nem que o som chegou nítido.',
       timestamp,
     );
   }
@@ -454,7 +694,7 @@ export function classifyAudio(facts: AudioFacts | null, timestamp = Date.now()):
   return diagnosis(
     'PLAYING',
     'ÁUDIO RECEBIDO E REPRODUZINDO',
-    'Os pacotes de áudio aumentam e o elemento está tocando, desmutado e com volume acima de zero.',
+    'Os pacotes de áudio aumentam e o elemento está tocando, desmutado e com volume acima de zero. Isso não mede se o som chegou nítido.',
     timestamp,
   );
 }

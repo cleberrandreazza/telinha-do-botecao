@@ -44,7 +44,8 @@ Mensagens possíveis: “Áudio da aba disponível.”, “Áudio não capturado
 ## Como o som chega ao espectador
 
 - Quem compartilha dá `addTrack` de cada track de áudio no mesmo `MediaStream` do vídeo.
-- O SDP não é reescrito. Depois da oferta e da resposta, a seção `m=audio` é só lida: presença, porta 0 (rejeitada), direção e codec.
+- A oferta e a resposta passam por `mungeOpusStereo()`. Se a seção tem `opus/48000/2`, a linha `a=fmtp` daquele payload recebe `stereo=1`, `sprop-stereo=1` e `maxaveragebitrate=128000`. Um parâmetro que já exista é atualizado, não duplicado. O restante do SDP, inclusive o vídeo, não é reescrito. Sem essa linha `rtpmap`, o SDP segue intacto.
+- `suppressLocalAudioPlayback` não é pedido. Na especificação de screen capture essa restrição fica dentro de `audio`, não no topo de `getDisplayMedia`. O valor antigo no topo era inválido. Não o movemos para dentro de `audio` nesta etapa, porque isso mudaria o que a pessoa ouve na própria máquina. O comportamento local fica o padrão do navegador, e a track continua sendo capturada e enviada.
 - Quem assiste escuta `addtrack`. Se o conjunto de tracks mudou, o `<video>` recebe um `MediaStream` novo com vídeo e áudio juntos, e `play()` é chamado de novo.
 - O primeiro `play()` já pede som, se o volume for maior que zero. Se o navegador recusar (`NotAllowedError`), o vídeo segue mudo e aparece o botão **Ativar áudio**. O clique chama `play()` desmutado na hora. O slider de volume faz o mesmo.
 - Uma track de áudio `muted` no receptor não derruba a conexão. Track de áudio de aba começa muda até existir som.
@@ -62,8 +63,36 @@ O painel não trata “existe um relatório `inbound-rtp` de áudio” como áud
 | ÁUDIO NÃO RECEBIDO | Sem track remota, ou bytes recebidos que não aumentam |
 | ÁUDIO RECEBIDO, MAS SILENCIADO | Pacotes aumentam e o elemento está mudo, pausado, com volume 0 ou com `play()` recusado |
 | ÁUDIO SENDO ENVIADO | No transmissor, pacotes ou bytes de áudio aumentam. Não prova que o outro lado ouve |
-| ÁUDIO RECEBIDO E REPRODUZINDO | Pacotes aumentam e o elemento está tocando, desmutado e com volume |
+| ÁUDIO RECEBIDO E REPRODUZINDO | Pacotes aumentam e o elemento está tocando, desmutado e com volume. Isso não diz que o som chegou nítido |
 | ÁUDIO SEM DADOS SUFICIENTES | Ainda não há intervalo ou leitura do elemento |
+
+## O que cada número de áudio significa
+
+Um bitrate de cerca de 128 kbps e cerca de 50 pacotes por segundo só dizem que há fluxo. Não dizem que a fidelidade da origem chegou ao espectador. Estes valores ficam separados no JSON e na camada técnica do painel. Dado que o navegador não expõe aparece como `null` no JSON e `n/d` no painel. Não é preenchido com zero.
+
+| Medida | O que ela é | O que ela não é |
+| --- | --- | --- |
+| Bitrate RTP | Bytes de áudio no intervalo, vezes 8 | Qualidade sonora, nem a taxa que o Opus realmente usou em cada quadro |
+| Clock rate | Relógio do payload, em geral 48000 no Opus | Sample rate da track capturada |
+| Sample rate da captura | `getSettings().sampleRate`, se o navegador informar | Clock rate do SDP |
+| Canais negociados | O terceiro número de `opus/48000/2`, ou `channels` no relatório `codec` | Prova de que os dois canais estão saindo ou chegando |
+| Canais capturados | `channelCount` em `getSettings()`, quando existe | O número pedido no SDP |
+| `stereo=1` e `sprop-stereo=1` | Parâmetros `fmtp` que a oferta ou a resposta declarou | Estéreo de fato, nem confirmação de que os dois canais atravessaram a rede |
+| `maxaveragebitrate=128000` | Teto médio declarado no `fmtp` | Bitrate medido e, menos ainda, nitidez |
+| Energia (`totalAudioEnergy`) | Soma de energia do relatório de origem, no transmissor, ou do `inbound-rtp`, no espectador | Espectro, agudos ou “som abafado” |
+| Nível (`audioLevel`) | Nível instantâneo informado por aquele relatório | Qualidade |
+| RMS e dBFS | `sqrt(delta da energia / delta da duração)` e `20 * log10(rms)`, só com dois intervalos válidos | Uma nota de qualidade. RMS 0 não vira dBFS, porque o logaritmo não é finito |
+| Pacotes perdidos | Delta de `packetsLost` do áudio | Perda do vídeo. Os contadores não se misturam |
+| Amostras ocultadas, FEC, aceleração e desaceleração | O que o jitter buffer do áudio fez neste intervalo | Prova de que o ouvinte percebeu ou deixou de perceber um defeito |
+| Reprodução | `PLAYING`, volume, mudo e bloqueio do `<video>` | Audição boa |
+
+No transmissor, a energia vem do `media-source` de áudio associado ao `mediaSourceId` do `outbound-rtp`. O `media-source` de vídeo não entra nessa conta. No espectador, os campos de recepção vêm só do `inbound-rtp` de áudio. A coleta continua sendo o `getStats()` que o monitor já faz uma vez por segundo. Não há `AudioContext` nem uma segunda consulta.
+
+A leitura da track acontece quando `getDisplayMedia()` devolve a faixa autorizada: `getSettings()`, `getConstraints()` e `getCapabilities()`. Cada um fica no seu campo. Identificador, rótulo e o SDP completo não são gravados. O `fmtp` exportado só pode conter `stereo`, `sprop-stereo`, `maxaveragebitrate`, `maxplaybackrate`, `sprop-maxcapturerate`, `useinbandfec`, `usedtx`, `ptime` e `maxptime`.
+
+Chrome, Edge e Firefox não expõem o mesmo conjunto. Quando falta `getCapabilities`, o campo `capabilities` fica `null`. Uma faixa numérica com mínimo diferente do máximo não vira um único `sampleRate`. `concealedSamples`, `fecPacketsReceived`, `audioLevel` e `suppressLocalAudioPlayback` podem aparecer como `n/d` sem que isso signifique zero. A supressão local na superfície só entra se `getSettings()` da track de vídeo realmente trouxer o campo.
+
+Nada disso aprova a qualidade auditiva. O classificador continua dizendo apenas se há captura, envio, recepção e reprodução.
 
 Eventos locais, também no JSON: captura iniciada, áudio indisponível, track adicionada ao sender, negociação, áudio recebido, áudio interrompido, reprodução bloqueada, áudio ativado pelo usuário.
 
@@ -104,3 +133,17 @@ Estes quatro testes precisam ser ouvidos por uma pessoa. Não marque como aprova
 3. Nenhum som de aplicativo externo chega ao espectador.
 
 Se aparecer **Ativar áudio** no espectador, o clique é que libera o som. Codec no painel, sozinho, não conta.
+
+**Teste E — referência conhecida, ainda não executado**
+
+Este teste não foi feito nesta etapa e não aprova o áudio. Ele serve para comparar a captura com a recepção depois que os campos novos existem.
+
+1. No Chrome, reproduza um WAV estéreo de 48 kHz conhecido na aba que será compartilhada.
+2. Confirme que quem transmite continua ouvindo essa referência na própria máquina.
+3. Conecte um espectador.
+4. Deixe tocar por pelo menos 60 segundos.
+5. Exporte o JSON dos dois lados.
+6. Anote, ouvindo, se o espectador percebe som abafado, perda de agudos, mono, distorção ou falhas.
+7. Compare sample rate e canais da captura, parâmetros Opus locais e remotos, clock rate e canais do relatório `codec`, energia e nível dos dois lados, perda, jitter e amostras ocultadas.
+
+Um teste A/B seguinte, também ainda não feito, compara a negociação Opus atual com a negociação nativa do navegador. Só uma variável muda de cada vez. Essa troca não está implementada.
