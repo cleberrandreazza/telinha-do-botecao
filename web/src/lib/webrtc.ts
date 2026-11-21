@@ -121,7 +121,6 @@ export class WebRTCManager {
     }
 
     const stream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions as DisplayMediaStreamOptions);
-    });
 
     // Otimiza a track de vídeo para screen sharing com movimento (jogos, vídeos)
     const videoTrack = stream.getVideoTracks()[0];
