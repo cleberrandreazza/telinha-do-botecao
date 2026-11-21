@@ -35,7 +35,7 @@ export default function Room({
   const [mouseInactive, setMouseInactive] = useState(false);
   const [copied, setCopied] = useState(false);
   const [volume, setVolume] = useState(0.7);
-  const [showSidebarVolume, setShowSidebarVolume] = useState(false);
+
   const [showSettings, setShowSettings] = useState(false);
   const [streamDismissed, setStreamDismissed] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -390,23 +390,6 @@ export default function Room({
               </div>
             </div>
             <div className="flex items-center gap-1 shrink-0">
-              {/* Volume controls */}
-              <div className="flex items-center rounded-lg bg-surface-container hover:bg-surface-container-high border border-[#1f222e] transition-colors">
-                <button
-                  onClick={() => setVolume(volume === 0 ? 0.7 : 0)}
-                  className="w-6 h-7 flex items-center justify-center text-outline hover:text-on-surface transition-colors cursor-pointer"
-                  title={volume === 0 ? 'Ativar áudio' : 'Silenciar'}
-                >
-                  <span className="material-symbols-outlined text-[16px]">{volume === 0 ? 'volume_off' : volume < 0.5 ? 'volume_down' : 'volume_up'}</span>
-                </button>
-                <button
-                  onClick={() => setShowSidebarVolume(!showSidebarVolume)}
-                  className="h-7 px-1 flex items-center justify-center text-outline hover:text-on-surface border-l border-[#1f222e] transition-colors cursor-pointer"
-                  title="Ajustar Volume de Saída"
-                >
-                  <span className="material-symbols-outlined text-[13px]">{showSidebarVolume ? 'expand_more' : 'expand_less'}</span>
-                </button>
-              </div>
               {/* Settings */}
               <button
                 onClick={() => setShowSettings(true)}
@@ -418,33 +401,6 @@ export default function Room({
             </div>
           </div>
 
-          {/* Volume Popover — full-width below user card */}
-          {showSidebarVolume && (
-            <div className="bg-[#18191c]/95 backdrop-blur-xl border border-[#272a37] rounded-xl p-3 shadow-2xl flex flex-col gap-2 z-50 mt-1">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold text-[#dbdee1] uppercase tracking-wider select-none">VOLUME DE SAÍDA</span>
-                <span className="font-label-mono text-[11px] font-semibold text-primary">{Math.round(volume * 100)}%</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <button className="text-outline hover:text-white cursor-pointer flex items-center justify-center shrink-0" onClick={() => setVolume(volume === 0 ? 0.7 : 0)}>
-                  <span className="material-symbols-outlined text-[16px]">{volume === 0 ? 'volume_off' : volume < 0.5 ? 'volume_down' : 'volume_up'}</span>
-                </button>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  step={1}
-                  value={Math.round(volume * 100)}
-                  onChange={(e) => setVolume(parseInt(e.target.value) / 100)}
-                  className="volume-slider flex-1 h-1.5 rounded-full appearance-none cursor-pointer"
-                  style={{
-                    background: `linear-gradient(to right, rgb(16, 185, 129) ${volume * 100}%, rgb(53, 55, 60) ${volume * 100}%)`
-                  }}
-                />
-                <span className="material-symbols-outlined text-[16px] text-[#dbdee1] select-none shrink-0">volume_up</span>
-              </div>
-            </div>
-          )}
         </div>
       </aside>
 

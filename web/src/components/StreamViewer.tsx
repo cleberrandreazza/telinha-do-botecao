@@ -306,13 +306,13 @@ export default function StreamViewer({
       >
         {/* Volume Popover */}
         {showVolumeSlider && (
-          <div className="mb-3 w-48 bg-[#18191c]/95 backdrop-blur-xl border border-[#272a37] rounded-xl p-3 shadow-2xl flex flex-col gap-2 z-50">
+          <div className="mb-3 w-52 bg-[#18191c]/95 backdrop-blur-xl border border-[#272a37] rounded-xl px-3.5 py-3 shadow-2xl flex flex-col gap-2 z-50">
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-bold text-[#dbdee1] uppercase tracking-wider select-none">Volume da Live</span>
               <span className="font-label-mono text-[11px] font-semibold text-primary">{Math.round(volume * 100)}%</span>
             </div>
-            <div className="flex items-center gap-2">
-              <button className="text-outline hover:text-white cursor-pointer flex items-center justify-center" onClick={() => onVolumeChange(volume === 0 ? 0.7 : 0)}>
+            <div className="flex items-center gap-2.5">
+              <button className="text-outline hover:text-white cursor-pointer flex items-center justify-center shrink-0 w-4" onClick={() => onVolumeChange(volume === 0 ? 0.7 : 0)}>
                 <span className="material-symbols-outlined text-[16px]">{volume === 0 ? 'volume_off' : volume < 0.5 ? 'volume_down' : 'volume_up'}</span>
               </button>
               <input
@@ -322,9 +322,12 @@ export default function StreamViewer({
                 step={0.05}
                 value={volume}
                 onChange={(e) => onVolumeChange(parseFloat(e.target.value))}
-                className="flex-1 h-1.5 bg-[#35373c] rounded-full appearance-none cursor-pointer accent-primary"
+                className="volume-slider flex-1 h-1.5 rounded-full appearance-none cursor-pointer"
+                style={{
+                  background: `linear-gradient(to right, rgb(16, 185, 129) ${volume * 100}%, rgb(53, 55, 60) ${volume * 100}%)`
+                }}
               />
-              <span className="material-symbols-outlined text-[16px] text-[#dbdee1] select-none">volume_up</span>
+              <span className="material-symbols-outlined text-[16px] text-[#dbdee1] select-none shrink-0 w-4">volume_up</span>
             </div>
           </div>
         )}
