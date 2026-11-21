@@ -44,7 +44,7 @@ Mensagens possíveis: “Áudio da aba disponível.”, “Áudio não capturado
 ## Como o som chega ao espectador
 
 - Quem compartilha dá `addTrack` de cada track de áudio no mesmo `MediaStream` do vídeo.
-- A oferta e a resposta passam por `mungeOpusStereo()`. Se a seção tem `opus/48000/2`, a linha `a=fmtp` daquele payload recebe `stereo=1`, `sprop-stereo=1` e `maxaveragebitrate=128000`. Um parâmetro que já exista é atualizado, não duplicado. O restante do SDP, inclusive o vídeo, não é reescrito. Sem essa linha `rtpmap`, o SDP segue intacto.
+- A oferta do transmissor passa por `configureOpusSenderSdp()` e a resposta do espectador por `configureOpusReceiverSdp()`. Ambos declaram `stereo=1` e `maxaveragebitrate=320000`: são, respectivamente, preferência e limite de recepção do endpoint local. Apenas a oferta do transmissor declara `sprop-stereo`, e só quando `getSettings().channelCount` da track capturada informa 1 ou 2+ canais. A resposta do espectador não afirma que ele envia áudio estéreo. Os parâmetros existentes são atualizados sem duplicação; `useinbandfec` é preservado. O restante do SDP, inclusive o vídeo, não é reescrito. Sem `opus/48000/2`, o SDP segue intacto. `maxaveragebitrate=320000` é um teto de recepção, não uma meta nem uma garantia de que o encoder produzirá 320 kbps; a taxa real continua sendo medida pelos bytes RTP.
 - `suppressLocalAudioPlayback` não é pedido. Na especificação de screen capture essa restrição fica dentro de `audio`, não no topo de `getDisplayMedia`. O valor antigo no topo era inválido. Não o movemos para dentro de `audio` nesta etapa, porque isso mudaria o que a pessoa ouve na própria máquina. O comportamento local fica o padrão do navegador, e a track continua sendo capturada e enviada.
 - Quem assiste escuta `addtrack`. Se o conjunto de tracks mudou, o `<video>` recebe um `MediaStream` novo com vídeo e áudio juntos, e `play()` é chamado de novo.
 - O primeiro `play()` já pede som, se o volume for maior que zero. Se o navegador recusar (`NotAllowedError`), o vídeo segue mudo e aparece o botão **Ativar áudio**. O clique chama `play()` desmutado na hora. O slider de volume faz o mesmo.
@@ -78,7 +78,7 @@ Um bitrate de cerca de 128 kbps e cerca de 50 pacotes por segundo só dizem que 
 | Canais negociados | O terceiro número de `opus/48000/2`, ou `channels` no relatório `codec` | Prova de que os dois canais estão saindo ou chegando |
 | Canais capturados | `channelCount` em `getSettings()`, quando existe | O número pedido no SDP |
 | `stereo=1` e `sprop-stereo=1` | Parâmetros `fmtp` que a oferta ou a resposta declarou | Estéreo de fato, nem confirmação de que os dois canais atravessaram a rede |
-| `maxaveragebitrate=128000` | Teto médio declarado no `fmtp` | Bitrate medido e, menos ainda, nitidez |
+| `maxaveragebitrate=320000` | Teto médio de recepção declarado no `fmtp` | Bitrate medido, garantia de 320 kbps ou nitidez |
 | Energia (`totalAudioEnergy`) | Soma de energia do relatório de origem, no transmissor, ou do `inbound-rtp`, no espectador | Espectro, agudos ou “som abafado” |
 | Nível (`audioLevel`) | Nível instantâneo informado por aquele relatório | Qualidade |
 | RMS e dBFS | `sqrt(delta da energia / delta da duração)` e `20 * log10(rms)`, só com dois intervalos válidos | Uma nota de qualidade. RMS 0 não vira dBFS, porque o logaritmo não é finito |
