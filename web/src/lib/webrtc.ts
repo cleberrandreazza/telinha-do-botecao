@@ -228,12 +228,14 @@ export class WebRTCManager {
       pc.addTrack(track, this.localStream);
     }
 
-    // Configura bitrate e prioridade de frame rate no sender de vídeo
-    await this.configureVideoSender(pc);
+    // Prefere H264 DEPOIS de addTrack (transceivers existem agora)
+    this.preferH264(pc);
 
-    // Cria e envia o offer
+    // Cria offer e injeta bandwidth no SDP
     const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
+    const maxKbps = Math.round((BITRATE_MAP[this.currentConfig.resolution] || 6_000_000) / 1000);
+    const tweakedSdp = this.addBandwidthToSdp(offer.sdp || '', maxKbps);
+    await pc.setLocalDescription({ type: 'offer', sdp: tweakedSdp });
 
     this.signal.send({
       type: 'offer',
@@ -243,7 +245,38 @@ export class WebRTCManager {
   }
 
   /**
-   * Configura o sender de vídeo com bitrate e degradation preference
+   * Prefere H264 sobre VP9 — H264 usa encoding por hardware (GPU),
+   * VP9 usa CPU que compete com o jogo que está rodando
+   */
+  private preferH264(pc: RTCPeerConnection) {
+    try {
+      const transceivers = pc.getTransceivers();
+      for (const t of transceivers) {
+        if (t.sender?.track?.kind === 'video' || t.receiver?.track?.kind === 'video') {
+          const codecs = RTCRtpReceiver.getCapabilities('video')?.codecs || [];
+          const h264 = codecs.filter(c => c.mimeType === 'video/H264');
+          const rest = codecs.filter(c => c.mimeType !== 'video/H264');
+          if (h264.length > 0) {
+            t.setCodecPreferences([...h264, ...rest]);
+          }
+        }
+      }
+    } catch {
+      // setCodecPreferences não suportado em todos os browsers
+    }
+  }
+
+  /**
+   * Injeta b=AS (bandwidth) no SDP para definir bitrate máximo
+   * Mais confiável que setParameters antes da negociação completar
+   */
+  private addBandwidthToSdp(sdp: string, maxKbps: number): string {
+    // Adiciona b=AS após cada m=video line
+    return sdp.replace(/(m=video.*\r\n)/g, `$1b=AS:${maxKbps}\r\n`);
+  }
+
+  /**
+   * Configura sender de vídeo DEPOIS da negociação (chamado ao receber answer)
    */
   private async configureVideoSender(pc: RTCPeerConnection) {
     const videoSender = pc.getSenders().find(s => s.track?.kind === 'video');
@@ -252,22 +285,19 @@ export class WebRTCManager {
     try {
       const params = videoSender.getParameters();
 
-      // Garante que encodings existe
       if (!params.encodings || params.encodings.length === 0) {
         params.encodings = [{}];
       }
 
-      // Define bitrate máximo baseado na resolução configurada
       const maxBitrate = BITRATE_MAP[this.currentConfig.resolution] || 6_000_000;
       params.encodings[0].maxBitrate = maxBitrate;
+      params.encodings[0].maxFramerate = this.currentConfig.frameRate;
 
-      // Prioriza manter frame rate em vez de resolução quando a rede aperta
-      // @ts-ignore — degradationPreference existe mas pode não estar nos tipos TS
+      // @ts-ignore
       params.degradationPreference = 'maintain-framerate';
 
       await videoSender.setParameters(params);
     } catch {
-      // Alguns browsers podem não suportar todos os parâmetros
       console.warn('[WebRTC] Não foi possível configurar sender de vídeo');
     }
   }
@@ -290,12 +320,15 @@ export class WebRTCManager {
   }
 
   /**
-   * Recebi answer de um viewer
+   * Recebi answer de um viewer — agora configura bitrate DEPOIS da negociação
    */
   private async handleAnswer(fromId: string, sdp: RTCSessionDescriptionInit) {
     const pc = this.connections.get(fromId);
     if (!pc) return;
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+
+    // Agora que a negociação completou, configura bitrate e framerate no sender
+    await this.configureVideoSender(pc);
   }
 
   /**
