@@ -1,5 +1,5 @@
 import { SignalingClient } from './signaling';
-import { mungeOpusStereo } from './opus';
+import { configureOpusReceiverSdp, configureOpusSenderSdp } from './opus';
 import type { ServerMessage, StreamInfo } from './types';
 import {
   AdaptiveBitrateController,
@@ -350,7 +350,7 @@ export class WebRTCManager {
     const offer = await pc.createOffer();
     const mungedOffer = new RTCSessionDescription({
       type: offer.type,
-      sdp: mungeOpusStereo(offer.sdp || ''),
+      sdp: configureOpusSenderSdp(offer.sdp || '', this.audioCapture.format?.settings.channelCount),
     });
     await pc.setLocalDescription(mungedOffer);
 
@@ -470,7 +470,7 @@ export class WebRTCManager {
     const answer = await pc.createAnswer();
     const mungedAnswer = new RTCSessionDescription({
       type: answer.type,
-      sdp: mungeOpusStereo(answer.sdp || ''),
+      sdp: configureOpusReceiverSdp(answer.sdp || ''),
     });
     await pc.setLocalDescription(mungedAnswer);
     this.noteAudioNegotiation(fromId, pc);
