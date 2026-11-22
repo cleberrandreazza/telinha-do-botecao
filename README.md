@@ -71,7 +71,7 @@ npm run install:all
 npm run dev
 ```
 
-O frontend abre em `http://localhost:3000` e o servidor de sinalização roda na porta `8080`.
+O frontend abre em `http://localhost:3000` e o servidor de sinalização roda na porta `4000`.
 
 ```bash
 # Testes do diagnóstico (na pasta web) e build de produção
@@ -80,6 +80,22 @@ npm run build
 ```
 
 > **Dica:** Adicione `?mock` na URL para testar com streams fake sem precisar de outra pessoa.
+
+### Assistir pelo celular (mesma rede Wi-Fi)
+
+O dev server já sobe em `0.0.0.0`, então o celular na mesma rede abre `http://<ip-do-pc>:3000`.
+O endereço do servidor de sinalização é derivado do hostname da página (`<ip-do-pc>:4000`), então
+não há nada a configurar — só não defina `VITE_SIGNAL_HOST` com `localhost`, que o celular
+resolveria como ele mesmo e a conexão cairia.
+
+Duas limitações do navegador valem para o celular:
+
+- **Celular não compartilha a tela.** A API de captura (`getDisplayMedia`) só existe em
+  navegadores de computador. No celular o botão aparece desabilitado com o aviso explicando o
+  motivo — quem compartilha é o PC, o celular assiste.
+- **Captura de tela exige contexto seguro.** Abrir pelo IP (`http://192.168.x.x:3000`) não é
+  contexto seguro, então o PC não consegue capturar por esse endereço. Compartilhe abrindo
+  `http://localhost:3000` no próprio PC; o celular só assiste.
 
 ## Estrutura do projeto
 

@@ -433,6 +433,29 @@ test('seleção do par ICE não usa um succeeded arbitrário', () => {
   equal(nominated.rttMs, 110);
 });
 
+test('ABR corta bitrate sob limitação de banda e não corta por CPU', () => {
+  let state = initialAbrState(30, 1_000_000);
+  for (let i = 0; i < 4; i += 1) {
+    const decision = evaluateAbr(state, 30, 'bandwidth');
+    equal(decision.action, 'hold');
+    equal(decision.reason, 'bandwidth-limited');
+    state = decision.state;
+  }
+  const constrained = evaluateAbr(state, 30, 'bandwidth');
+  equal(constrained.action, 'decrease');
+  equal(constrained.reason, 'bandwidth-limited');
+  equal(constrained.nextBitrate, 700_000);
+
+  state = initialAbrState(30, 1_000_000);
+  for (let i = 0; i < 8; i += 1) {
+    const decision = evaluateAbr(state, 0, 'cpu');
+    equal(decision.action, 'hold');
+    state = decision.state;
+  }
+  equal(state.currentMaxBitrate, 1_000_000);
+  equal(state.lowFpsCount, 0);
+});
+
 test('ABR usa FPS outbound, trata zero e ignora métrica ausente', () => {
   let state = initialAbrState(30, 1_000_000);
   const unavailable = evaluateAbr(state, null);

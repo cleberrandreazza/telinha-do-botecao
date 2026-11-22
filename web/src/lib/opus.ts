@@ -1,9 +1,10 @@
 /**
- * Negocia preferências de recepção Opus até 320 kbps e anuncia a capacidade
+ * Negocia preferências de recepção Opus até 192 kbps e anuncia a capacidade
  * estéreo da origem somente quando a track informa a quantidade de canais.
- * Os parâmetros SDP não garantem que o bitrate efetivo atinja 320 kbps.
+ * Os parâmetros SDP são preferências de recepção (RFC 7587);
+ * o teto de envio é aplicado separadamente no RTCRtpSender.
  */
-export const OPUS_MAX_AVERAGE_BITRATE = 320_000;
+export const OPUS_MAX_AVERAGE_BITRATE = 192_000;
 
 function configureOpusSdp(sdp: string, sourceChannels?: number | null, preferStereo = true): string {
   const opusMatch = sdp.match(/^a=rtpmap:(\d+)\s+opus\/48000\/2\s*$/im);
@@ -16,6 +17,7 @@ function configureOpusSdp(sdp: string, sourceChannels?: number | null, preferSte
   const updates = new Map<string, string>([
     ['stereo', preferStereo ? '1' : '0'],
     ['maxaveragebitrate', String(OPUS_MAX_AVERAGE_BITRATE)],
+    ['usedtx', '0'],
   ]);
 
   // RFC 7587 define sprop-stereo como indicação exclusiva do transmissor.
@@ -35,6 +37,9 @@ function configureOpusSdp(sdp: string, sourceChannels?: number | null, preferSte
       if (eq === -1) params.set(item.toLowerCase(), '');
       else params.set(item.slice(0, eq).trim().toLowerCase(), item.slice(eq + 1).trim());
     }
+    // Never preserve a browser-provided sender-capability claim without a
+    // confirmed capture channelCount.
+    params.delete('sprop-stereo');
     for (const [key, value] of updates) params.set(key, value);
     const merged = [...params.entries()]
       .map(([key, value]) => (value === '' ? key : `${key}=${value}`))
@@ -63,10 +68,21 @@ export function configureOpusSenderSdp(sdp: string, sourceChannels?: number | nu
 }
 
 /**
- * SDP gerado pelo espectador: declara o que ele aceita receber, sem afirmar
- * que o próprio espectador envia áudio estéreo. Se a origem anuncia mono,
- * solicita mono para evitar upmix artificial no transmissor.
+ * SDP gerado pelo espectador: `stereo=1` declara preferência de recepção,
+ * sem afirmar que o próprio espectador envia áudio estéreo.
  */
 export function configureOpusReceiverSdp(sdp: string, sourceLikelyStereo?: boolean | null): string {
   return configureOpusSdp(sdp, null, sourceLikelyStereo !== false);
+}
+
+/** Aplica e relê o teto real do sender; SDP maxaveragebitrate é apenas recepção. */
+export async function configureAudioSenderParameters(sender: RTCRtpSender): Promise<number | null> {
+  const params = sender.getParameters();
+  if (!params.encodings?.length) params.encodings = [{}];
+  params.encodings[0].maxBitrate = OPUS_MAX_AVERAGE_BITRATE;
+
+  await sender.setParameters(params);
+
+  const applied = sender.getParameters().encodings?.[0]?.maxBitrate;
+  return typeof applied === 'number' && Number.isFinite(applied) ? applied : null;
 }

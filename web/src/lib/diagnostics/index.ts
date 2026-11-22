@@ -44,7 +44,9 @@ export type { DiagnosticReport } from './export.ts';
 export {
   readCaptureProbe,
   readEncoderEncoding,
+  readTrackSettings,
   resolutionFacts,
+  describeCapture,
 } from './resolution.ts';
 export type { CaptureProbe, EncoderProbe, ResolutionFacts } from './resolution.ts';
 export {

@@ -121,6 +121,17 @@ export function isMockMode(): boolean {
   return new URLSearchParams(window.location.search).has('mock');
 }
 
+/** ?mock&share — simula que VOCÊ está transmitindo, para validar o preview local. */
+export function isMockSharing(): boolean {
+  const params = new URLSearchParams(window.location.search);
+  return params.has('mock') && params.has('share');
+}
+
+/** Stream falsa da sua própria captura (usada no preview de quem transmite). */
+export function createMockLocalStream(): MediaStream {
+  return createFakeStream('Você (Dev)', '#0f766e');
+}
+
 export function generateMockData(): MockData {
   const myPeerId = 'mock-self';
   const nickname = 'Você (Dev)';

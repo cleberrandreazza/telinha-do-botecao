@@ -2,13 +2,14 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { SignalingClient } from './lib/signaling';
 import { WebRTCManager } from './lib/webrtc';
 import { getSignalingUrl } from './lib/utils';
+import { detectScreenShareSupport, readScreenShareEnvironment } from './lib/screenShare';
 import type { AppScreen, PeerInfo, StreamInfo, ServerMessage } from './lib/types';
 import Home from './components/Home';
 import Room from './components/Room';
 import StreamSettings from './components/StreamSettings';
 import type { StreamConfig } from './lib/webrtc';
 import type { AudioPlaybackReport, DiagnosticsSnapshot, PlaybackSample } from './lib/diagnostics/index';
-import { isMockMode, generateMockData, generateMockStreamsDelayed } from './lib/mock';
+import { isMockMode, isMockSharing, createMockLocalStream, generateMockData, generateMockStreamsDelayed } from './lib/mock';
 
 export default function App() {
   // ── Estado da aplicação ──
@@ -183,6 +184,12 @@ export default function App() {
   };
 
   const handleOpenSettings = () => {
+    const support = detectScreenShareSupport(readScreenShareEnvironment());
+    if (!support.supported) {
+      setError(support.message);
+      return;
+    }
+    setError(null);
     setShowSettings(true);
   };
 
@@ -211,7 +218,9 @@ export default function App() {
       }
     } catch (err: any) {
       // Usuário cancelou o dialog de compartilhamento
-      if (err.name !== 'NotAllowedError') {
+      if (err?.name === 'ScreenShareUnsupportedError') {
+        setError(err.message);
+      } else if (err?.name !== 'NotAllowedError') {
         setError('Erro ao compartilhar tela: ' + err.message);
       }
     }
@@ -268,6 +277,13 @@ export default function App() {
     setPeers(mock.peers);
     setStreams([]); // Start with no streams — loading state
     setScreen('room');
+
+    // ?mock&share — simula que você está transmitindo (preview local)
+    if (isMockSharing()) {
+      setLocalStream(createMockLocalStream());
+      setIsSharing(true);
+      setPeers(prev => prev.map(p => p.id === mock.myPeerId ? { ...p, isSharing: true } : p));
+    }
 
     // Streams arrive after 5 seconds (simulates WebRTC connection)
     const timer = generateMockStreamsDelayed((readyStreams, peerIds) => {

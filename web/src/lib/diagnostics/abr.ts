@@ -11,7 +11,7 @@ export interface AbrState {
 
 export interface AbrDecision {
   action: 'decrease' | 'increase' | 'hold';
-  reason: 'low-fps' | 'stable-fps' | 'mid' | 'unavailable' | 'already-min' | 'already-max';
+  reason: 'low-fps' | 'bandwidth-limited' | 'stable-fps' | 'mid' | 'unavailable' | 'already-min' | 'already-max';
   fps: number | null;
   previousBitrate: number;
   nextBitrate: number;
@@ -49,7 +49,11 @@ export function outboundFpsForAbr(sample: MetricSample): number | null {
   return null;
 }
 
-export function evaluateAbr(state: AbrState, fps: number | null): AbrDecision {
+export function evaluateAbr(
+  state: AbrState,
+  fps: number | null,
+  qualityLimitationReason: string | null = null,
+): AbrDecision {
   const next: AbrState = { ...state };
   const hold = (reason: AbrDecision['reason']): AbrDecision => ({
     action: 'hold',
@@ -65,7 +69,9 @@ export function evaluateAbr(state: AbrState, fps: number | null): AbrDecision {
   }
 
   const ratio = fps / state.targetFps;
-  if (ratio < LOW_FPS_THRESHOLD) {
+  const bandwidthLimited = qualityLimitationReason === 'bandwidth';
+  const cpuLimited = qualityLimitationReason === 'cpu';
+  if (bandwidthLimited || (ratio < LOW_FPS_THRESHOLD && !cpuLimited)) {
     next.lowFpsCount = state.lowFpsCount + 1;
     next.highFpsCount = 0;
     if (next.lowFpsCount >= MIN_LOW_POLLS) {
@@ -75,7 +81,7 @@ export function evaluateAbr(state: AbrState, fps: number | null): AbrDecision {
         next.currentMaxBitrate = reduced;
         return {
           action: 'decrease',
-          reason: 'low-fps',
+          reason: bandwidthLimited ? 'bandwidth-limited' : 'low-fps',
           fps,
           previousBitrate: state.currentMaxBitrate,
           nextBitrate: reduced,
@@ -84,10 +90,10 @@ export function evaluateAbr(state: AbrState, fps: number | null): AbrDecision {
       }
       return hold('already-min');
     }
-    return hold('low-fps');
+    return hold(bandwidthLimited ? 'bandwidth-limited' : 'low-fps');
   }
 
-  if (ratio >= HIGH_FPS_THRESHOLD) {
+  if (ratio >= HIGH_FPS_THRESHOLD && !bandwidthLimited) {
     next.highFpsCount = state.highFpsCount + 1;
     next.lowFpsCount = 0;
     if (next.highFpsCount >= MIN_HIGH_POLLS && state.currentMaxBitrate < state.initialBitrate) {
@@ -152,7 +158,11 @@ export class AdaptiveBitrateController {
     this.samplesSinceEval += 1;
     if (this.samplesSinceEval < 2) return;
     this.samplesSinceEval = 0;
-    const decision = evaluateAbr(this.state, outboundFpsForAbr(sample));
+    const decision = evaluateAbr(
+      this.state,
+      outboundFpsForAbr(sample),
+      sample.outbound?.qualityLimitationReason ?? null,
+    );
     this.state = decision.state;
     if (decision.action === 'decrease' || decision.action === 'increase') {
       this.applier.applyMaxBitrate(decision.nextBitrate);
