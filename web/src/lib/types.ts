@@ -11,6 +11,15 @@ export interface RoomState {
   peers: PeerInfo[];
 }
 
+// ── Chat ───────────────────────────────────────────────
+export interface ChatMessage {
+  id: string;
+  from: string;
+  nickname: string;
+  text: string;
+  ts: number;
+}
+
 // ── Signaling messages (client → server) ───────────────
 export type ClientMessage =
   | { type: 'create-room'; nickname: string; password?: string }
@@ -22,6 +31,7 @@ export type ClientMessage =
   | { type: 'offer'; to: string; sdp: RTCSessionDescriptionInit }
   | { type: 'answer'; to: string; sdp: RTCSessionDescriptionInit }
   | { type: 'ice-candidate'; to: string; candidate: RTCIceCandidateInit }
+  | { type: 'chat-message'; text: string }
   | { type: 'heartbeat' };
 
 // ── Signaling messages (server → client) ───────────────
@@ -37,6 +47,8 @@ export type ServerMessage =
   | { type: 'offer'; from: string; sdp: RTCSessionDescriptionInit }
   | { type: 'answer'; from: string; sdp: RTCSessionDescriptionInit }
   | { type: 'ice-candidate'; from: string; candidate: RTCIceCandidateInit }
+  | { type: 'chat-message'; from: string; nickname: string; text: string; ts: number }
+  | { type: 'chat-history'; messages: ChatMessage[] }
   | { type: 'error'; message: string }
   | { type: 'heartbeat-ack' };
 
