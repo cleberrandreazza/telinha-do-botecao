@@ -365,13 +365,28 @@ export async function requestDisplayMedia<T>(
   mode: AudioMode,
 ): Promise<{ stream: T; audioScopeFallback: boolean }> {
   const full = buildDisplayMediaOptions(video, mode);
+  const capture = async (options: Record<string, unknown>): Promise<T> => {
+    const stream = await getDisplayMedia(options);
+    if (mode !== 'off' && stream && typeof stream === 'object' && 'getAudioTracks' in stream) {
+      const tracks = (stream as T & { getAudioTracks: () => Array<{ applyConstraints?: (constraints: MediaTrackConstraints) => Promise<void> }> }).getAudioTracks();
+      await Promise.all(tracks.map(async (track) => {
+        if (typeof track.applyConstraints !== 'function') return;
+        try {
+          await track.applyConstraints({ echoCancellation: false, noiseSuppression: false, autoGainControl: false });
+        } catch {
+          // Constraints opcionais não devem interromper o compartilhamento de vídeo.
+        }
+      }));
+    }
+    return stream;
+  };
   try {
-    return { stream: await getDisplayMedia(full), audioScopeFallback: false };
+    return { stream: await capture(full), audioScopeFallback: false };
   } catch (err) {
     const name = errorName(err);
     if (mode === 'off' || CANCELLED.has(name) || !UNSUPPORTED.has(name)) throw err;
     // Uma segunda tentativa, só vídeo. Não se tira `exclude` e se segue com áudio.
-    const stream = await getDisplayMedia(buildDisplayMediaOptions(video, 'off'));
+    const stream = await capture(buildDisplayMediaOptions(video, 'off'));
     return { stream, audioScopeFallback: true };
   }
 }

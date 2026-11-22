@@ -1,7 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { PeerInfo, StreamInfo } from '../lib/types';
 import { getInitials, colorFromString } from '../lib/profile';
+import { detectScreenShareSupport, readScreenShareEnvironment } from '../lib/screenShare';
 import CrtEmptyState from './CrtEmptyState';
+import LocalPreview from './LocalPreview';
 import StreamViewer from './StreamViewer';
 import StatsPanel from './StatsPanel';
 import SettingsModal, { loadSettings, type BotecaoSettings } from './SettingsModal';
@@ -60,6 +62,10 @@ export default function Room({
   const [senderConnectionId, setSenderConnectionId] = useState<string | null>(null);
   const [streamDismissed, setStreamDismissed] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Captura de tela só existe em navegador de computador, em contexto seguro.
+  const screenShare = useMemo(() => detectScreenShareSupport(readScreenShareEnvironment()), []);
+  const canShare = isSharing || screenShare.supported;
 
   useEffect(() => {
     if (!showSenderStats || !subscribeSenderDiagnostics || !getSenderSnapshots) return;
@@ -414,19 +420,28 @@ export default function Room({
           {/* Share/Stop button */}
           <button
             onClick={isSharing ? onStopSharing : onStartSharing}
-            className={`w-full h-9 px-3 rounded-xl flex items-center justify-center gap-2 transition-all border cursor-pointer font-label-md text-[13px] shadow-sm ${
+            disabled={!canShare}
+            title={canShare ? undefined : screenShare.message}
+            className={`w-full h-9 px-3 rounded-xl flex items-center justify-center gap-2 transition-all border font-label-md text-[13px] shadow-sm ${
               isSharing
-                ? 'bg-error-container/20 hover:bg-error-container/30 text-error border-error/30'
-                : 'bg-surface-container hover:bg-surface-container-high text-on-surface border-[#1f222e]'
+                ? 'bg-error-container/20 hover:bg-error-container/30 text-error border-error/30 cursor-pointer'
+                : canShare
+                  ? 'bg-surface-container hover:bg-surface-container-high text-on-surface border-[#1f222e] cursor-pointer'
+                  : 'bg-surface-container text-on-surface/50 border-[#1f222e] cursor-not-allowed opacity-60'
             }`}
           >
-            <span className={`material-symbols-outlined text-[18px] ${!isSharing ? 'text-primary' : ''}`}>
+            <span className={`material-symbols-outlined text-[18px] ${!isSharing && canShare ? 'text-primary' : ''}`}>
               {isSharing ? 'stop_screen_share' : 'screen_share'}
             </span>
             <span className="truncate font-medium">
               {isSharing ? 'Parar Transmissao' : 'Compartilhar Tela'}
             </span>
           </button>
+          {!isSharing && !screenShare.supported && (
+            <p className="text-[11px] leading-snug text-amber-200/90 bg-amber-500/10 border border-amber-500/20 rounded-xl px-2.5 py-2">
+              {screenShare.message}
+            </p>
+          )}
           {isSharing && audioNotice && (
             <p className="text-[11px] leading-snug text-yellow-200/90 bg-yellow-500/10 border border-yellow-500/20 rounded-xl px-2.5 py-2">
               {audioNotice}
@@ -505,6 +520,11 @@ export default function Room({
           />
         ) : (
           <CrtEmptyState onOpenSidebar={() => setSidebarOpen(true)} />
+        )}
+
+        {/* Preview de quem transmite: a própria captura, com a resolução real */}
+        {isSharing && localStream && (
+          <LocalPreview stream={localStream} nickname={nickname} />
         )}
       </main>
       {showSenderStats && (

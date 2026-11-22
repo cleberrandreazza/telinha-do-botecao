@@ -5,6 +5,7 @@ import {
   readCaptureProbe,
   readEncoderEncoding,
   resolutionFacts,
+  describeCapture,
   type CaptureProbe,
   type EncoderProbe,
 } from './resolution.ts';
@@ -233,4 +234,17 @@ test('duas conexões guardam parâmetros de encoder independentes', () => {
   equal(viewer.resolution.encoded.width, null);
   equal(viewer.resolution.received.width, 588);
   equal(viewer.resolution.received.height, 278);
+});
+
+test('describeCapture mostra resolução e fps medidos', () => {
+  equal(describeCapture({ width: 1920, height: 1080, frameRate: 30, displaySurface: 'monitor', aspectRatio: null, resizeMode: null }), '1920×1080 · 30 fps');
+});
+
+test('describeCapture sem frameRate mostra só a resolução', () => {
+  equal(describeCapture({ width: 1280, height: 720, frameRate: null, displaySurface: null, aspectRatio: null, resizeMode: null }), '1280×720');
+});
+
+test('describeCapture sem dimensões medidas fica n/d e não estima', () => {
+  equal(describeCapture({ width: null, height: null, frameRate: 30, displaySurface: null, aspectRatio: null, resizeMode: null }), 'n/d');
+  equal(describeCapture(null), 'n/d');
 });

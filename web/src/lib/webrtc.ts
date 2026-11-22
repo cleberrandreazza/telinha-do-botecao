@@ -1,5 +1,6 @@
 import { SignalingClient } from './signaling';
-import { configureOpusReceiverSdp, configureOpusSenderSdp } from './opus';
+import { configureAudioSenderParameters, configureOpusReceiverSdp, configureOpusSenderSdp } from './opus';
+import { assertScreenShareSupported } from './screenShare';
 import type { ServerMessage, StreamInfo } from './types';
 import {
   AdaptiveBitrateController,
@@ -181,6 +182,10 @@ export class WebRTCManager {
    * Captura a tela do usuário
    */
   async startScreenShare(config?: StreamConfig): Promise<MediaStream> {
+    // Celular e endereços sem HTTPS não têm getDisplayMedia: falha aqui com
+    // mensagem clara em vez de um TypeError genérico na captura.
+    assertScreenShareSupported();
+
     const cfg = config || this.currentConfig;
     const mode = audioModeFromConfig(cfg);
     this.currentConfig = { ...cfg, audio: mode !== 'off', audioMode: mode };
@@ -363,6 +368,20 @@ export class WebRTCManager {
     this.timeline.offerSent(this.monitors.get(viewerId)?.connectionId ?? null);
   }
 
+  private async configureAudioSenders(pc: RTCPeerConnection) {
+    const audioSenders = pc.getSenders().filter((sender) => sender.track?.kind === 'audio');
+    for (const sender of audioSenders) {
+      try {
+        const appliedMaxBitrate = await configureAudioSenderParameters(sender);
+        if (appliedMaxBitrate !== 192_000) {
+          console.warn('[WebRTC] O navegador não confirmou o teto de 192 kbps para o sender de áudio:', appliedMaxBitrate);
+        }
+      } catch (error) {
+        console.warn('[WebRTC] Falha ao configurar teto do sender de áudio:', error);
+      }
+    }
+  }
+
   private preferH264(pc: RTCPeerConnection) {
     try {
       const transceivers = pc.getTransceivers();
@@ -494,7 +513,8 @@ export class WebRTCManager {
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
     this.noteAudioNegotiation(fromId, pc);
 
-    // Agora que a negociação completou, configura bitrate e inicia ABR
+    // Aplicar depois da resposta remota permite ler de volta os parâmetros negociados.
+    await this.configureAudioSenders(pc);
     await this.configureVideoSender(pc, fromId);
   }
 

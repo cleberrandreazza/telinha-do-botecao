@@ -19,7 +19,7 @@ import {
 import { buildSample, emptyCounters } from './parse.ts';
 import { rmsFromEnergy } from './math.ts';
 import { buildReport } from './export.ts';
-import { configureOpusReceiverSdp, configureOpusSenderSdp, OPUS_MAX_AVERAGE_BITRATE } from '../opus.ts';
+import { configureAudioSenderParameters, configureOpusReceiverSdp, configureOpusSenderSdp, OPUS_MAX_AVERAGE_BITRATE } from '../opus.ts';
 import type { AudioFacts, AudioPlaybackReport, StatsReportLike } from './types.ts';
 
 function facts(partial: Partial<AudioFacts> & Pick<AudioFacts, 'role'>): AudioFacts {
@@ -545,8 +545,8 @@ test('track de áudio que chega depois exige reatribuir o srcObject', () => {
   equal(shouldRebindSrcObject(['video', 'audio'], ['video']), true);
 });
 
-test('SDP Opus declara preferências de recepção a 320 kbps sem confundir o parâmetro sender-only', () => {
-  equal(OPUS_MAX_AVERAGE_BITRATE, 320_000);
+test('SDP Opus declara preferências de recepção a 192 kbps sem confundir o parâmetro sender-only', () => {
+  equal(OPUS_MAX_AVERAGE_BITRATE, 192_000);
 
   const untouched = 'v=0\r\na=rtpmap:96 H264/90000\r\n';
   equal(configureOpusSenderSdp(untouched, 2), untouched);
@@ -560,29 +560,34 @@ test('SDP Opus declara preferências de recepção a 320 kbps sem confundir o pa
   const senderSdp = configureOpusSenderSdp(withFmtp, 2);
   ok(senderSdp.includes('stereo=1'));
   ok(senderSdp.includes('sprop-stereo=1'));
-  ok(senderSdp.includes('maxaveragebitrate=320000'));
+  ok(senderSdp.includes('maxaveragebitrate=192000'));
+  ok(senderSdp.includes('usedtx=0'));
   ok(senderSdp.includes('useinbandfec=1'));
   ok(senderSdp.includes('a=rtpmap:96 H264/90000'));
   equal(configureOpusSenderSdp(senderSdp, 2), senderSdp);
 
-  const receiverSdp = configureOpusReceiverSdp(withFmtp, true);
+  const receiverSdp = configureOpusReceiverSdp(withFmtp);
   ok(receiverSdp.includes('stereo=1'));
-  ok(receiverSdp.includes('maxaveragebitrate=320000'));
+  ok(receiverSdp.includes('maxaveragebitrate=192000'));
+  ok(receiverSdp.includes('usedtx=0'));
   equal(receiverSdp.includes('sprop-stereo='), false);
   ok(receiverSdp.includes('useinbandfec=1'));
   equal(configureOpusReceiverSdp(receiverSdp), receiverSdp);
 
   const monoReceiverSdp = configureOpusReceiverSdp(withFmtp, false);
   ok(monoReceiverSdp.includes('stereo=0'));
-  ok(monoReceiverSdp.includes('maxaveragebitrate=320000'));
+  equal(monoReceiverSdp.includes('stereo=1'), false);
+  ok(monoReceiverSdp.includes('maxaveragebitrate=192000'));
   equal(monoReceiverSdp.includes('sprop-stereo='), false);
 
   const replaced = configureOpusReceiverSdp(
-    'a=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;maxaveragebitrate=32000\r\n',
+    'a=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;maxaveragebitrate=32000;usedtx=1\r\n',
   );
-  equal(replaced.includes('maxaveragebitrate=32000'), false);
-  equal(replaced.includes('maxaveragebitrate=320000'), true);
+  equal(/(?:^|[;\s])maxaveragebitrate=32000(?:[;\r\n]|$)/.test(replaced), false);
+  equal(replaced.includes('maxaveragebitrate=192000'), true);
   equal(replaced.split('maxaveragebitrate').length, 2);
+  ok(replaced.includes('usedtx=0'));
+  equal(/(?:^|[;\s])usedtx=1(?:[;\r\n]|$)/.test(replaced), false);
 
   const mono = configureOpusSenderSdp(
     'a=rtpmap:111 opus/48000/2\r\na=fmtp:111 stereo=0;sprop-stereo=1;maxaveragebitrate=64000\r\n',
@@ -590,11 +595,11 @@ test('SDP Opus declara preferências de recepção a 320 kbps sem confundir o pa
   );
   ok(mono.includes('stereo=1'));
   ok(mono.includes('sprop-stereo=0'));
-  ok(mono.includes('maxaveragebitrate=320000'));
+  ok(mono.includes('maxaveragebitrate=192000'));
   equal(mono.split('sprop-stereo').length, 2);
 
   const unknownChannelCount = configureOpusSenderSdp(
-    'a=rtpmap:111 opus/48000/2\r\na=fmtp:111 maxaveragebitrate=64000\r\n',
+    'a=rtpmap:111 opus/48000/2\r\na=fmtp:111 maxaveragebitrate=64000;sprop-stereo=1\r\n',
     null,
   );
   equal(unknownChannelCount.includes('sprop-stereo='), false);
@@ -603,8 +608,18 @@ test('SDP Opus declara preferências de recepção a 320 kbps sem confundir o pa
     'a=rtpmap:111 opus/48000/2\na=rtpmap:96 H264/90000\n',
     2,
   );
-  ok(created.includes('a=rtpmap:111 opus/48000/2\na=fmtp:111 minptime=10;useinbandfec=1;stereo=1;maxaveragebitrate=320000;sprop-stereo=1\n'));
+  ok(created.includes('a=rtpmap:111 opus/48000/2\na=fmtp:111 minptime=10;useinbandfec=1;stereo=1;maxaveragebitrate=192000;usedtx=0;sprop-stereo=1\n'));
   ok(created.includes('a=rtpmap:96 H264/90000'));
+});
+
+test('sender RTP aplica maxBitrate e confirma o valor relendo getParameters', async () => {
+  let current = { encodings: [{}] } as unknown as RTCRtpSendParameters;
+  const sender = {
+    getParameters: () => current,
+    setParameters: async (next: RTCRtpSendParameters) => { current = next; },
+  } as unknown as RTCRtpSender;
+  equal(await configureAudioSenderParameters(sender), 192_000);
+  equal(current.encodings?.[0]?.maxBitrate, 192_000);
 });
 
 function captureInput(reports: StatsReportLike[], role: 'sender' | 'receiver', previous: ReturnType<typeof emptyCounters> | null, wallTime: number) {
@@ -621,6 +636,17 @@ function captureInput(reports: StatsReportLike[], role: 'sender' | 'receiver', p
     playback: null,
   };
 }
+
+test('constraints de processamento apos captura', async () => {
+  const applied: MediaTrackConstraints[] = [];
+  const stream = {
+    getAudioTracks: () => [{ applyConstraints: async (value: MediaTrackConstraints) => { applied.push(value); } }],
+  };
+  await requestDisplayMedia(async () => stream, {}, 'source');
+  equal(applied[0]?.echoCancellation, false);
+  equal(applied[0]?.noiseSuppression, false);
+  equal(applied[0]?.autoGainControl, false);
+});
 
 test('captura lê settings, constraints e capabilities sem inventar campo nem identificador', () => {
   const seen = readAudioCapture({

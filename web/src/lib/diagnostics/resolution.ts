@@ -1,3 +1,5 @@
+import { UNAVAILABLE_LABEL } from './types.ts';
+
 /**
  * Fotografia da resolução pedida, da track e do encoder.
  * Campo ausente fica null. Nada aqui é preenchido com o valor de outra etapa.
@@ -244,6 +246,19 @@ export function readEncoderEncoding(params: EncoderParamsLike | null | undefined
     scaleResolutionDownBy: finiteNumber(encoding?.scaleResolutionDownBy),
     degradationPreference: text(params.degradationPreference),
   };
+}
+
+/**
+ * Texto curto da captura local, usado no preview de quem transmite.
+ * Sem largura/height medidos fica "n/d" — nada é estimado.
+ */
+export function describeCapture(settings: TrackSettingsView | null): string {
+  if (!settings) return UNAVAILABLE_LABEL;
+  const { width, height, frameRate } = settings;
+  if (width === null || height === null) return UNAVAILABLE_LABEL;
+  const size = `${width}×${height}`;
+  if (frameRate === null) return size;
+  return `${size} · ${Math.round(frameRate)} fps`;
 }
 
 export function resolutionFacts(
