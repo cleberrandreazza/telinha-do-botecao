@@ -15,7 +15,8 @@ const AUDIO_MODES: { value: AudioMode; label: string; desc: string }[] = [
   { value: 'system', label: 'Áudio de todo o Windows', desc: 'Separado do padrão. Só quando a superfície for a tela inteira.' },
 ];
 
-const RESOLUTIONS = [
+/** Lista de resoluções — reutilizada pelo ResolutionControl (troca durante a live). */
+export const RESOLUTIONS = [
   { value: '2160', label: '4K', desc: '2160p' },
   { value: '1080', label: 'Full HD', desc: '1080p' },
   { value: '720', label: 'HD', desc: '720p' },

@@ -5,6 +5,7 @@ import { getSignalingUrl } from './lib/utils';
 import { detectScreenShareSupport, readScreenShareEnvironment } from './lib/screenShare';
 import type { AppScreen, ChatMessage, PeerInfo, StreamInfo, ServerMessage } from './lib/types';
 import { sanitizeChatText } from './lib/chat';
+import { MAX_SIMULTANEOUS_STREAMS } from './lib/constants';
 import {
   loadRoomSession,
   saveRoomSession,
@@ -15,7 +16,9 @@ import Home from './components/Home';
 import Room from './components/Room';
 import Reconnecting from './components/Reconnecting';
 import StreamSettings from './components/StreamSettings';
+import type { StreamResolution } from './components/ResolutionControl';
 import type { StreamConfig } from './lib/webrtc';
+import { describeCapture, readTrackSettings } from './lib/diagnostics/index';
 import type { AudioPlaybackReport, DiagnosticsSnapshot, PlaybackSample } from './lib/diagnostics/index';
 import {
   isMockMode,
@@ -38,6 +41,33 @@ const CHAT_ECHO_TIMEOUT_MS = 6000;
 
 /** Tolerância (ms) para casar o eco do servidor com a mensagem otimista. */
 const CHAT_ECHO_TOLERANCE_MS = 15000;
+
+/**
+ * Tempo mínimo em que o estado "Aplicando…" fica visível.
+ * A troca de resolução real leva alguns ms (setParameters no encoder); o
+ * piso evita que o rótulo pisque e desapareça antes de ser lido.
+ */
+const RESOLUTION_BUSY_MIN_MS = 350;
+
+/**
+ * Lê a resolução REAL da captura local.
+ * O navegador nem sempre expõe a faixa capturada: sem largura/altura, o
+ * valor é null (a UI mostra "n/d"). Nada é estimado nem copiado de outra
+ * métrica — ver docs/diagnostics.md.
+ */
+function readMeasuredResolution(stream: MediaStream | null): string | null {
+  if (!stream) return null;
+  const track = stream.getVideoTracks()[0];
+  if (!track) return null;
+  let settings = null;
+  try {
+    settings = readTrackSettings(track.getSettings() as Record<string, unknown>);
+  } catch {
+    return null;
+  }
+  if (settings.width === null || settings.height === null) return null;
+  return describeCapture(settings);
+}
 
 /**
  * Acrescenta a mensagem no fim da lista, cortando as mais antigas quando
@@ -94,9 +124,20 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [audioNotice, setAudioNotice] = useState<string | null>(null);
 
+  // ── Resolução da live (troca durante a transmissão) ──
+  const [streamResolution, setStreamResolution] = useState<StreamResolution>('1080');
+  const [resolutionBusy, setResolutionBusy] = useState(false);
+  const [resolutionNotice, setResolutionNotice] = useState<string | null>(null);
+  /** Resolução medida na captura (null = o navegador não informa). */
+  const [measuredResolution, setMeasuredResolution] = useState<string | null>(null);
+
   // ── Chat da sala ──
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatUnread, setChatUnread] = useState(0);
+
+  // ── Limite de transmissões simultâneas (grade de até 4) ──
+  /** Aviso exibido quando o pedido de uma live é barrado pelo limite. */
+  const [streamLimitNotice, setStreamLimitNotice] = useState<string | null>(null);
 
   // ── Reconexão automática (F5) ──
   const [reconnectState, setReconnectState] = useState<'idle' | 'connecting' | 'failed'>('idle');
@@ -129,6 +170,12 @@ export default function App() {
   const chatPendingTimersRef = useRef<Map<string, number>>(new Map());
   /** Espelho da lista de chat (para casar o eco do servidor fora do setState). */
   const chatMessagesRef = useRef<ChatMessage[]>([]);
+  /** Espelho da resolução atual (para reverter a troca em caso de falha). */
+  const streamResolutionRef = useRef<StreamResolution>('1080');
+  /** true enquanto uma troca de resolução está em andamento. */
+  const resolutionBusyRef = useRef(false);
+  /** Peers cujas lives estou recebendo agora (ocupa um slot da grade). */
+  const requestedSharersRef = useRef<Set<string>>(new Set());
 
   // Sync refs
   useEffect(() => {
@@ -143,6 +190,9 @@ export default function App() {
   useEffect(() => {
     chatMessagesRef.current = chatMessages;
   }, [chatMessages]);
+  useEffect(() => {
+    streamResolutionRef.current = streamResolution;
+  }, [streamResolution]);
 
   // ── Callbacks de stream ──
   const handleNewStream = useCallback((info: StreamInfo) => {
@@ -159,6 +209,30 @@ export default function App() {
 
   const handleStreamEnd = useCallback((peerId: string) => {
     setStreams(prev => prev.filter(s => s.peerId !== peerId));
+    // A live acabou: o slot volta a ficar livre.
+    requestedSharersRef.current.delete(peerId);
+    setStreamLimitNotice(null);
+  }, []);
+
+  // ── Grade: pedir a live de um peer (até MAX_SIMULTANEOUS_STREAMS por vez) ──
+  const handleRequestStream = useCallback((peerId: string) => {
+    const requested = requestedSharersRef.current;
+    if (requested.has(peerId)) return;
+    if (requested.size >= MAX_SIMULTANEOUS_STREAMS) {
+      // Sem slot: o peer continua na sidebar e o aviso explica o motivo.
+      setStreamLimitNotice('Máximo de 4 transmissões simultâneas');
+      return;
+    }
+    requested.add(peerId);
+    setStreamLimitNotice(null);
+    rtcRef.current?.requestStream(peerId);
+  }, []);
+
+  /** O tile foi fechado na grade: para de receber a live e libera o slot. */
+  const handleStreamRemoved = useCallback((peerId: string) => {
+    requestedSharersRef.current.delete(peerId);
+    rtcRef.current?.stopReceiving(peerId);
+    setStreamLimitNotice(null);
   }, []);
 
   // ── Handler de mensagens do servidor ──
@@ -210,10 +284,10 @@ export default function App() {
 
         saveRoomSession({ code: msg.code, nickname: nickRef.current, wasSharing: false, savedAt: Date.now() });
 
-        // Solicita streams de quem já está compartilhando
+        // Solicita streams de quem já está compartilhando (até o limite da grade)
         for (const peer of msg.peers) {
           if (peer.isSharing) {
-            rtcRef.current?.requestStream(peer.id);
+            handleRequestStream(peer.id);
           }
         }
         break;
@@ -226,14 +300,15 @@ export default function App() {
       case 'peer-left':
         setPeers(prev => prev.filter(p => p.id !== msg.peerId));
         setStreams(prev => prev.filter(s => s.peerId !== msg.peerId));
+        requestedSharersRef.current.delete(msg.peerId);
         break;
 
       case 'sharing-started':
         setPeers(prev =>
           prev.map(p => p.id === msg.peerId ? { ...p, isSharing: true } : p)
         );
-        // Solicita o stream automaticamente
-        rtcRef.current?.requestStream(msg.peerId);
+        // Solicita o stream automaticamente (se houver slot livre na grade)
+        handleRequestStream(msg.peerId);
         break;
 
       case 'sharing-stopped':
@@ -241,6 +316,7 @@ export default function App() {
           prev.map(p => p.id === msg.peerId ? { ...p, isSharing: false } : p)
         );
         setStreams(prev => prev.filter(s => s.peerId !== msg.peerId));
+        requestedSharersRef.current.delete(msg.peerId);
         break;
 
       case 'left-room':
@@ -377,6 +453,10 @@ export default function App() {
         setLocalStream(stream);
         setIsSharing(true);
         setAudioNotice(rtcRef.current?.getAudioNotice() ?? null);
+        // A resolução inicial é a escolhida no StreamSettings.
+        setStreamResolution(config?.resolution ?? '1080');
+        setResolutionNotice(null);
+
         // Atualiza o próprio peer na lista
         setPeers(prev => prev.map(p => p.id === myPeerId ? { ...p, isSharing: true } : p));
         if (roomCode) {
@@ -427,6 +507,72 @@ export default function App() {
     rtcRef.current?.destroy();
     resetRoom();
   };
+
+  // ── Resolução da live ──
+  // A medição vem da própria captura: o navegador nem sempre expõe a faixa
+  // capturada, e nesse caso o valor é null (a UI mostra "n/d").
+  useEffect(() => {
+    if (!isSharing || !localStream) {
+      setMeasuredResolution(null);
+      return;
+    }
+    const read = () => setMeasuredResolution(readMeasuredResolution(localStream));
+    read();
+    const timer = window.setInterval(read, 1000);
+    return () => window.clearInterval(timer);
+  }, [isSharing, localStream]);
+
+  /**
+   * Troca a resolução durante a live.
+   *
+   * O núcleo está no WebRTCManager: `setParameters` em cada conexão de
+   * papel `sender` (scaleResolutionDownBy/maxBitrate/maxFramerate/
+   * degradationPreference), cada uma no seu próprio try/catch, com o ABR
+   * recriado no teto novo. Se NENHUMA conexão aceitar, o valor anterior
+   * continua valendo — a transmissão não cai e a UI avisa.
+   */
+  const handleSelectResolution = useCallback(async (next: StreamResolution) => {
+    if (resolutionBusyRef.current) return;
+    if (next === streamResolutionRef.current) return;
+
+    const previous = streamResolutionRef.current;
+    resolutionBusyRef.current = true;
+    setResolutionBusy(true);
+    setResolutionNotice(null);
+
+    const startedAt = Date.now();
+    try {
+      const rtc = rtcRef.current;
+      // Sem WebRTC real (modo ?mock) não existe encoder para reconfigurar:
+      // a seleção vale para a UI da simulação.
+      const applied = rtc ? await rtc.setStreamResolution(next) : true;
+
+      // A troca real leva alguns ms; o piso mantém "Aplicando…" legível.
+      const elapsed = Date.now() - startedAt;
+      if (elapsed < RESOLUTION_BUSY_MIN_MS) {
+        await new Promise((resolve) => window.setTimeout(resolve, RESOLUTION_BUSY_MIN_MS - elapsed));
+      }
+
+      if (applied) {
+        streamResolutionRef.current = next;
+        setStreamResolution(next);
+        setResolutionNotice(null);
+      } else {
+        streamResolutionRef.current = previous;
+        setStreamResolution(previous);
+        setResolutionNotice('Não foi possível mudar a resolução. A transmissão continua como estava.');
+      }
+    } catch {
+      streamResolutionRef.current = previous;
+      setStreamResolution(previous);
+      setResolutionNotice('Não foi possível mudar a resolução. A transmissão continua como estava.');
+    } finally {
+      resolutionBusyRef.current = false;
+      setResolutionBusy(false);
+      // A captura pode ter mudado de tamanho: relê a medição.
+      setMeasuredResolution(readMeasuredResolution(localStream));
+    }
+  }, [localStream]);
 
   // ── Chat da sala ──
   // A mensagem entra na tela na hora (otimista, com id local) e é reconciliada
@@ -517,6 +663,14 @@ export default function App() {
     setReconnectState('idle');
     setReconnectError(null);
     setReconnectCanRetry(false);
+    setStreamResolution('1080');
+    streamResolutionRef.current = '1080';
+    setResolutionBusy(false);
+    resolutionBusyRef.current = false;
+    setResolutionNotice(null);
+    setMeasuredResolution(null);
+    setStreamLimitNotice(null);
+    requestedSharersRef.current.clear();
 
     // Cleanup
     rtcRef.current?.destroy();
@@ -532,6 +686,13 @@ export default function App() {
       signalRef.current?.disconnect();
     };
   }, []);
+
+  // O aviso de limite some sozinho: ele é informativo, não bloqueia a sala.
+  useEffect(() => {
+    if (!streamLimitNotice) return;
+    const timer = window.setTimeout(() => setStreamLimitNotice(null), 8000);
+    return () => window.clearTimeout(timer);
+  }, [streamLimitNotice]);
 
   // ── Mock mode: ?mock na URL ──
   useEffect(() => {
@@ -719,6 +880,14 @@ export default function App() {
           chatUnread={chatUnread}
           onChatOpenChange={handleChatOpenChange}
           notice={restoredNotice}
+          streamResolution={streamResolution}
+          measuredResolution={measuredResolution}
+          resolutionBusy={resolutionBusy}
+          resolutionNotice={resolutionNotice}
+          onSelectResolution={handleSelectResolution}
+          streamLimitNotice={streamLimitNotice}
+          onRequestStream={handleRequestStream}
+          onStreamRemoved={handleStreamRemoved}
         />
       )}
 

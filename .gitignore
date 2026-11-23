@@ -7,3 +7,7 @@ dist/
 .DS_Store
 Thumbs.db
 *.tsbuildinfo
+
+# Artefatos das ferramentas do workspace (skills instaladas) — não são do projeto
+.agents/
+skills-lock.json

@@ -14,6 +14,12 @@ const PEER_TTL = 90_000; // 90s sem heartbeat = desconecta
 // ficar em sincronia.
 const FIXED_ROOM_CODE = 'BOTECO';
 
+// Sala vazia não some na hora: ela espera este tempo antes de ser removida.
+// É o que permite a reconexão depois do F5 — quem recarregou a página volta
+// para o MESMO código (e com o histórico do chat intacto).
+// O env existe só para o teste de fumaça encurtar a janela.
+const ROOM_EMPTY_GRACE_MS = parseInt(process.env.ROOM_EMPTY_GRACE_MS || '30000', 10);
+
 // ── Chat ────────────────────────────────────────────────
 const CHAT_MAX_LENGTH = 500;        // caracteres por mensagem
 const CHAT_HISTORY_LIMIT = 50;      // mensagens guardadas por sala
@@ -33,7 +39,7 @@ let nextPeerId = 1;
 /**
  * @typedef {{ id: string, ws: WebSocket, nickname: string, roomCode: string|null, isSharing: boolean, lastSeen: number, lastChatAt: number }} PeerInfo
  * @typedef {{ id: string, from: string, nickname: string, text: string, ts: number }} ChatEntry
- * @typedef {{ code: string, password: string|null, peers: Map<string, PeerInfo>, createdAt: number, isFixed: boolean, history: ChatEntry[] }} Room
+ * @typedef {{ code: string, password: string|null, peers: Map<string, PeerInfo>, createdAt: number, isFixed: boolean, history: ChatEntry[], emptySince: number|null, cleanupTimer: NodeJS.Timeout|null }} Room
  */
 
 // ── Helpers ─────────────────────────────────────────────
@@ -73,6 +79,39 @@ function broadcast(room, msg, excludeId = null) {
   }
 }
 
+/**
+ * Sala que ficou vazia não é removida na hora: ela espera
+ * ROOM_EMPTY_GRACE_MS. Quem recarregou a página (F5) volta para o mesmo
+ * código dentro dessa janela e ainda recebe o histórico do chat.
+ * A sala fixa nunca é removida.
+ */
+function scheduleRoomCleanup(room) {
+  if (room.isFixed) return;
+  if (room.cleanupTimer) return;
+  room.emptySince = Date.now();
+  room.cleanupTimer = setTimeout(() => {
+    room.cleanupTimer = null;
+    // alguém pode ter voltado dentro da janela: nesse caso, não remove
+    if (room.peers.size > 0) {
+      room.emptySince = null;
+      return;
+    }
+    room.history = [];
+    rooms.delete(room.code);
+    console.log(`[sala] removida: ${room.code}`);
+  }, ROOM_EMPTY_GRACE_MS);
+  // a limpeza não pode segurar o processo do Node vivo
+  if (typeof room.cleanupTimer.unref === 'function') room.cleanupTimer.unref();
+}
+
+/** A sala voltou a ter gente: cancela a remoção pendente. */
+function cancelRoomCleanup(room) {
+  if (!room.cleanupTimer) return;
+  clearTimeout(room.cleanupTimer);
+  room.cleanupTimer = null;
+  room.emptySince = null;
+}
+
 function removeFromRoom(peer) {
   if (!peer.roomCode) return;
   const room = rooms.get(peer.roomCode);
@@ -88,14 +127,10 @@ function removeFromRoom(peer) {
     broadcast(room, { type: 'sharing-stopped', peerId: peer.id });
   }
 
-  // sala vazia: limpa o histórico e remove a sala — exceto a sala fixa,
-  // que nunca é removida (ela existe desde o boot)
+  // Sala vazia: fica de pé por ROOM_EMPTY_GRACE_MS para o F5 poder reconectar
+  // no mesmo código. A sala fixa nunca é removida (ela existe desde o boot).
   if (room.peers.size === 0) {
-    room.history = [];
-    if (!room.isFixed) {
-      rooms.delete(peer.roomCode);
-      console.log(`[sala] removida: ${peer.roomCode}`);
-    }
+    scheduleRoomCleanup(room);
   }
 
   peer.roomCode = null;
@@ -119,7 +154,9 @@ const httpServer = createServer((req, res) => {
 });
 
 // ── WebSocket server ────────────────────────────────────
-const wss = new WebSocketServer({ server: httpServer });
+// maxPayload: 64 KB — o suficiente para SDP e candidatos de ICE, e o bastante
+// para o servidor não carregar uma mensagem gigante.
+const wss = new WebSocketServer({ server: httpServer, maxPayload: 64 * 1024 });
 
 wss.on('connection', (ws) => {
   if (peers.size >= MAX_CONNECTIONS) {
@@ -174,6 +211,8 @@ wss.on('connection', (ws) => {
           createdAt: Date.now(),
           isFixed: false,
           history: [],
+          emptySince: null,
+          cleanupTimer: null,
         };
         rooms.set(code, room);
 
@@ -205,6 +244,8 @@ wss.on('connection', (ws) => {
         peer.nickname = (msg.nickname || 'Anônimo').slice(0, 30);
         peer.roomCode = code;
         room.peers.set(peerId, peer);
+        // a sala voltou a ter gente: cancela a remoção pendente (F5)
+        cancelRoomCleanup(room);
 
         // envia lista de peers atuais
         const peerList = [];
@@ -322,6 +363,12 @@ wss.on('connection', (ws) => {
         const relay = { type: msg.type, from: peer.id };
         if (msg.sdp) relay.sdp = msg.sdp;
         if (msg.candidate) relay.candidate = msg.candidate;
+        // Papel da conexão: 'sender' ou 'receiver' valem; qualquer outro valor
+        // é descartado e o cliente cai no fallback (aplicar em todas as
+        // conexões daquele peer, sem derrubar nenhuma).
+        if (msg.linkRole === 'sender' || msg.linkRole === 'receiver') {
+          relay.linkRole = msg.linkRole;
+        }
         send(target.ws, relay);
         break;
       }
@@ -382,6 +429,8 @@ rooms.set(FIXED_ROOM_CODE, {
   createdAt: Date.now(),
   isFixed: true,
   history: [],
+  emptySince: null,
+  cleanupTimer: null,
 });
 console.log(`[sala] fixa disponível: ${FIXED_ROOM_CODE}`);
 

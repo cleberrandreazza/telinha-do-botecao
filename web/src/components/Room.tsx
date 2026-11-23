@@ -5,9 +5,12 @@ import { detectScreenShareSupport, readScreenShareEnvironment } from '../lib/scr
 import CrtEmptyState from './CrtEmptyState';
 import LocalPreview from './LocalPreview';
 import StreamViewer from './StreamViewer';
+import StreamTile from './StreamTile';
 import StatsPanel from './StatsPanel';
 import ChatPanel from './ChatPanel';
+import ResolutionControl, { type StreamResolution } from './ResolutionControl';
 import SettingsModal, { loadSettings, type BotecaoSettings } from './SettingsModal';
+import { MAX_SIMULTANEOUS_STREAMS } from '../lib/constants';
 import type { AudioPlaybackReport, DiagnosticsSnapshot, PlaybackSample } from '../lib/diagnostics/index';
 
 interface RoomProps {
@@ -41,6 +44,22 @@ interface RoomProps {
   onChatOpenChange?: (open: boolean) => void;
   /** Aviso temporário exibido sobre a sala (ex.: sessão restaurada). */
   notice?: string | null;
+  /** Resolução selecionada da live (quem transmite). */
+  streamResolution?: StreamResolution;
+  /** Resolução medida na captura (null = o navegador não informa). */
+  measuredResolution?: string | null;
+  /** true enquanto a troca de resolução está sendo aplicada. */
+  resolutionBusy?: boolean;
+  /** Aviso curto de falha na troca de resolução. */
+  resolutionNotice?: string | null;
+  /** Troca a resolução da live durante a transmissão. */
+  onSelectResolution?: (resolution: StreamResolution) => void;
+  /** Aviso de limite de transmissões simultâneas. */
+  streamLimitNotice?: string | null;
+  /** O App pede a live de um peer quando o usuário escolhe alguém na lista. */
+  onRequestStream?: (peerId: string) => void;
+  /** O App libera o slot quando uma stream é ocultada da grade. */
+  onStreamRemoved?: (peerId: string) => void;
 }
 
 export default function Room({
@@ -68,9 +87,16 @@ export default function Room({
   chatUnread = 0,
   onChatOpenChange,
   notice,
+  streamResolution = '1080',
+  measuredResolution = null,
+  resolutionBusy = false,
+  resolutionNotice = null,
+  onSelectResolution,
+  streamLimitNotice = null,
+  onRequestStream,
+  onStreamRemoved,
 }: RoomProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [activeStreamId, setActiveStreamId] = useState<string | null>(null);
   const [mouseInactive, setMouseInactive] = useState(false);
   const [copied, setCopied] = useState(false);
   const [volume, setVolume] = useState(0.7);
@@ -79,8 +105,17 @@ export default function Room({
   const [showSenderStats, setShowSenderStats] = useState(false);
   const [senderSnapshots, setSenderSnapshots] = useState<DiagnosticsSnapshot[]>([]);
   const [senderConnectionId, setSenderConnectionId] = useState<string | null>(null);
-  const [streamDismissed, setStreamDismissed] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // ── Grade de transmissões (até 4) ──
+  /** Stream em tela cheia (modo foco). null = mostrando a grade. */
+  const [focusedStreamId, setFocusedStreamId] = useState<string | null>(null);
+  /** Streams ocultas da grade por quem está assistindo (local). */
+  const [dismissedStreams, setDismissedStreams] = useState<Set<string>>(() => new Set());
+  /** Volume e mudo por transmissor — um tile não controla o som do outro. */
+  const [tileAudio, setTileAudio] = useState<Record<string, { muted: boolean; volume: number }>>({});
+  /** Zoom por tile da grade (1 = 100%). */
+  const [tileZoom, setTileZoom] = useState<Record<string, number>>({});
 
   // Chat aberto por padrão no desktop; fechado em telas pequenas.
   const [chatOpen, setChatOpen] = useState<boolean>(() => {
@@ -123,19 +158,106 @@ export default function Room({
   // Build remote streams list (exclude local)
   const remoteStreams = streams.filter(s => s.peerId !== myPeerId);
 
-  // Auto-select first remote stream when available (unless user dismissed)
-  useEffect(() => {
-    if (remoteStreams.length > 0 && !activeStreamId && !streamDismissed) {
-      setActiveStreamId(remoteStreams[0].peerId);
-    }
-    // If active stream left, reset
-    if (activeStreamId && !remoteStreams.find(s => s.peerId === activeStreamId)) {
-      setActiveStreamId(remoteStreams.length > 0 ? remoteStreams[0].peerId : null);
-    }
-  }, [remoteStreams.length, activeStreamId, streams, streamDismissed]);
+  // ── Grade: até MAX_SIMULTANEOUS_STREAMS na tela, o resto fica na sidebar ──
+  const visibleStreams = remoteStreams.filter(s => !dismissedStreams.has(s.peerId));
+  const gridStreams = visibleStreams.slice(0, MAX_SIMULTANEOUS_STREAMS);
+  const overflowStreams = visibleStreams.slice(MAX_SIMULTANEOUS_STREAMS);
+  const overflowPeerIds = useMemo(
+    () => new Set(overflowStreams.map(s => s.peerId)),
+    [overflowStreams]
+  );
+  /** Stream em tela cheia (modo foco). */
+  const focusedStream = focusedStreamId
+    ? visibleStreams.find(s => s.peerId === focusedStreamId) ?? null
+    : null;
+  /** Com uma stream só, ela fica em tela cheia (como antes da grade). */
+  const singleStream = focusedStream ? null : gridStreams.length === 1 ? gridStreams[0] : null;
+  const shownStream = focusedStream ?? singleStream;
+  const showGrid = !focusedStream && gridStreams.length >= 2;
+  const activePeerId = shownStream?.peerId ?? null;
+  /** Aviso de limite: o App avisa quando a pedido é barrado; a Room avisa
+      quando já existem mais streams do que cabem na grade. */
+  const limitNotice =
+    streamLimitNotice ??
+    (overflowStreams.length > 0 ? 'Máximo de 4 transmissões simultâneas' : null);
+  /** Células vazias da grade (até 4): cada uma vira um slot fantasma 16:9. */
+  const emptySlots = Math.max(0, MAX_SIMULTANEOUS_STREAMS - gridStreams.length);
 
-  const activeStream = remoteStreams.find(s => s.peerId === activeStreamId) || null;
-  const activePeerId = activeStream?.peerId ?? null;
+  // A stream em foco acabou (saiu da sala): volta para a grade.
+  // Só some quando a live realmente acabou — não enquanto ela está chegando.
+  useEffect(() => {
+    if (focusedStreamId && !remoteStreams.some(s => s.peerId === focusedStreamId)) {
+      setFocusedStreamId(null);
+    }
+  }, [remoteStreams, focusedStreamId]);
+
+  // ── Controles da grade ──
+  const handleSwitchStream = (peerId: string) => {
+    const isDismissed = dismissedStreams.has(peerId);
+    const isKnown = remoteStreams.some(s => s.peerId === peerId);
+    if (!isKnown) {
+      // Ainda não estamos recebendo essa live: o App pede (e avisa quando o
+      // limite de 4 slots já estourou).
+      onRequestStream?.(peerId);
+      return;
+    }
+    if (isDismissed) {
+      // Reabre na grade a live que estava oculta.
+      setDismissedStreams(prev => {
+        if (!prev.has(peerId)) return prev;
+        const next = new Set(prev);
+        next.delete(peerId);
+        return next;
+      });
+    }
+    setFocusedStreamId(peerId);
+  };
+
+  /** Fecha a stream em tela cheia: volta para a grade ou esvazia a sala. */
+  const handleViewerClose = () => {
+    const peerId = shownStream?.peerId;
+    setFocusedStreamId(null);
+    if (peerId && gridStreams.length < 2) {
+      setDismissedStreams(prev => {
+        const next = new Set(prev);
+        next.add(peerId);
+        return next;
+      });
+      onStreamRemoved?.(peerId);
+    }
+  };
+
+  /** Oculta um tile da grade (local) e libera o slot no App. */
+  const handleRemoveStream = (peerId: string) => {
+    setDismissedStreams(prev => {
+      const next = new Set(prev);
+      next.add(peerId);
+      return next;
+    });
+    onStreamRemoved?.(peerId);
+  };
+
+  const handleToggleTileMute = (peerId: string) => {
+    setTileAudio(prev => {
+      const current = prev[peerId] ?? { muted: true, volume: 0.7 };
+      return { ...prev, [peerId]: { ...current, muted: !current.muted } };
+    });
+  };
+
+  const handleTileVolume = (peerId: string, volume: number) => {
+    setTileAudio(prev => {
+      const current = prev[peerId] ?? { muted: true, volume: 0.7 };
+      const next = Math.min(1, Math.max(0, volume));
+      return { ...prev, [peerId]: { volume: next, muted: next === 0 } };
+    });
+  };
+
+  const handleTileZoom = (peerId: string, zoom: number) => {
+    setTileZoom(prev => ({ ...prev, [peerId]: zoom }));
+  };
+
+  /** Estado de som de um tile (mudo por padrão: o áudio fica com o StreamViewer). */
+  const tileAudioOf = (peerId: string) => tileAudio[peerId] ?? { muted: true, volume: 0.7 };
   const subscribeActive = useCallback((cb: (snapshot: DiagnosticsSnapshot) => void) => {
     if (!subscribeStats || !activePeerId) return () => {};
     return subscribeStats(activePeerId, cb);
@@ -234,12 +356,6 @@ export default function Room({
     } catch { /* ignore */ }
   };
 
-  // Switch stream
-  const handleSwitchStream = (peerId: string) => {
-    setStreamDismissed(false);
-    setActiveStreamId(peerId);
-  };
-
   // Only show peers who are sharing
   const listPeers = peers.filter(p => p.isSharing);
 
@@ -335,12 +451,25 @@ export default function Room({
                 TRANSMISSÕES AO VIVO
               </span>
             </div>
+            {/* Aviso de limite de transmissões simultâneas */}
+            {limitNotice && (
+              <p
+                role="status"
+                className="mx-1 px-2.5 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-200/90 leading-snug flex items-start gap-1.5"
+              >
+                <span className="material-symbols-outlined text-[13px] shrink-0 mt-px">info</span>
+                <span>{limitNotice}</span>
+              </p>
+            )}
             <div className="flex flex-col gap-1 overflow-y-auto pr-0.5 flex-1">
               {listPeers.map((peer) => {
                 const isSelf = peer.id === myPeerId;
                 const hasRemoteStream = remoteStreams.some(s => s.peerId === peer.id);
-                const isActive = peer.id === activeStreamId;
-                const isClickable = hasRemoteStream && !isSelf;
+                const isActive = peer.id === activePeerId;
+                const isOverflow = overflowPeerIds.has(peer.id);
+                // Quem está transmitindo pode ser clicado mesmo sem a live
+                // recebida: o App tenta pedir (e avisa se o limite estourou).
+                const isClickable = !isSelf && (hasRemoteStream || peer.isSharing);
                 const initials = getInitials(peer.nickname);
                 return (
                   <button
@@ -354,7 +483,7 @@ export default function Room({
                         ? 'hover:bg-surface-container-high/60 hover:border-outline-variant/30 bg-transparent border-transparent cursor-pointer'
                         : 'bg-transparent border-transparent opacity-70 cursor-default'
                     }`}
-                    title={isSelf ? `${peer.nickname} (Você)` : hasRemoteStream ? `Assistir ${peer.nickname}` : `${peer.nickname} - nao esta transmitindo`}
+                    title={isSelf ? `${peer.nickname} (Você)` : hasRemoteStream ? `Assistir ${peer.nickname}` : `Pedir a live de ${peer.nickname}`}
                   >
                     <div className="flex items-center gap-2.5 min-w-0 flex-1">
                       <div
@@ -379,12 +508,17 @@ export default function Room({
                           {isSelf && (
                             <span className="text-[9px] font-label-mono text-outline bg-surface-container-high px-1.5 py-0.5 rounded-full shrink-0">Você</span>
                           )}
+                          {isOverflow && (
+                            <span className="text-[9px] font-label-mono text-amber-300 bg-amber-500/10 border border-amber-500/25 px-1.5 py-0.5 rounded-full shrink-0">
+                              fora da grade
+                            </span>
+                          )}
                           {peer.isSharing && (
                             <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0 opacity-80" />
                           )}
                         </div>
                         <span className="text-[10px] font-label-mono truncate text-outline leading-none mt-0.5">
-                          {isActive ? 'Assistindo agora' : peer.isSharing ? 'Disponível' : 'Offline'}
+                          {isActive ? 'Assistindo agora' : isOverflow ? 'Fora da grade' : peer.isSharing ? 'Disponível' : 'Offline'}
                         </span>
                       </div>
                     </div>
@@ -477,6 +611,21 @@ export default function Room({
               {audioNotice}
             </p>
           )}
+          {/* Resolução da live: só para quem transmite, junto do botão de
+              compartilhamento — nunca no StatsPanel, no chat ou no overlay. */}
+          {isSharing && (
+            <ResolutionControl
+              resolution={streamResolution}
+              measured={measuredResolution}
+              busy={resolutionBusy}
+              onSelect={(next) => onSelectResolution?.(next)}
+            />
+          )}
+          {isSharing && resolutionNotice && (
+            <p className="text-[11px] leading-snug text-amber-200/90 bg-amber-500/10 border border-amber-500/20 rounded-xl px-2.5 py-2">
+              {resolutionNotice}
+            </p>
+          )}
           {isSharing && (
             <button
               onClick={() => setShowSenderStats((open) => !open)}
@@ -535,20 +684,98 @@ export default function Room({
       {/* ── Main Canvas + Chat da sala ── */}
       <div className="flex-1 flex min-h-0 w-full">
         <main className="flex-1 min-w-0 h-full p-2.5 sm:p-3 flex items-center justify-center overflow-hidden relative cursor-default z-10">
-          {activeStream ? (
-            <StreamViewer
-              stream={activeStream.stream}
-              nickname={activeStream.nickname}
-              onClose={() => { setActiveStreamId(null); setStreamDismissed(true); }}
-              onOpenSidebar={() => setSidebarOpen(true)}
-              mouseInactive={mouseInactive}
-              volume={volume}
-              onVolumeChange={setVolume}
-              subscribeStats={activePeerId ? subscribeActive : undefined}
-              pushPlayback={activePeerId ? pushActive : undefined}
-              pushAudioPlayback={activePeerId ? pushAudioActive : undefined}
-              onExportDiagnostics={activePeerId ? exportActive : undefined}
-            />
+          {showGrid ? (
+            /* ── Grade: até MAX_SIMULTANEOUS_STREAMS transmissões ao mesmo tempo ── */
+            <div className="w-full h-full flex flex-col gap-2 sm:gap-2.5 overflow-y-auto">
+              <div className="flex items-center justify-between gap-2 px-1 shrink-0">
+                <span className="text-[10px] font-label-mono uppercase tracking-wider text-outline">
+                  {gridStreams.length} na grade
+                </span>
+                <span className="text-[10px] font-label-mono text-outline/80 hidden sm:inline">
+                  clique num tile para abrir em tela cheia
+                </span>
+              </div>
+              {limitNotice && (
+                <p
+                  role="status"
+                  className="shrink-0 mx-1 px-2.5 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-200/90 leading-snug flex items-start gap-1.5"
+                >
+                  <span className="material-symbols-outlined text-[13px] shrink-0 mt-px">info</span>
+                  <span>{limitNotice}</span>
+                </p>
+              )}
+              <div
+                className={`grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3 w-full shrink-0 my-auto ${
+                  isSharing && localStream ? 'pb-[13rem] sm:pb-0 sm:pr-[17rem]' : ''
+                }`}
+              >
+                {gridStreams.map((s) => {
+                  const audio = tileAudioOf(s.peerId);
+                  return (
+                    <StreamTile
+                      key={s.peerId}
+                      stream={s.stream}
+                      nickname={s.nickname}
+                      muted={audio.muted}
+                      volume={audio.volume}
+                      onToggleMute={() => handleToggleTileMute(s.peerId)}
+                      onVolumeChange={(v) => handleTileVolume(s.peerId, v)}
+                      onFocus={() => handleSwitchStream(s.peerId)}
+                      onRemove={() => handleRemoveStream(s.peerId)}
+                      zoom={tileZoom[s.peerId]}
+                      onZoomChange={(z) => handleTileZoom(s.peerId, z)}
+                    />
+                  );
+                })}
+                {/* Slots fantasma: as células vazias da grade (16:9, como um
+                    tile) e, quando existem transmissões além do limite, uma
+                    faixa compacta avisando que há mais gente transmitindo. */}
+                {Array.from({ length: emptySlots }).map((_, index) => (
+                  <div
+                    key={`ghost-${index}`}
+                    className="flex aspect-video rounded-2xl border border-dashed border-outline-variant/25 bg-surface-container-low/30 items-center justify-center pointer-events-none"
+                  >
+                    <span className="text-[10px] font-label-mono text-outline/70 uppercase tracking-wider text-center px-2">
+                      aguardando transmissão
+                    </span>
+                  </div>
+                ))}
+                {overflowStreams.length > 0 && (
+                  <div className="flex h-14 items-center justify-center rounded-2xl border border-dashed border-amber-500/25 bg-amber-500/5 pointer-events-none">
+                    <span className="text-[10px] font-label-mono text-amber-200/80 uppercase tracking-wider text-center px-2">
+                      aguardando transmissão
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : shownStream ? (
+            /* ── Uma stream só, ou uma stream focada em tela cheia ── */
+            <>
+              {gridStreams.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => setFocusedStreamId(null)}
+                  className="absolute top-16 left-4 z-30 flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#111318]/95 backdrop-blur-xl border border-[#272a37] shadow-2xl text-[11px] font-label-mono text-on-surface hover:text-primary hover:border-primary/40 transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-primary/60"
+                >
+                  <span className="material-symbols-outlined text-[15px]">arrow_back</span>
+                  <span>Voltar à grade</span>
+                </button>
+              )}
+              <StreamViewer
+                stream={shownStream.stream}
+                nickname={shownStream.nickname}
+                onClose={handleViewerClose}
+                onOpenSidebar={() => setSidebarOpen(true)}
+                mouseInactive={mouseInactive}
+                volume={volume}
+                onVolumeChange={setVolume}
+                subscribeStats={activePeerId ? subscribeActive : undefined}
+                pushPlayback={activePeerId ? pushActive : undefined}
+                pushAudioPlayback={activePeerId ? pushAudioActive : undefined}
+                onExportDiagnostics={activePeerId ? exportActive : undefined}
+              />
+            </>
           ) : (
             <CrtEmptyState onOpenSidebar={() => setSidebarOpen(true)} />
           )}

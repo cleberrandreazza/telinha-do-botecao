@@ -1,6 +1,7 @@
 import { SignalingClient } from './signaling';
 import { configureAudioSenderParameters, configureOpusReceiverSdp, configureOpusSenderSdp } from './opus';
 import { assertScreenShareSupported } from './screenShare';
+import { asLinkRole, linkKey, oppositeRole, parseLinkKey, type LinkRole } from './links';
 import type { ServerMessage, StreamInfo } from './types';
 import {
   AdaptiveBitrateController,
@@ -113,6 +114,7 @@ type OnStreamEndCallback = (peerId: string) => void;
 
 export class WebRTCManager {
   private signal: SignalingClient;
+  /** Conexões indexadas por `papel:peerId` — os dois sentidos coexistem (ver lib/links.ts). */
   private connections = new Map<string, RTCPeerConnection>();
   private localStream: MediaStream | null = null;
   private currentConfig: StreamConfig = { resolution: '1080', frameRate: 30, audio: true, audioMode: 'source' };
@@ -137,13 +139,17 @@ export class WebRTCManager {
     message: null as string | null,
     format: null as ReturnType<typeof readAudioCapture>,
   };
+  /** Contexto de áudio por `papel:peerId`. */
   private audioLink = new Map<string, AudioLinkContext>();
+  /** Quantidade de faixas de áudio remotas por `papel:peerId`. */
   private remoteAudioTracks = new Map<string, number>();
   private watchedRemoteStreams = new WeakSet<MediaStream>();
   private pendingAudioEvents: { severity: 'info' | 'atenção' | 'crítico'; message: string; data: Record<string, number | string | null> }[] = [];
   private captureProbe: CaptureProbe | null = null;
   private encoderProbes = new Map<string, EncoderProbe>();
+  /** Controladores de ABR por `papel:peerId`. */
   private abrControllers = new Map<string, AdaptiveBitrateController>();
+  /** Monitores de diagnóstico por `papel:peerId`. */
   private monitors = new Map<string, ConnectionMonitor>();
   private readonly sessionId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()
@@ -246,8 +252,12 @@ export class WebRTCManager {
       this.localStream = null;
     }
 
-    for (const peerId of [...this.connections.keys()]) {
-      this.closeConnection(peerId);
+    // Só fecha as conexões de papel `sender` (as que EU transmito). As de
+    // papel `receiver` — as lives que eu estava assistindo — continuam vivas.
+    for (const key of [...this.connections.keys()]) {
+      const parsed = parseLinkKey(key);
+      if (!parsed || parsed.role !== 'sender') continue;
+      this.closeLink(parsed.role, parsed.peerId);
     }
 
     this.signal.send({ type: 'stop-sharing' });
@@ -275,11 +285,25 @@ export class WebRTCManager {
     this.signal.send({ type: 'request-stream', sharerId });
   }
 
+  /**
+   * Deixa de receber a live de um peer (usado quando o tile é fechado na
+   * grade): fecha só o papel `receiver` e devolve o slot de transmissão.
+   */
+  stopReceiving(peerId: string) {
+    this.closeLink('receiver', peerId);
+  }
+
   destroy() {
     this.stopScreenShare();
     this.stopListening();
-    for (const peerId of [...this.connections.keys()]) {
-      this.closeConnection(peerId);
+    // Encerramento da sessão: fecha os dois papéis de todos os peers.
+    const peerIds = new Set<string>();
+    for (const key of [...this.connections.keys()]) {
+      const parsed = parseLinkKey(key);
+      if (parsed) peerIds.add(parsed.peerId);
+    }
+    for (const peerId of peerIds) {
+      this.closePeer(peerId);
     }
     this.diagnosticsListeners.clear();
   }
@@ -299,14 +323,19 @@ export class WebRTCManager {
         await this.handleAnswer(msg.from, msg.sdp);
         break;
       case 'ice-candidate':
-        await this.handleIceCandidate(msg.from, msg.candidate);
+        await this.handleIceCandidate(msg.from, msg.candidate, msg.linkRole);
         break;
       case 'sharing-stopped':
-        this.closeConnection(msg.peerId);
+        // Aquele peer parou de enviar: fecha só o papel `receiver` dele.
+        this.closeLink('receiver', msg.peerId);
         this.onStreamEnd(msg.peerId);
         break;
       case 'peer-left':
-        this.closeConnection(msg.peerId);
+        // O peer saiu: fecha só a live que eu assistia (papel `receiver`).
+        // O papel `sender` — a minha transmissão para ele — NÃO é derrubado
+        // aqui: derrubá-lo derrubaria o meu compartilhamento. A própria
+        // conexão morre junto com o peer e se fecha pelo `connectionState`.
+        this.closeLink('receiver', msg.peerId);
         this.onStreamEnd(msg.peerId);
         break;
     }
@@ -320,6 +349,7 @@ export class WebRTCManager {
     if (!this.localStream) return;
 
     const pc = this.createPeerConnection(viewerId, 'sender');
+    const key = linkKey('sender', viewerId);
 
     // Clona a video track para cada PC para que cada encoder opere de forma
     // independente. Sem o clone, Chrome compartilha o encoder interno e quando
@@ -340,9 +370,9 @@ export class WebRTCManager {
       }
     }
     const attached = pc.getSenders().some((sender) => sender.track?.kind === 'audio');
-    this.audioLink.set(viewerId, { senderAttached: attached, negotiated: null, direction: null });
+    this.audioLink.set(key, { senderAttached: attached, negotiated: null, direction: null });
     if (audioSenders > 0 && attached) {
-      this.monitors.get(viewerId)?.recordEvent({
+      this.monitors.get(key)?.recordEvent({
         category: 'ÁUDIO',
         severity: 'info',
         message: 'Track de áudio adicionada ao sender.',
@@ -365,7 +395,7 @@ export class WebRTCManager {
       to: viewerId,
       sdp: pc.localDescription!,
     });
-    this.timeline.offerSent(this.monitors.get(viewerId)?.connectionId ?? null);
+    this.timeline.offerSent(this.monitors.get(key)?.connectionId ?? null);
   }
 
   private async configureAudioSenders(pc: RTCPeerConnection) {
@@ -405,14 +435,14 @@ export class WebRTCManager {
    * Aplica bitrate inicial, framerate, e degradationPreference.
    * Inicia o Adaptive Bitrate Controller para ajustar dinamicamente.
    */
-  private async configureVideoSender(pc: RTCPeerConnection, peerId: string) {
+  private async configureVideoSender(pc: RTCPeerConnection, key: string) {
     const videoSender = pc.getSenders().find(s => s.track?.kind === 'video');
     if (!videoSender) {
       console.warn('[WebRTC] configureVideoSender: nenhum sender de vídeo encontrado');
       return;
     }
 
-    const connectionId = this.monitors.get(peerId)?.connectionId ?? null;
+    const connectionId = this.monitors.get(key)?.connectionId ?? null;
     let beforeEncoder = readEncoderEncoding(null);
     let encoderApplied = false;
     try {
@@ -426,7 +456,7 @@ export class WebRTCManager {
       const maxBitrate = BITRATE_MAP[this.currentConfig.resolution] || 8_000_000;
       params.encodings[0].maxBitrate = maxBitrate;
       params.encodings[0].maxFramerate = this.currentConfig.frameRate;
-      params.encodings[0].scaleResolutionDownBy = 1.0;
+      params.encodings[0].scaleResolutionDownBy = this.scaleResolutionDownBy(this.currentConfig.resolution);
 
       // 30 fps é a prioridade. Se a banda apertar, o Chrome reduz resolução
       // em vez de derrubar o framerate. O ABR continua podendo baixar o teto.
@@ -453,24 +483,7 @@ export class WebRTCManager {
         scaleResolutionDownBy: check.encodings?.[0]?.scaleResolutionDownBy,
       }));
 
-      const existingAbr = this.abrControllers.get(peerId);
-      if (existingAbr) existingAbr.stop();
-
-      const monitor = this.monitors.get(peerId);
-      const abr = new AdaptiveBitrateController({
-        applyMaxBitrate: (bitrate) => this.applySenderBitrate(pc, bitrate),
-      }, this.currentConfig.frameRate, maxBitrate, (change) => {
-        const mbps = (value: number) => (value / 1_000_000).toFixed(1);
-        console.info(`[ABR] ${change.action === 'decrease' ? 'reduziu' : 'aumentou'} bitrate: ${mbps(change.from)}→${mbps(change.to)} Mbps (fps ${change.fps ?? 'n/d'})`);
-        monitor?.recordEvent({
-          category: 'ABR',
-          severity: change.action === 'decrease' ? 'atenção' : 'info',
-          message: change.action === 'decrease' ? 'ABR reduziu o bitrate.' : 'ABR aumentou o bitrate.',
-          data: { de: change.from, para: change.to, fps: change.fps },
-        });
-      });
-      this.abrControllers.set(peerId, abr);
-      monitor?.setSampleListener((sample) => abr.onSample(sample));
+      this.restartAbr(pc, key, maxBitrate);
 
     } catch (e) {
       if (connectionId && !encoderApplied) {
@@ -481,10 +494,51 @@ export class WebRTCManager {
   }
 
   /**
+   * Recria o ABR de uma conexão de papel `sender` com um teto de bitrate novo.
+   * O padrão é o mesmo já usado em configureVideoSender: o controlador anterior
+   * é parado, o novo é registrado e o monitor volta a empurrar amostras.
+   */
+  private restartAbr(pc: RTCPeerConnection, key: string, maxBitrate: number) {
+    const existingAbr = this.abrControllers.get(key);
+    if (existingAbr) existingAbr.stop();
+
+    const monitor = this.monitors.get(key);
+    const abr = new AdaptiveBitrateController({
+      applyMaxBitrate: (bitrate) => this.applySenderBitrate(pc, bitrate),
+    }, this.currentConfig.frameRate, maxBitrate, (change) => {
+      const mbps = (value: number) => (value / 1_000_000).toFixed(1);
+      console.info(`[ABR] ${change.action === 'decrease' ? 'reduziu' : 'aumentou'} bitrate: ${mbps(change.from)}→${mbps(change.to)} Mbps (fps ${change.fps ?? 'n/d'})`);
+      monitor?.recordEvent({
+        category: 'ABR',
+        severity: change.action === 'decrease' ? 'atenção' : 'info',
+        message: change.action === 'decrease' ? 'ABR reduziu o bitrate.' : 'ABR aumentou o bitrate.',
+        data: { de: change.from, para: change.to, fps: change.fps },
+      });
+    });
+    this.abrControllers.set(key, abr);
+    monitor?.setSampleListener((sample) => abr.onSample(sample));
+  }
+
+  /**
+   * Fator de redução aplicado pelo encoder para chegar na resolução pedida.
+   * A largura capturada vem de getSettings(); se a captura for menor que o
+   * alvo, o fator é 1 (não há o que reduzir).
+   */
+  private scaleResolutionDownBy(resolution: string): number {
+    const target = RESOLUTION_MAP[resolution];
+    if (!target) return 1;
+    const capturedWidth = this.localStream?.getVideoTracks()[0]?.getSettings().width ?? null;
+    const sourceWidth = capturedWidth ?? RESOLUTION_MAP['2160'].width;
+    if (!capturedWidth || capturedWidth < target.width) return 1;
+    return Math.max(1, Math.round((sourceWidth / target.width) * 100) / 100);
+  }
+
+  /**
    * VIEWER: recebi offer, criar answer
    */
   private async handleOffer(fromId: string, sdp: RTCSessionDescriptionInit) {
     const pc = this.createPeerConnection(fromId, 'receiver');
+    const key = linkKey('receiver', fromId);
 
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
     const answer = await pc.createAnswer();
@@ -494,7 +548,7 @@ export class WebRTCManager {
       sdp: configureOpusReceiverSdp(answer.sdp || '', remoteSourceStereo === '0' ? false : true),
     });
     await pc.setLocalDescription(mungedAnswer);
-    this.noteAudioNegotiation(fromId, pc);
+    this.noteAudioNegotiation(key, pc);
 
     this.signal.send({
       type: 'answer',
@@ -507,37 +561,60 @@ export class WebRTCManager {
    * Recebi answer — agora configura bitrate DEPOIS da negociação
    */
   private async handleAnswer(fromId: string, sdp: RTCSessionDescriptionInit) {
-    const pc = this.connections.get(fromId);
+    const key = linkKey('sender', fromId);
+    const pc = this.connections.get(key);
     if (!pc) return;
-    this.timeline.answerReceived(this.monitors.get(fromId)?.connectionId ?? null);
+    this.timeline.answerReceived(this.monitors.get(key)?.connectionId ?? null);
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-    this.noteAudioNegotiation(fromId, pc);
+    this.noteAudioNegotiation(key, pc);
 
     // Aplicar depois da resposta remota permite ler de volta os parâmetros negociados.
     await this.configureAudioSenders(pc);
-    await this.configureVideoSender(pc, fromId);
+    await this.configureVideoSender(pc, key);
   }
 
-  private async handleIceCandidate(fromId: string, candidate: RTCIceCandidateInit) {
-    const pc = this.connections.get(fromId);
-    if (!pc) return;
-    try {
-      await pc.addIceCandidate(new RTCIceCandidate(candidate));
-    } catch {
-      // estado já mudou
+  /**
+   * Candidato de ICE. O `linkRole` diz em que papel a conexão deve receber o
+   * candidato. Sem ele (mensagem antiga), o candidato é aplicado em todas as
+   * conexões daquele peer — cada uma isolada em seu próprio try/catch, para
+   * que um erro em uma não derrube as outras.
+   */
+  private async handleIceCandidate(fromId: string, candidate: RTCIceCandidateInit, linkRole?: LinkRole) {
+    const role = asLinkRole(linkRole);
+    if (role) {
+      const pc = this.connections.get(linkKey(role, fromId));
+      if (!pc) return;
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch {
+        // estado já mudou
+      }
+      return;
+    }
+
+    for (const [key, pc] of [...this.connections.entries()]) {
+      const parsed = parseLinkKey(key);
+      if (!parsed || parsed.peerId !== fromId) continue;
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch {
+        // estado já mudou
+      }
     }
   }
 
-  private createPeerConnection(remotePeerId: string, role: 'sender' | 'receiver'): RTCPeerConnection {
-    const replaced = this.connections.has(remotePeerId);
-    this.closeConnection(remotePeerId, replaced ? 'replace' : 'leave');
+  private createPeerConnection(remotePeerId: string, role: LinkRole): RTCPeerConnection {
+    const key = linkKey(role, remotePeerId);
+    const replaced = this.connections.has(key);
+    // Substitui só a conexão do MESMO papel: a do outro sentido continua viva.
+    this.closeLinkByKey(key, replaced ? 'replace' : 'leave');
 
     const connectionCreatedAt = this.timeline.clock();
     const pc = new RTCPeerConnection({
       iceServers: ICE_SERVERS,
     });
 
-    this.connections.set(remotePeerId, pc);
+    this.connections.set(key, pc);
     const monitor = new ConnectionMonitor({
       pc: pc as unknown as PeerConnectionLike,
       role,
@@ -554,7 +631,7 @@ export class WebRTCManager {
         viewerCount: role === 'sender' ? this.activeViewerCount() : null,
         configuredFps: role === 'sender' ? this.currentConfig.frameRate : null,
         streamConfig: role === 'sender' ? { ...this.currentConfig } : null,
-        adaptiveState: this.abrControllers.get(remotePeerId)?.getState() ?? null,
+        adaptiveState: this.abrControllers.get(key)?.getState() ?? null,
         audioCapture: role === 'sender' ? {
           requested: this.audioCapture.requested,
           audioMode: this.audioCapture.audioMode,
@@ -568,12 +645,12 @@ export class WebRTCManager {
           discardReason: this.audioCapture.discardReason,
           format: this.audioCapture.format,
         } : null,
-        audioLink: this.audioLink.get(remotePeerId) ?? null,
-        remoteAudioTracks: this.remoteAudioTracks.get(remotePeerId) ?? null,
+        audioLink: this.audioLink.get(key) ?? null,
+        remoteAudioTracks: this.remoteAudioTracks.get(key) ?? null,
         captureProbe: role === 'sender' ? this.captureProbe : null,
         encoderProbe: (() => {
           if (role !== 'sender') return null;
-          const connectionId = this.monitors.get(remotePeerId)?.connectionId;
+          const connectionId = this.monitors.get(key)?.connectionId;
           return connectionId ? this.encoderProbes.get(connectionId) ?? null : null;
         })(),
       }),
@@ -583,7 +660,7 @@ export class WebRTCManager {
         monitor.recordEvent({ category: 'ÁUDIO', severity: event.severity, message: event.message, data: event.data });
       }
     }
-    this.monitors.set(remotePeerId, monitor);
+    this.monitors.set(key, monitor);
     monitor.subscribeAny(() => {
       for (const listener of this.diagnosticsListeners) listener();
     });
@@ -606,6 +683,8 @@ export class WebRTCManager {
           type: 'ice-candidate',
           to: remotePeerId,
           candidate: event.candidate.toJSON(),
+          // O papel que o RECEBEDOR deve usar nesta conexão é o oposto do meu.
+          linkRole: oppositeRole(role),
         });
       }
     };
@@ -614,7 +693,7 @@ export class WebRTCManager {
       const [remoteStream] = event.streams;
       if (remoteStream) {
         const updateRemoteAudio = () => {
-          this.remoteAudioTracks.set(remotePeerId, remoteStream.getAudioTracks().length);
+          this.remoteAudioTracks.set(key, remoteStream.getAudioTracks().length);
         };
         updateRemoteAudio();
         if (!this.watchedRemoteStreams.has(remoteStream)) {
@@ -635,8 +714,9 @@ export class WebRTCManager {
             },
           });
         }
-        // Notify only once per peer
-        if (!this.notifiedPeers.has(remotePeerId)) {
+        // Notifica uma vez por peer — e só no papel receiver, que é onde a
+        // live do outro chega. No papel sender nada chega do outro lado.
+        if (role === 'receiver' && !this.notifiedPeers.has(remotePeerId)) {
           this.notifiedPeers.add(remotePeerId);
           this.onStream({
             peerId: remotePeerId,
@@ -647,26 +727,26 @@ export class WebRTCManager {
 
         const track = event.track;
         track.onended = () => {
-          if (this.connections.get(remotePeerId) !== pc) return;
-          this.closeConnection(remotePeerId);
+          if (this.connections.get(key) !== pc) return;
+          this.closeLink(role, remotePeerId);
           this.onStreamEnd(remotePeerId);
         };
 
         track.onmute = () => {
           if (track.kind === 'audio') return;
           setTimeout(() => {
-            if (this.connections.get(remotePeerId) !== pc) return;
+            if (this.connections.get(key) !== pc) return;
             if (track.muted && (track.readyState === 'ended' || pc.connectionState !== 'connected')) {
-              this.closeConnection(remotePeerId);
+              this.closeLink(role, remotePeerId);
               this.onStreamEnd(remotePeerId);
             }
           }, 3000);
         };
 
         remoteStream.onremovetrack = () => {
-          if (this.connections.get(remotePeerId) !== pc) return;
+          if (this.connections.get(key) !== pc) return;
           if (remoteStream.getTracks().filter(t => t.readyState === 'live').length === 0) {
-            this.closeConnection(remotePeerId);
+            this.closeLink(role, remotePeerId);
             this.onStreamEnd(remotePeerId);
           }
         };
@@ -674,18 +754,18 @@ export class WebRTCManager {
     };
 
     pc.onconnectionstatechange = () => {
-      if (this.connections.get(remotePeerId) !== pc) return;
-      console.log(`[WebRTC] Connection state (${remotePeerId}): ${pc.connectionState}`);
+      if (this.connections.get(key) !== pc) return;
+      console.log(`[WebRTC] Connection state (${key}): ${pc.connectionState}`);
       if (pc.connectionState === 'connected') monitor.markConnected();
       if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-        this.closeConnection(remotePeerId);
+        this.closeLink(role, remotePeerId);
         this.onStreamEnd(remotePeerId);
       }
     };
 
     pc.oniceconnectionstatechange = () => {
-      if (this.connections.get(remotePeerId) !== pc) return;
-      console.log(`[WebRTC] ICE state (${remotePeerId}): ${pc.iceConnectionState}`);
+      if (this.connections.get(key) !== pc) return;
+      console.log(`[WebRTC] ICE state (${key}): ${pc.iceConnectionState}`);
       if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
         this.timeline.iceConnected(monitor.connectionId);
       }
@@ -699,13 +779,15 @@ export class WebRTCManager {
    * O FPS é o medido na direção desta extremidade; zero não vira o FPS configurado.
    */
   async getConnectionStats(peerId: string): Promise<ConnectionStats | null> {
-    const snapshot = this.monitors.get(peerId)?.getSnapshot() ?? null;
+    const key = this.resolveLinkKey(peerId);
+    const snapshot = key ? this.monitors.get(key)?.getSnapshot() ?? null : null;
     if (!snapshot) return null;
     return snapshotToConnectionStats(snapshot);
   }
 
   subscribeStats(peerId: string, listener: (snapshot: DiagnosticsSnapshot) => void): () => void {
-    const monitor = this.monitors.get(peerId);
+    const key = this.resolveLinkKey(peerId);
+    const monitor = key ? this.monitors.get(key) : undefined;
     if (!monitor) return () => {};
     return monitor.subscribe(listener);
   }
@@ -716,11 +798,13 @@ export class WebRTCManager {
   }
 
   pushPlayback(peerId: string, sample: PlaybackSample): boolean {
-    return this.monitors.get(peerId)?.pushPlayback(sample) ?? false;
+    const key = this.resolveLinkKey(peerId);
+    return key ? this.monitors.get(key)?.pushPlayback(sample) ?? false : false;
   }
 
   pushAudioPlayback(peerId: string, report: AudioPlaybackReport): boolean {
-    return this.monitors.get(peerId)?.pushAudioPlayback(report) ?? false;
+    const key = this.resolveLinkKey(peerId);
+    return key ? this.monitors.get(key)?.pushAudioPlayback(report) ?? false : false;
   }
 
   getAudioNotice(): string | null {
@@ -738,7 +822,8 @@ export class WebRTCManager {
   }
 
   downloadDiagnostics(peerId: string) {
-    const monitor = this.monitors.get(peerId);
+    const key = this.resolveLinkKey(peerId);
+    const monitor = key ? this.monitors.get(key) : undefined;
     if (!monitor) return;
     const report = monitor.exportReport();
     triggerJsonDownload(reportFilename(report.role, report.connectionId), report);
@@ -753,8 +838,26 @@ export class WebRTCManager {
     }
   }
 
+  /** PeerIds conectados, sem o prefixo de papel e sem repetição. */
   getConnectedPeerIds(): string[] {
-    return Array.from(this.connections.keys());
+    const peerIds = new Set<string>();
+    for (const key of this.connections.keys()) {
+      const parsed = parseLinkKey(key);
+      if (parsed) peerIds.add(parsed.peerId);
+    }
+    return Array.from(peerIds);
+  }
+
+  /**
+   * Chave interna de um peer: primeiro o papel `receiver` (a live que eu
+   * assisto), depois o `sender` (a live que eu transmito).
+   */
+  private resolveLinkKey(peerId: string): string | null {
+    const receiverKey = linkKey('receiver', peerId);
+    if (this.monitors.has(receiverKey) || this.connections.has(receiverKey)) return receiverKey;
+    const senderKey = linkKey('sender', peerId);
+    if (this.monitors.has(senderKey) || this.connections.has(senderKey)) return senderKey;
+    return null;
   }
 
   private activeViewerCount(): number {
@@ -868,18 +971,18 @@ export class WebRTCManager {
     }
   }
 
-  private noteAudioNegotiation(peerId: string, pc: RTCPeerConnection) {
+  private noteAudioNegotiation(key: string, pc: RTCPeerConnection) {
     const result = negotiationFromSdp(pc.localDescription?.sdp, pc.remoteDescription?.sdp);
-    const current = this.audioLink.get(peerId);
-    const sender = this.monitors.get(peerId)?.role === 'sender';
-    this.audioLink.set(peerId, {
+    const current = this.audioLink.get(key);
+    const sender = this.monitors.get(key)?.role === 'sender';
+    this.audioLink.set(key, {
       senderAttached: sender ? (current?.senderAttached ?? false) : false,
       negotiated: result.negotiated,
       direction: result.direction,
       local: result.local,
       remote: result.remote,
     });
-    this.monitors.get(peerId)?.recordEvent({
+    this.monitors.get(key)?.recordEvent({
       category: 'ÁUDIO',
       severity: result.negotiated ? 'info' : 'atenção',
       message: result.negotiated ? 'Negociação de áudio concluída.' : 'Negociação sem seção de áudio.',
@@ -887,14 +990,99 @@ export class WebRTCManager {
     });
   }
 
-  private closeConnection(peerId: string, cause: 'leave' | 'replace' = 'leave') {
-    const monitor = this.monitors.get(peerId);
-    const pc = this.connections.get(peerId);
-    this.connections.delete(peerId);
+  /**
+   * Troca a resolução da live SEM derrubar o compartilhamento.
+   *
+   * Cada conexão de papel `sender` recebe seu próprio `setParameters`
+   * (scaleResolutionDownBy/maxBitrate/maxFramerate/degradationPreference) com
+   * try/catch individual: uma falha não derruba as demais nem a transmissão.
+   * O ABR é recriado com o novo teto, no mesmo padrão de configureVideoSender.
+   *
+   * Devolve false só quando nenhuma conexão aceitou a mudança — nesse caso o
+   * valor anterior continua valendo e a UI avisa.
+   */
+  async setStreamResolution(resolution: '2160' | '1080' | '720' | '480'): Promise<boolean> {
+    const target = RESOLUTION_MAP[resolution];
+    if (!target) return false;
+
+    const previous = this.currentConfig.resolution;
+    const maxBitrate = BITRATE_MAP[resolution] || BITRATE_MAP[previous];
+    const scale = this.scaleResolutionDownBy(resolution);
+    const fps = this.currentConfig.frameRate;
+
+    this.currentConfig = { ...this.currentConfig, resolution };
+
+    let attempted = 0;
+    let applied = 0;
+    for (const [key, pc] of [...this.connections.entries()]) {
+      const parsed = parseLinkKey(key);
+      if (!parsed || parsed.role !== 'sender') continue;
+      const videoSender = pc.getSenders().find((sender) => sender.track?.kind === 'video');
+      if (!videoSender) continue;
+      attempted += 1;
+      try {
+        const params = videoSender.getParameters();
+        if (!params.encodings || params.encodings.length === 0) {
+          params.encodings = [{}];
+        }
+        params.encodings[0].scaleResolutionDownBy = scale;
+        params.encodings[0].maxBitrate = maxBitrate;
+        params.encodings[0].maxFramerate = fps;
+        // @ts-ignore - degradationPreference exists but TypeScript doesn't know about it
+        params.degradationPreference = 'maintain-framerate';
+        await videoSender.setParameters(params);
+        applied += 1;
+        // O ABR nasce com um teto fixo: recria com o teto da nova resolução.
+        this.restartAbr(pc, key, maxBitrate);
+        console.info(`[WebRTC] Resolução ${resolution}p aplicada em ${key} (scale ${scale}, teto ${(maxBitrate / 1_000_000).toFixed(1)} Mbps)`);
+      } catch (error) {
+        console.warn(`[WebRTC] Falha ao aplicar ${resolution}p em ${key}:`, error);
+      }
+    }
+
+    if (attempted > 0 && applied === 0) {
+      // Nenhuma conexão aceitou: o valor anterior continua valendo.
+      this.currentConfig = { ...this.currentConfig, resolution: previous };
+      return false;
+    }
+
+    // Secundário, no melhor esforço: pedir a resolução direto na captura.
+    const track = this.localStream?.getVideoTracks()[0];
+    if (track) {
+      try {
+        await track.applyConstraints({
+          width: { ideal: target.width },
+          height: { ideal: target.height },
+          frameRate: { ideal: fps, max: fps },
+        });
+      } catch (error) {
+        console.warn('[WebRTC] Captura recusou a nova resolução (best effort):', error);
+      }
+    }
+
+    return true;
+  }
+
+  /** Fecha a conexão de um papel específico (`sender` ou `receiver`). */
+  private closeLink(role: LinkRole, peerId: string, cause: 'leave' | 'replace' = 'leave') {
+    this.closeLinkByKey(linkKey(role, peerId), cause);
+  }
+
+  /** Fecha os dois papéis de um peer. */
+  private closePeer(peerId: string, cause: 'leave' | 'replace' = 'leave') {
+    this.closeLink('receiver', peerId, cause);
+    this.closeLink('sender', peerId, cause);
+  }
+
+  private closeLinkByKey(key: string, cause: 'leave' | 'replace' = 'leave') {
+    const parsed = parseLinkKey(key);
+    const monitor = this.monitors.get(key);
+    const pc = this.connections.get(key);
+    this.connections.delete(key);
     if (monitor) {
       this.encoderProbes.delete(monitor.connectionId);
       monitor.stop();
-      this.monitors.delete(peerId);
+      this.monitors.delete(key);
       if (cause === 'leave') this.timeline.setViewerCount(this.activeViewerCount());
       this.timeline.connectionClosed(monitor.connectionId);
       if (cause === 'leave' && monitor.role === 'sender') {
@@ -910,14 +1098,15 @@ export class WebRTCManager {
       }
       pc.close();
     }
-    this.notifiedPeers.delete(peerId);
-    this.audioLink.delete(peerId);
-    this.remoteAudioTracks.delete(peerId);
+    // A notificação de live é por peer e vale para o papel receiver.
+    if (parsed?.role === 'receiver') this.notifiedPeers.delete(parsed.peerId);
+    this.audioLink.delete(key);
+    this.remoteAudioTracks.delete(key);
 
-    const abr = this.abrControllers.get(peerId);
+    const abr = this.abrControllers.get(key);
     if (abr) {
       abr.stop();
-      this.abrControllers.delete(peerId);
+      this.abrControllers.delete(key);
     }
   }
 }

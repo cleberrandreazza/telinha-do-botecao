@@ -16,4 +16,4 @@ Compartilhador de tela P2P gratuito via WebRTC (sem cadastro).
 1. **Sempre consulte `docs/`:** Nunca altere `web/src/lib/diagnostics/` ou `webrtc.ts` sem respeitar as regras documentadas em `docs/diagnostics.md` e `docs/audio.md` (ex.: valores ausentes devem ficar vazios, nunca copiados de outra metrica).
 2. **Validacao obrigatoria (`@QA`):** Toda alteracao no frontend deve passar por `npm test` e `npm run build` dentro de `web/`. Use `http://localhost:3000/?mock` para validar visualmente os estados do player sem precisar abrir transmissao real.
 3. **Escopo enxuto:** Modifique apenas os arquivos estritamente necessarios para a tarefa atual. Mantenha a tipagem TypeScript estrita em `web/src/lib/types.ts`.
-4. **Deploy:** Frontend vai para Vercel (`web/`, usa `VITE_SIGNALING_URL`) e servidor para Render (`render.yaml`). Nao quebre variaveis de ambiente existentes.
+4. **Deploy:** Frontend vai para Vercel (`web/`, usa `VITE_SIGNAL_HOST`) e servidor para Render (`render.yaml`). Nao quebre variaveis de ambiente existentes.

@@ -34,7 +34,8 @@ export type ClientMessage =
   | { type: 'request-stream'; sharerId: string }
   | { type: 'offer'; to: string; sdp: RTCSessionDescriptionInit }
   | { type: 'answer'; to: string; sdp: RTCSessionDescriptionInit }
-  | { type: 'ice-candidate'; to: string; candidate: RTCIceCandidateInit }
+  /** `linkRole` diz em que papel o candidato deve ser aplicado (ver lib/links.ts). */
+  | { type: 'ice-candidate'; to: string; candidate: RTCIceCandidateInit; linkRole?: 'sender' | 'receiver' }
   | { type: 'chat-message'; text: string }
   | { type: 'heartbeat' };
 
@@ -50,7 +51,8 @@ export type ServerMessage =
   | { type: 'stream-requested'; from: string; nickname: string }
   | { type: 'offer'; from: string; sdp: RTCSessionDescriptionInit }
   | { type: 'answer'; from: string; sdp: RTCSessionDescriptionInit }
-  | { type: 'ice-candidate'; from: string; candidate: RTCIceCandidateInit }
+  /** `linkRole` propagado pelo servidor; ausente significa "sem papel definido". */
+  | { type: 'ice-candidate'; from: string; candidate: RTCIceCandidateInit; linkRole?: 'sender' | 'receiver' }
   | { type: 'chat-message'; from: string; nickname: string; text: string; ts: number }
   | { type: 'chat-history'; messages: ChatMessage[] }
   | { type: 'error'; message: string }
