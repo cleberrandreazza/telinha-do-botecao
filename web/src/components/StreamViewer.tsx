@@ -23,6 +23,9 @@ interface StreamViewerProps {
   onExportDiagnostics?: () => void;
 }
 
+/** Níveis de zoom da live assistida: 100% → 125% → 150% → 175% → 200%. */
+const ZOOM_LEVELS = [1, 1.25, 1.5, 1.75, 2] as const;
+
 export default function StreamViewer({
   stream,
   nickname,
@@ -47,6 +50,7 @@ export default function StreamViewer({
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [playError, setPlayError] = useState<string | null>(null);
   const [liveAudio, setLiveAudio] = useState<AudioPlaybackReport | null>(null);
+  const [zoomIndex, setZoomIndex] = useState(0);
   const minLoaderDone = useRef(false);
   const streamReady = useRef(false);
 
@@ -157,6 +161,44 @@ export default function StreamViewer({
     const timer = setTimeout(() => setCrtState('on'), 600);
     return () => clearTimeout(timer);
   }, [stream]);
+
+  // ── Zoom ──
+  // Trocar de live volta o zoom para 100%.
+  useEffect(() => {
+    setZoomIndex(0);
+  }, [stream]);
+
+  const zoomIn = useCallback(() => {
+    setZoomIndex((index) => Math.min(index + 1, ZOOM_LEVELS.length - 1));
+  }, []);
+
+  const zoomOut = useCallback(() => {
+    setZoomIndex((index) => Math.max(index - 1, 0));
+  }, []);
+
+  const resetZoom = useCallback(() => {
+    setZoomIndex(0);
+  }, []);
+
+  const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    // Não mexe em digitação: input, textarea e contenteditable ficam de fora.
+    const target = event.target as HTMLElement | null;
+    if (target) {
+      const tag = target.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || target.isContentEditable) return;
+    }
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.key === '+' || event.key === '=') {
+      event.preventDefault();
+      zoomIn();
+    } else if (event.key === '-' || event.key === '_') {
+      event.preventDefault();
+      zoomOut();
+    } else if (event.key === '0') {
+      event.preventDefault();
+      resetZoom();
+    }
+  }, [zoomIn, zoomOut, resetZoom]);
 
   // Volume 0 silencia. Desmutar fica no gesto (botão ou slider), não neste efeito.
   const volumeRef = useRef(volume);
@@ -303,16 +345,20 @@ export default function StreamViewer({
     <div
       ref={containerRef}
       style={containerStyle}
-      className={`relative w-full h-full flex items-center justify-center rounded-2xl overflow-hidden ${
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+      aria-label="Player da live assistida"
+      className={`relative w-full h-full flex items-center justify-center rounded-2xl overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${
         crtState === 'turning-on' ? 'crt-turn-on' : ''
       } ${crtState === 'turning-off' ? 'crt-turn-off' : ''}`}
     >
-      {/* Video */}
+      {/* Video — zoom é só transform: o container não muda de tamanho */}
       <video
         ref={videoRef}
         autoPlay
         playsInline
-        className={`w-full h-full object-contain bg-black rounded-2xl transition-opacity duration-500 ${isLoading ? 'opacity-0' : 'opacity-100'}`}
+        style={{ transform: `scale(${ZOOM_LEVELS[zoomIndex]})`, transformOrigin: 'center center' }}
+        className={`w-full h-full object-contain bg-black rounded-2xl transition-opacity transition-transform duration-200 ease-out ${isLoading ? 'opacity-0' : 'opacity-100'}`}
       />
 
       {/* Loading State — CRT TV with loading effect */}
@@ -515,6 +561,7 @@ export default function StreamViewer({
               className="w-7 h-7 flex items-center justify-center text-white/80 hover:text-white transition-colors cursor-pointer"
               onClick={() => commitVolume(volume === 0 ? 0.7 : 0)}
               title="Silenciar / Ativar Áudio"
+              aria-label="Silenciar ou ativar o áudio da live"
             >
               <span className="material-symbols-outlined text-[18px]">
                 {volume === 0 ? 'volume_off' : volume < 0.5 ? 'volume_down' : 'volume_up'}
@@ -524,6 +571,7 @@ export default function StreamViewer({
               className="h-7 px-1 flex items-center justify-center text-white/80 hover:text-white border-l border-white/10 transition-colors cursor-pointer"
               onClick={() => setShowVolumeSlider(!showVolumeSlider)}
               title="Ajustar Volume"
+              aria-label="Ajustar o volume da live"
             >
               <span className="material-symbols-outlined text-[13px]">expand_less</span>
             </button>
@@ -531,8 +579,40 @@ export default function StreamViewer({
 
           <Divider />
 
+          {/* Zoom — só visual, não toca em captura, áudio, SDP nem diagnóstico */}
+          <ControlButton
+            icon="zoom_out"
+            title="Diminuir zoom (tecla -)"
+            onClick={zoomOut}
+            disabled={zoomIndex === 0}
+          />
+
+          <span
+            className="min-w-[40px] text-center font-label-mono text-[11px] font-semibold text-primary select-none"
+            title="Zoom atual"
+            aria-live="polite"
+          >
+            {Math.round(ZOOM_LEVELS[zoomIndex] * 100)}%
+          </span>
+
+          <ControlButton
+            icon="zoom_in"
+            title="Aumentar zoom (tecla +)"
+            onClick={zoomIn}
+            disabled={zoomIndex === ZOOM_LEVELS.length - 1}
+          />
+
+          <ControlButton
+            icon="fit_screen"
+            title="Restaurar zoom (tecla 0)"
+            onClick={resetZoom}
+            disabled={zoomIndex === 0}
+          />
+
+          <Divider />
+
           {/* Stats (Stitch icon: info) */}
-          <ControlButton icon="info" title="Estatisticas" onClick={() => setShowStats(!showStats)} active={showStats} />
+          <ControlButton icon="info" title="Estatísticas" onClick={() => setShowStats(!showStats)} active={showStats} />
 
           {/* Fullscreen */}
           <ControlButton
@@ -542,7 +622,7 @@ export default function StreamViewer({
           />
 
           {/* Close */}
-          <ControlButton icon="close" title="Fechar transmissao" onClick={handleClose} danger />
+          <ControlButton icon="close" title="Fechar transmissão" onClick={handleClose} danger />
         </div>
       </div>
     </div>
@@ -557,18 +637,22 @@ function ControlButton({
   onClick,
   active,
   danger,
+  disabled,
 }: {
   icon: string;
   title: string;
   onClick: () => void;
   active?: boolean;
   danger?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
       title={title}
-      className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors cursor-pointer ${
+      aria-label={title}
+      disabled={disabled}
+      className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:bg-transparent ${
         danger
           ? 'text-white/80 hover:text-error hover:bg-error-container/20 ml-0.5'
           : active
