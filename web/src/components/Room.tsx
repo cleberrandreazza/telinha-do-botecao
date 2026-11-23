@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import type { PeerInfo, StreamInfo } from '../lib/types';
+import type { ChatMessage, PeerInfo, StreamInfo } from '../lib/types';
 import { getInitials, colorFromString } from '../lib/profile';
 import { detectScreenShareSupport, readScreenShareEnvironment } from '../lib/screenShare';
 import CrtEmptyState from './CrtEmptyState';
 import LocalPreview from './LocalPreview';
 import StreamViewer from './StreamViewer';
 import StatsPanel from './StatsPanel';
+import ChatPanel from './ChatPanel';
 import SettingsModal, { loadSettings, type BotecaoSettings } from './SettingsModal';
 import type { AudioPlaybackReport, DiagnosticsSnapshot, PlaybackSample } from '../lib/diagnostics/index';
 
@@ -28,6 +29,18 @@ interface RoomProps {
   subscribeSenderDiagnostics?: (cb: () => void) => () => void;
   getSenderSnapshots?: () => DiagnosticsSnapshot[];
   exportSenderDiagnostics?: (connectionId: string) => void;
+  /** Mensagens do chat da sala. */
+  chatMessages?: ChatMessage[];
+  /** Envia uma mensagem no chat da sala. */
+  onSendChat?: (text: string) => void;
+  /** Reenvia uma mensagem que ficou sem o eco do servidor. */
+  onRetryChat?: (message: ChatMessage) => void;
+  /** Quantidade de mensagens recebidas com o chat fechado. */
+  chatUnread?: number;
+  /** Avisa o App que o painel de chat abriu/fechou (para o contador). */
+  onChatOpenChange?: (open: boolean) => void;
+  /** Aviso temporário exibido sobre a sala (ex.: sessão restaurada). */
+  notice?: string | null;
 }
 
 export default function Room({
@@ -49,6 +62,12 @@ export default function Room({
   subscribeSenderDiagnostics,
   getSenderSnapshots,
   exportSenderDiagnostics,
+  chatMessages = [],
+  onSendChat,
+  onRetryChat,
+  chatUnread = 0,
+  onChatOpenChange,
+  notice,
 }: RoomProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeStreamId, setActiveStreamId] = useState<string | null>(null);
@@ -62,6 +81,17 @@ export default function Room({
   const [senderConnectionId, setSenderConnectionId] = useState<string | null>(null);
   const [streamDismissed, setStreamDismissed] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Chat aberto por padrão no desktop; fechado em telas pequenas.
+  const [chatOpen, setChatOpen] = useState<boolean>(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+    return window.matchMedia('(min-width: 1024px)').matches;
+  });
+
+  // O App usa isso para contar as mensagens que chegam com o chat fechado.
+  useEffect(() => {
+    onChatOpenChange?.(chatOpen);
+  }, [chatOpen, onChatOpenChange]);
 
   // Captura de tela só existe em navegador de computador, em contexto seguro.
   const screenShare = useMemo(() => detectScreenShareSupport(readScreenShareEnvironment()), []);
@@ -502,49 +532,90 @@ export default function Room({
         />
       )}
 
-      {/* ── Main Canvas ── */}
-      <main className="w-full h-full p-2.5 sm:p-3 flex items-center justify-center overflow-hidden relative cursor-default z-10">
-        {activeStream ? (
-          <StreamViewer
-            stream={activeStream.stream}
-            nickname={activeStream.nickname}
-            onClose={() => { setActiveStreamId(null); setStreamDismissed(true); }}
-            onOpenSidebar={() => setSidebarOpen(true)}
-            mouseInactive={mouseInactive}
-            volume={volume}
-            onVolumeChange={setVolume}
-            subscribeStats={activePeerId ? subscribeActive : undefined}
-            pushPlayback={activePeerId ? pushActive : undefined}
-            pushAudioPlayback={activePeerId ? pushAudioActive : undefined}
-            onExportDiagnostics={activePeerId ? exportActive : undefined}
-          />
-        ) : (
-          <CrtEmptyState onOpenSidebar={() => setSidebarOpen(true)} />
-        )}
+      {/* ── Main Canvas + Chat da sala ── */}
+      <div className="flex-1 flex min-h-0 w-full">
+        <main className="flex-1 min-w-0 h-full p-2.5 sm:p-3 flex items-center justify-center overflow-hidden relative cursor-default z-10">
+          {activeStream ? (
+            <StreamViewer
+              stream={activeStream.stream}
+              nickname={activeStream.nickname}
+              onClose={() => { setActiveStreamId(null); setStreamDismissed(true); }}
+              onOpenSidebar={() => setSidebarOpen(true)}
+              mouseInactive={mouseInactive}
+              volume={volume}
+              onVolumeChange={setVolume}
+              subscribeStats={activePeerId ? subscribeActive : undefined}
+              pushPlayback={activePeerId ? pushActive : undefined}
+              pushAudioPlayback={activePeerId ? pushAudioActive : undefined}
+              onExportDiagnostics={activePeerId ? exportActive : undefined}
+            />
+          ) : (
+            <CrtEmptyState onOpenSidebar={() => setSidebarOpen(true)} />
+          )}
 
-        {/* Preview de quem transmite: a própria captura, com a resolução real */}
-        {isSharing && localStream && (
-          <LocalPreview stream={localStream} nickname={nickname} />
+          {/* Preview de quem transmite: a própria captura, com a resolução real */}
+          {isSharing && localStream && (
+            <LocalPreview stream={localStream} nickname={nickname} />
+          )}
+
+          {/* Aviso da sala (ex.: sessão restaurada após o F5) */}
+          {notice && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 max-w-[90%] flex items-center gap-2 px-3.5 py-2 rounded-xl bg-[#111318]/95 backdrop-blur-xl border border-primary/30 shadow-2xl">
+              <span className="material-symbols-outlined text-[16px] text-primary shrink-0">check_circle</span>
+              <span className="text-[12px] text-on-surface leading-snug">{notice}</span>
+            </div>
+          )}
+
+          {/* Diagnóstico: abre sobre o vídeo, nunca sobre o painel de chat */}
+          {showSenderStats && (
+            <div className="absolute top-4 right-4 z-30">
+              <StatsPanel
+                snapshot={selectedSender}
+                onClose={() => setShowSenderStats(false)}
+                onExport={() => {
+                  if (selectedSender) exportSenderDiagnostics?.(selectedSender.sample.connectionId);
+                }}
+                connections={senderSnapshots.map((item, index) => ({
+                  connectionId: item.sample.connectionId,
+                  label: `Conexão ${index + 1}`,
+                }))}
+                selectedConnectionId={senderConnectionId ?? null}
+                onSelectConnection={setSenderConnectionId}
+                emptyHint="Nenhum espectador conectado. A codificação só é medida quando existe uma conexão WebRTC."
+              />
+            </div>
+          )}
+        </main>
+
+        {/* Chat da sala: coluna ao lado no desktop, overlay de tela cheia abaixo de lg */}
+        <ChatPanel
+          messages={chatMessages}
+          myPeerId={myPeerId}
+          onSend={(text) => onSendChat?.(text)}
+          onRetry={onRetryChat}
+          open={chatOpen}
+          onClose={() => setChatOpen(false)}
+        />
+      </div>
+
+      {/* ── Botão flutuante do chat ── */}
+      <button
+        onClick={() => setChatOpen((open) => !open)}
+        title={chatOpen ? 'Fechar o chat' : 'Abrir o chat'}
+        aria-label={chatOpen ? 'Fechar o chat' : 'Abrir o chat'}
+        className={`absolute ${chatOpen ? 'lg:right-[336px] right-4' : 'right-4'} ${
+          isSharing && localStream ? 'bottom-[200px] sm:bottom-[215px]' : 'bottom-4'
+        } z-30 w-11 h-11 rounded-2xl bg-[#111318]/95 backdrop-blur-xl border border-[#272a37] shadow-2xl flex items-center justify-center transition-colors cursor-pointer ${
+          chatOpen ? 'text-primary border-primary/40' : 'text-on-surface hover:text-primary hover:border-primary/50'
+        }`}
+      >
+        <span className="material-symbols-outlined text-[20px]">chat</span>
+        {!chatOpen && chatUnread > 0 && (
+          <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-primary text-on-primary text-[10px] font-bold flex items-center justify-center">
+            {chatUnread > 99 ? '99+' : chatUnread}
+          </span>
         )}
-      </main>
-      {showSenderStats && (
-        <div className="fixed top-4 right-4 z-40">
-          <StatsPanel
-            snapshot={selectedSender}
-            onClose={() => setShowSenderStats(false)}
-            onExport={() => {
-              if (selectedSender) exportSenderDiagnostics?.(selectedSender.sample.connectionId);
-            }}
-            connections={senderSnapshots.map((item, index) => ({
-              connectionId: item.sample.connectionId,
-              label: `Conexão ${index + 1}`,
-            }))}
-            selectedConnectionId={selectedSender?.sample.connectionId ?? null}
-            onSelectConnection={setSenderConnectionId}
-            emptyHint="Nenhum espectador conectado. A codificação só é medida quando existe uma conexão WebRTC."
-          />
-        </div>
-      )}
+      </button>
     </div>
   );
 }

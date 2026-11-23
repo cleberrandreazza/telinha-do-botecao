@@ -3,13 +3,79 @@ import { SignalingClient } from './lib/signaling';
 import { WebRTCManager } from './lib/webrtc';
 import { getSignalingUrl } from './lib/utils';
 import { detectScreenShareSupport, readScreenShareEnvironment } from './lib/screenShare';
-import type { AppScreen, PeerInfo, StreamInfo, ServerMessage } from './lib/types';
+import type { AppScreen, ChatMessage, PeerInfo, StreamInfo, ServerMessage } from './lib/types';
+import { sanitizeChatText } from './lib/chat';
+import {
+  loadRoomSession,
+  saveRoomSession,
+  clearRoomSession,
+  type RoomSession,
+} from './lib/session';
 import Home from './components/Home';
 import Room from './components/Room';
+import Reconnecting from './components/Reconnecting';
 import StreamSettings from './components/StreamSettings';
 import type { StreamConfig } from './lib/webrtc';
 import type { AudioPlaybackReport, DiagnosticsSnapshot, PlaybackSample } from './lib/diagnostics/index';
-import { isMockMode, isMockSharing, createMockLocalStream, generateMockData, generateMockStreamsDelayed } from './lib/mock';
+import {
+  isMockMode,
+  isMockSharing,
+  createMockLocalStream,
+  generateMockData,
+  generateMockStreamsDelayed,
+  generateMockChatMessages,
+  simulateMockChatEcho,
+} from './lib/mock';
+
+/** Quantidade máxima de mensagens de chat mantidas em memória. */
+const CHAT_HISTORY_MAX = 200;
+
+/** Espera máxima pelo `room-joined` ao restaurar a sessão depois do F5. */
+const RECONNECT_TIMEOUT_MS = 6000;
+
+/** Tempo que a mensagem otimista espera pelo eco do servidor antes de falhar. */
+const CHAT_ECHO_TIMEOUT_MS = 6000;
+
+/** Tolerância (ms) para casar o eco do servidor com a mensagem otimista. */
+const CHAT_ECHO_TOLERANCE_MS = 15000;
+
+/**
+ * Acrescenta a mensagem no fim da lista, cortando as mais antigas quando
+ * passa do limite de memória.
+ */
+function appendChat(list: ChatMessage[], entry: ChatMessage): ChatMessage[] {
+  const next = [...list, entry];
+  return next.length > CHAT_HISTORY_MAX ? next.slice(next.length - CHAT_HISTORY_MAX) : next;
+}
+
+/**
+ * Procura a mensagem otimista que corresponde ao eco do servidor.
+ * O broadcast não devolve `id`, então o casamento é por from + ts + text; se o
+ * relógio do servidor divergir do nosso, cai para from + text dentro da
+ * tolerância (o servidor pode estar em outro fuso/relógio).
+ */
+function findOptimisticIndex(list: ChatMessage[], incoming: ChatMessage): number {
+  const exact = list.findIndex(
+    (m) => m.pending && m.from === incoming.from && m.ts === incoming.ts && m.text === incoming.text
+  );
+  if (exact !== -1) return exact;
+  return list.findIndex(
+    (m) =>
+      m.pending &&
+      m.from === incoming.from &&
+      m.text === incoming.text &&
+      Math.abs(m.ts - incoming.ts) <= CHAT_ECHO_TOLERANCE_MS
+  );
+}
+
+/** Cancela o timer de "sem eco do servidor" de uma mensagem otimista. */
+function clearChatPendingTimer(timers: Map<string, number>, id: string): void {
+  const timer = timers.get(id);
+  if (timer !== undefined) {
+    window.clearTimeout(timer);
+    timers.delete(id);
+  }
+}
 
 export default function App() {
   // ── Estado da aplicação ──
@@ -28,11 +94,41 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [audioNotice, setAudioNotice] = useState<string | null>(null);
 
+  // ── Chat da sala ──
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatUnread, setChatUnread] = useState(0);
+
+  // ── Reconexão automática (F5) ──
+  const [reconnectState, setReconnectState] = useState<'idle' | 'connecting' | 'failed'>('idle');
+  const [reconnectError, setReconnectError] = useState<string | null>(null);
+  /** true quando ainda vale a pena oferecer "Tentar de novo". */
+  const [reconnectCanRetry, setReconnectCanRetry] = useState(false);
+  const [restoredNotice, setRestoredNotice] = useState<string | null>(null);
+
   // ── Refs para manter instâncias estáveis ──
   const signalRef = useRef<SignalingClient | null>(null);
   const rtcRef = useRef<WebRTCManager | null>(null);
   const peersRef = useRef<PeerInfo[]>([]);
   const nickRef = useRef<string>('');
+  const myPeerIdRef = useRef('');
+  /** true enquanto o painel de chat está aberto (para o contador de não lidas). */
+  const chatOpenRef = useRef(true);
+  /** true enquanto estamos tentando restaurar a sessão após o F5. */
+  const reconnectingRef = useRef(false);
+  /** Sessão que estamos tentando restaurar (null quando não há restore em curso). */
+  const restoreRef = useRef<RoomSession | null>(null);
+  /** Sessão da reconexão — guardada mesmo depois de uma falha, para o "Tentar de novo". */
+  const reconnectSessionRef = useRef<RoomSession | null>(null);
+  /** Timer do timeout de 6 s da reconexão. */
+  const reconnectTimerRef = useRef<number | null>(null);
+  /** true quando o usuário cancelou a reconexão no meio do caminho. */
+  const reconnectCancelledRef = useRef(false);
+  /** Contador dos ids locais das mensagens otimistas. */
+  const localChatIdRef = useRef(0);
+  /** Timers de "sem eco do servidor" das mensagens otimistas. */
+  const chatPendingTimersRef = useRef<Map<string, number>>(new Map());
+  /** Espelho da lista de chat (para casar o eco do servidor fora do setState). */
+  const chatMessagesRef = useRef<ChatMessage[]>([]);
 
   // Sync refs
   useEffect(() => {
@@ -41,6 +137,12 @@ export default function App() {
   useEffect(() => {
     nickRef.current = nickname;
   }, [nickname]);
+  useEffect(() => {
+    myPeerIdRef.current = myPeerId;
+  }, [myPeerId]);
+  useEffect(() => {
+    chatMessagesRef.current = chatMessages;
+  }, [chatMessages]);
 
   // ── Callbacks de stream ──
   const handleNewStream = useCallback((info: StreamInfo) => {
@@ -71,6 +173,7 @@ export default function App() {
         setError(null);
         setConnecting(false);
         rtcRef.current?.setMyPeerId(msg.peerId);
+        saveRoomSession({ code: msg.code, nickname: nickRef.current, wasSharing: false, savedAt: Date.now() });
         break;
       }
 
@@ -86,6 +189,26 @@ export default function App() {
         setError(null);
         setConnecting(false);
         rtcRef.current?.setMyPeerId(msg.peerId);
+
+        // Sessão restaurada depois do F5: sai da tela de reconexão
+        const restoring = restoreRef.current;
+        if (restoring) {
+          restoreRef.current = null;
+          reconnectingRef.current = false;
+          if (reconnectTimerRef.current !== null) {
+            window.clearTimeout(reconnectTimerRef.current);
+            reconnectTimerRef.current = null;
+          }
+          setReconnectState('idle');
+          setReconnectError(null);
+          setRestoredNotice(
+            restoring.wasSharing
+              ? 'Reconectado. Clique em Compartilhar Tela para retomar a transmissão.'
+              : 'Sessão restaurada.'
+          );
+        }
+
+        saveRoomSession({ code: msg.code, nickname: nickRef.current, wasSharing: false, savedAt: Date.now() });
 
         // Solicita streams de quem já está compartilhando
         for (const peer of msg.peers) {
@@ -124,7 +247,60 @@ export default function App() {
         resetRoom();
         break;
 
+      case 'chat-message': {
+        const entry: ChatMessage = {
+          id: `srv-${msg.from}-${msg.ts}`,
+          from: msg.from,
+          nickname: msg.nickname,
+          text: msg.text,
+          ts: msg.ts,
+        };
+        // O broadcast não devolve `id`: a mensagem otimista é casada por
+        // from + ts + text e substituída pelo eco do servidor. O casamento é
+        // feito antes de mexer na lista para cancelar o timer de "sem eco".
+        const optimistic = findOptimisticIndex(chatMessagesRef.current, entry);
+        if (optimistic !== -1) {
+          clearChatPendingTimer(
+            chatPendingTimersRef.current,
+            chatMessagesRef.current[optimistic].id
+          );
+        }
+        setChatMessages((prev) => {
+          const index = findOptimisticIndex(prev, entry);
+          if (index === -1) return appendChat(prev, entry);
+          const next = [...prev];
+          next[index] = { ...entry, id: next[index].id };
+          return next;
+        });
+        // Mensagem chegando com o painel fechado conta como não lida
+        // (a própria mensagem já está na tela: não conta).
+        if (!chatOpenRef.current && msg.from !== myPeerIdRef.current) {
+          setChatUnread((count) => count + 1);
+        }
+        break;
+      }
+
+      case 'chat-history': {
+        // Histórico da sala: substitui a lista (não conta como não lida)
+        setChatMessages(msg.messages.slice(-CHAT_HISTORY_MAX));
+        break;
+      }
+
       case 'error':
+        if (reconnectingRef.current) {
+          // Não deu para restaurar a sessão (ex.: sala não existe mais):
+          // a sessão salva é apagada e a tela de reconexão vira estado de falha.
+          reconnectingRef.current = false;
+          restoreRef.current = null;
+          if (reconnectTimerRef.current !== null) {
+            window.clearTimeout(reconnectTimerRef.current);
+            reconnectTimerRef.current = null;
+          }
+          clearRoomSession();
+          setReconnectState('failed');
+          setReconnectError(msg.message);
+          break;
+        }
         setError(msg.message);
         setConnecting(false);
         break;
@@ -203,6 +379,9 @@ export default function App() {
         setAudioNotice(rtcRef.current?.getAudioNotice() ?? null);
         // Atualiza o próprio peer na lista
         setPeers(prev => prev.map(p => p.id === myPeerId ? { ...p, isSharing: true } : p));
+        if (roomCode) {
+          saveRoomSession({ code: roomCode, nickname, wasSharing: true, savedAt: Date.now() });
+        }
 
         const videoTrack = stream.getVideoTracks()[0];
         if (videoTrack) {
@@ -213,6 +392,9 @@ export default function App() {
             setIsSharing(false);
             setAudioNotice(null);
             setPeers(prev => prev.map(p => p.id === myPeerId ? { ...p, isSharing: false } : p));
+            if (roomCode) {
+              saveRoomSession({ code: roomCode, nickname, wasSharing: false, savedAt: Date.now() });
+            }
           };
         }
       }
@@ -233,13 +415,91 @@ export default function App() {
     setAudioNotice(null);
     // Atualiza o próprio peer na lista
     setPeers(prev => prev.map(p => p.id === myPeerId ? { ...p, isSharing: false } : p));
+    if (roomCode) {
+      saveRoomSession({ code: roomCode, nickname, wasSharing: false, savedAt: Date.now() });
+    }
   };
 
   const handleLeaveRoom = () => {
     signalRef.current?.send({ type: 'leave-room' });
+    // A sessão salva é apagada: sair da sala encerra a reconexão automática
+    clearRoomSession();
     rtcRef.current?.destroy();
     resetRoom();
   };
+
+  // ── Chat da sala ──
+  // A mensagem entra na tela na hora (otimista, com id local) e é reconciliada
+  // quando o eco do servidor chega. O servidor descarta silenciosamente
+  // mensagens enviadas com menos de 500 ms de intervalo — por isso o painel
+  // trava o envio pelo mesmo tempo (ver ChatPanel).
+  const scheduleChatPending = useCallback((id: string) => {
+    const timer = window.setTimeout(() => {
+      chatPendingTimersRef.current.delete(id);
+      setChatMessages((prev) =>
+        prev.map((m) => (m.id === id && m.pending ? { ...m, pending: false, failed: true } : m))
+      );
+    }, CHAT_ECHO_TIMEOUT_MS);
+    chatPendingTimersRef.current.set(id, timer);
+  }, []);
+
+  const handleSendChat = useCallback(
+    (text: string) => {
+      const clean = sanitizeChatText(text);
+      if (!clean) return;
+      const entry: ChatMessage = {
+        id: `local-${++localChatIdRef.current}`,
+        from: myPeerIdRef.current,
+        nickname: nickRef.current,
+        text: clean,
+        ts: Date.now(),
+        pending: true,
+      };
+      setChatMessages((prev) => appendChat(prev, entry));
+      if (signalRef.current) {
+        signalRef.current.send({ type: 'chat-message', text: clean });
+      } else if (isMockMode()) {
+        // No mock não existe servidor: simulamos o eco para a mensagem
+        // otimista ser reconciliada (igual acontece na sala real).
+        simulateMockChatEcho(entry, (echo) => handleSignalMessage(echo));
+      }
+      scheduleChatPending(entry.id);
+    },
+    [handleSignalMessage, scheduleChatPending]
+  );
+
+  /** Reenvia uma mensagem que ficou sem o eco do servidor. */
+  const handleRetryChat = useCallback(
+    (message: ChatMessage) => {
+      const clean = sanitizeChatText(message.text);
+      if (!clean) return;
+      const entry: ChatMessage = {
+        id: `local-${++localChatIdRef.current}`,
+        from: myPeerIdRef.current,
+        nickname: nickRef.current,
+        text: clean,
+        ts: Date.now(),
+        pending: true,
+      };
+      setChatMessages((prev) => {
+        const without = prev.filter((m) => m.id !== message.id);
+        return appendChat(without, entry);
+      });
+      if (signalRef.current) {
+        signalRef.current.send({ type: 'chat-message', text: clean });
+      } else if (isMockMode()) {
+        simulateMockChatEcho(entry, (echo) => handleSignalMessage(echo));
+      }
+      scheduleChatPending(entry.id);
+    },
+    [handleSignalMessage, scheduleChatPending]
+  );
+
+  // O Room avisa quando o painel de chat abre/fecha: ao abrir, zera o contador.
+  const handleChatOpenChange = useCallback((open: boolean) => {
+    chatOpenRef.current = open;
+    if (open) setChatUnread(0);
+  }, []);
 
   const resetRoom = () => {
     setScreen('home');
@@ -251,6 +511,12 @@ export default function App() {
     setIsSharing(false);
     setError(null);
     setConnecting(false);
+    setChatMessages([]);
+    setChatUnread(0);
+    setRestoredNotice(null);
+    setReconnectState('idle');
+    setReconnectError(null);
+    setReconnectCanRetry(false);
 
     // Cleanup
     rtcRef.current?.destroy();
@@ -276,6 +542,7 @@ export default function App() {
     setNickname(mock.nickname);
     setPeers(mock.peers);
     setStreams([]); // Start with no streams — loading state
+    setChatMessages(generateMockChatMessages());
     setScreen('room');
 
     // ?mock&share — simula que você está transmitindo (preview local)
@@ -294,6 +561,105 @@ export default function App() {
 
     return () => clearTimeout(timer);
   }, []);
+
+  // ── Reconexão automática após o F5 ──
+  // A sessão (código + apelido) fica no sessionStorage; ao recarregar a
+  // página tentamos entrar de novo na mesma sala. O `peerId` muda — isso é
+  // esperado nesta etapa. Quem compartilha precisa clicar em "Compartilhar
+  // Tela" de novo (o navegador não deixa religar a captura sozinho).
+  const beginReconnect = async (session: RoomSession) => {
+    reconnectCancelledRef.current = false;
+    restoreRef.current = session;
+    reconnectSessionRef.current = session;
+    reconnectingRef.current = true;
+    setReconnectState('connecting');
+    setReconnectError(null);
+    setReconnectCanRetry(true);
+    setRoomCode(session.code);
+    setNickname(session.nickname);
+    nickRef.current = session.nickname;
+    // A sala fica montada por baixo da overlay (a TV não "pisca")
+    setScreen('room');
+
+    // Timeout de 6 s: sem `room-joined`, vira estado de falha.
+    if (reconnectTimerRef.current !== null) window.clearTimeout(reconnectTimerRef.current);
+    reconnectTimerRef.current = window.setTimeout(() => {
+      reconnectTimerRef.current = null;
+      if (!reconnectingRef.current) return;
+      reconnectingRef.current = false;
+      setReconnectState('failed');
+      setReconnectCanRetry(true);
+      setReconnectError('A sala não respondeu. Ela pode ter sido encerrada ou o servidor caiu.');
+    }, RECONNECT_TIMEOUT_MS);
+
+    try {
+      const signal = await ensureConnected();
+      if (reconnectCancelledRef.current) {
+        // Cancelou enquanto conectava: derruba a conexão que acabou de abrir.
+        rtcRef.current?.destroy();
+        signalRef.current?.disconnect();
+        signalRef.current = null;
+        rtcRef.current = null;
+        return;
+      }
+      signal.send({ type: 'join-room', code: session.code, nickname: session.nickname });
+    } catch {
+      if (reconnectCancelledRef.current) return;
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      reconnectingRef.current = false;
+      setReconnectState('failed');
+      setReconnectCanRetry(true);
+      setReconnectError('Não foi possível conectar ao servidor. Verifique se o servidor está rodando.');
+    }
+  };
+
+  useEffect(() => {
+    if (isMockMode()) return;
+
+    const session = loadRoomSession();
+    if (!session) return;
+
+    void beginReconnect(session);
+
+    return () => {
+      reconnectCancelledRef.current = true;
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // "Voltar ao início" / "Cancelar": apaga a sessão salva e volta para a Home.
+  const handleCancelReconnect = () => {
+    reconnectCancelledRef.current = true;
+    restoreRef.current = null;
+    reconnectSessionRef.current = null;
+    reconnectingRef.current = false;
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    setReconnectState('idle');
+    setReconnectError(null);
+    setReconnectCanRetry(false);
+    clearRoomSession();
+    resetRoom();
+  };
+
+  // "Tentar de novo": reenvia o join-room e reinicia o timeout de 6 s.
+  const handleRetryReconnect = () => {
+    const session = reconnectSessionRef.current ?? loadRoomSession();
+    if (!session) {
+      handleCancelReconnect();
+      return;
+    }
+    void beginReconnect(session);
+  };
 
   const subscribeStats = useCallback((peerId: string, cb: (snapshot: DiagnosticsSnapshot) => void) => {
     return rtcRef.current?.subscribeStats(peerId, cb) ?? (() => {});
@@ -347,8 +713,26 @@ export default function App() {
           subscribeSenderDiagnostics={subscribeSenderDiagnostics}
           getSenderSnapshots={getSenderSnapshots}
           exportSenderDiagnostics={exportSenderDiagnostics}
+          chatMessages={chatMessages}
+          onSendChat={handleSendChat}
+          onRetryChat={handleRetryChat}
+          chatUnread={chatUnread}
+          onChatOpenChange={handleChatOpenChange}
+          notice={restoredNotice}
         />
       )}
+
+      {/* Overlay de reconexão: fica por cima da sala, que já está montada. */}
+      {reconnectState !== 'idle' && (
+        <Reconnecting
+          code={roomCode}
+          status={reconnectState === 'failed' ? 'failed' : 'connecting'}
+          message={reconnectError}
+          onRetry={reconnectCanRetry ? handleRetryReconnect : undefined}
+          onCancel={handleCancelReconnect}
+        />
+      )}
+
       {showSettings && (
         <StreamSettings
           onStart={handleStartSharing}

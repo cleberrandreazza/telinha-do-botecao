@@ -1,4 +1,4 @@
-import type { PeerInfo, StreamInfo } from './types';
+import type { ChatMessage, PeerInfo, StreamInfo } from './types';
 
 const MOCK_USERS = [
   { nickname: 'Matheus', color: '#e74c3c' },
@@ -153,8 +153,7 @@ export function generateMockData(): MockData {
 }
 
 /** Generate streams with a delay to simulate loading.
- *  Also returns the peerIds so App can flip isSharing on those peers. */
-export function generateMockStreamsDelayed(
+ *  Also returns the peerIds so App can flip isSharing on those peers. */export function generateMockStreamsDelayed(
   onReady: (streams: StreamInfo[], peerIds: string[]) => void,
   delayMs: number = 5000,
 ): ReturnType<typeof setTimeout> {
@@ -171,4 +170,76 @@ export function generateMockStreamsDelayed(
     });
     onReady(streams, peerIds);
   }, delayMs);
+}
+
+/**
+ * Mensagens de chat simuladas (4), com `ts` recente e `id` estável.
+ * O `from` bate com o `id` dos peers do mock, para o destaque de "minha
+ * mensagem" funcionar igual na sala real.
+ */
+export function generateMockChatMessages(): ChatMessage[] {
+  const now = Date.now();
+  return [
+    {
+      id: 'mock-chat-1',
+      from: 'mock-0',
+      nickname: 'Matheus',
+      text: 'Bora ver o jogo? Já tô abrindo aqui.',
+      ts: now - 4 * 60 * 1000,
+    },
+    {
+      id: 'mock-chat-2',
+      from: 'mock-2',
+      nickname: 'Bia',
+      text: 'Espera, deixa eu pegar o controle primeiro.',
+      ts: now - 3 * 60 * 1000,
+    },
+    {
+      id: 'mock-chat-3',
+      from: 'mock-1',
+      nickname: 'Lucas',
+      text: 'A imagem tá lisinha aqui, tá dando uns travão.',
+      ts: now - 95 * 1000,
+    },
+    {
+      id: 'mock-chat-4',
+      from: 'mock-self',
+      nickname: 'Você (Dev)',
+      text: 'Testando o chat da sala — até já!',
+      ts: now - 30 * 1000,
+    },
+  ];
+}
+
+/** Formato do eco do servidor: o broadcast não devolve `id`. */
+export interface MockChatEcho {
+  type: 'chat-message';
+  from: string;
+  nickname: string;
+  text: string;
+  ts: number;
+}
+
+/**
+ * Simula o eco do servidor para uma mensagem enviada no modo mock — sem ele a
+ * mensagem otimista ficaria "pendente" para sempre (não existe servidor de
+ * sinalização no mock). O atraso padrão de 600 ms reproduz a latência real e
+ * respeita o rate limit de 500 ms do servidor.
+ * Devolve a função de cancelamento.
+ */
+export function simulateMockChatEcho(
+  message: { from: string; nickname: string; text: string },
+  onEcho: (echo: MockChatEcho) => void,
+  delayMs: number = 600,
+): () => void {
+  const timer = setTimeout(() => {
+    onEcho({
+      type: 'chat-message',
+      from: message.from,
+      nickname: message.nickname,
+      text: message.text,
+      ts: Date.now(),
+    });
+  }, delayMs);
+  return () => clearTimeout(timer);
 }

@@ -18,6 +18,10 @@ export interface ChatMessage {
   nickname: string;
   text: string;
   ts: number;
+  /** Mensagem otimista: enviada pelo cliente, aguardando o eco do servidor. */
+  pending?: boolean;
+  /** O eco do servidor não chegou — a mensagem pode ter sido descartada. */
+  failed?: boolean;
 }
 
 // ── Signaling messages (client → server) ───────────────
