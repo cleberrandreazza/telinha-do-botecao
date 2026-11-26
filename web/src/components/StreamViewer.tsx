@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import StatsPanel from './StatsPanel';
+import StreamControls, { ZOOM_LEVELS } from './StreamControls';
+import { useZoomPan } from '../lib/useZoomPan';
 import {
   PlaybackMonitor,
   resolvePlayback,
@@ -13,7 +15,6 @@ interface StreamViewerProps {
   stream: MediaStream;
   nickname: string;
   onClose: () => void;
-  onOpenSidebar: () => void;
   mouseInactive: boolean;
   volume: number;
   onVolumeChange: (v: number) => void;
@@ -23,14 +24,10 @@ interface StreamViewerProps {
   onExportDiagnostics?: () => void;
 }
 
-/** Níveis de zoom da live assistida: 100% → 125% → 150% → 175% → 200%. */
-const ZOOM_LEVELS = [1, 1.25, 1.5, 1.75, 2] as const;
-
 export default function StreamViewer({
   stream,
   nickname,
   onClose,
-  onOpenSidebar,
   mouseInactive,
   volume,
   onVolumeChange,
@@ -42,7 +39,6 @@ export default function StreamViewer({
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isPaused, setIsPaused] = useState(false);
-  const [showVolumeSlider, setShowVolumeSlider] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [crtState, setCrtState] = useState<'turning-on' | 'on' | 'turning-off' | 'off'>('turning-on');
@@ -179,6 +175,13 @@ export default function StreamViewer({
   const resetZoom = useCallback(() => {
     setZoomIndex(0);
   }, []);
+
+  /** Zoom atual (1 = 100%). */
+  const zoom = ZOOM_LEVELS[zoomIndex];
+
+  // Zoom + arrasto: com zoom > 1, arrastar sobre o vídeo move o quadro
+  // (limitado às bordas). O pan é local do player.
+  const { pan, dragging, onPointerDown, onPointerMove, onPointerUp, onPointerCancel } = useZoomPan(containerRef, zoom);
 
   const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
     // Não mexe em digitação: input, textarea e contenteditable ficam de fora.
@@ -352,13 +355,24 @@ export default function StreamViewer({
         crtState === 'turning-on' ? 'crt-turn-on' : ''
       } ${crtState === 'turning-off' ? 'crt-turn-off' : ''}`}
     >
-      {/* Video — zoom é só transform: o container não muda de tamanho */}
+      {/* Video — zoom e arrasto são só transform: o container não muda de tamanho */}
       <video
         ref={videoRef}
         autoPlay
         playsInline
-        style={{ transform: `scale(${ZOOM_LEVELS[zoomIndex]})`, transformOrigin: 'center center' }}
-        className={`w-full h-full object-contain bg-black rounded-2xl transition-opacity transition-transform duration-200 ease-out ${isLoading ? 'opacity-0' : 'opacity-100'}`}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerCancel}
+        style={{
+          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+          transformOrigin: 'center center',
+          touchAction: zoom > 1 ? 'none' : undefined,
+          cursor: zoom > 1 ? (dragging ? 'grabbing' : 'grab') : undefined,
+        }}
+        className={`w-full h-full object-contain bg-black rounded-2xl transition-opacity ${
+          dragging ? '' : 'transition-transform duration-200 ease-out'
+        } ${isLoading ? 'opacity-0' : 'opacity-100'}`}
       />
 
       {/* Loading State — CRT TV with loading effect */}
@@ -507,164 +521,28 @@ export default function StreamViewer({
         </div>
       )}
 
-      {/* ── Floating Control Island ── */}
+      {/* ── Floating Control Island (mesmo menu dos tiles da grade) ── */}
       <div
         className={`absolute bottom-6 left-1/2 -translate-x-1/2 z-30 autohide-ui transition-all duration-300 flex flex-col items-center ${
           mouseInactive ? 'opacity-0 translate-y-6 pointer-events-none' : 'opacity-100 translate-y-0'
         }`}
       >
-        {/* Volume Popover */}
-        {showVolumeSlider && (
-          <div className="mb-3 w-52 bg-[#18191c]/95 backdrop-blur-xl border border-[#272a37] rounded-xl px-3.5 py-3 shadow-2xl flex flex-col gap-2 z-50">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold text-[#dbdee1] uppercase tracking-wider select-none">Volume da Live</span>
-              <span className="font-label-mono text-[11px] font-semibold text-primary">{Math.round(volume * 100)}%</span>
-            </div>
-            <div className="flex items-center gap-2.5">
-              <button className="text-outline hover:text-white cursor-pointer flex items-center justify-center shrink-0 w-4" onClick={() => commitVolume(volume === 0 ? 0.7 : 0)}>
-                <span className="material-symbols-outlined text-[16px]">{volume === 0 ? 'volume_off' : volume < 0.5 ? 'volume_down' : 'volume_up'}</span>
-              </button>
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.05}
-                value={volume}
-                onChange={(e) => commitVolume(parseFloat(e.target.value))}
-                className="volume-slider flex-1 h-1.5 rounded-full appearance-none cursor-pointer"
-                style={{
-                  background: `linear-gradient(to right, rgb(16, 185, 129) ${volume * 100}%, rgb(53, 55, 60) ${volume * 100}%)`
-                }}
-              />
-              <span className="material-symbols-outlined text-[16px] text-[#dbdee1] select-none shrink-0 w-4">volume_up</span>
-            </div>
-          </div>
-        )}
-
-        {/* Toolbar Buttons Pill (Stitch: rounded-full bg-black/75) */}
-        <div className="px-2.5 py-1.5 rounded-full bg-black/75 backdrop-blur-xl border border-white/10 shadow-2xl flex items-center gap-1.5">
-          {/* Sidebar toggle */}
-          <ControlButton icon="dock_to_right" title="Abrir menu lateral" onClick={onOpenSidebar} />
-
-          <Divider />
-
-          {/* Play/Pause */}
-          <ControlButton
-            icon={isPaused ? 'play_arrow' : 'pause'}
-            title={isPaused ? 'Reproduzir' : 'Pausar'}
-            onClick={togglePause}
-          />
-
-          {/* Volume split button (Stitch: mute + chevron) */}
-          <div className="flex items-center rounded-full bg-white/5 hover:bg-white/10 border border-white/10 transition-colors">
-            <button
-              className="w-7 h-7 flex items-center justify-center text-white/80 hover:text-white transition-colors cursor-pointer"
-              onClick={() => commitVolume(volume === 0 ? 0.7 : 0)}
-              title="Silenciar / Ativar Áudio"
-              aria-label="Silenciar ou ativar o áudio da live"
-            >
-              <span className="material-symbols-outlined text-[18px]">
-                {volume === 0 ? 'volume_off' : volume < 0.5 ? 'volume_down' : 'volume_up'}
-              </span>
-            </button>
-            <button
-              className="h-7 px-1 flex items-center justify-center text-white/80 hover:text-white border-l border-white/10 transition-colors cursor-pointer"
-              onClick={() => setShowVolumeSlider(!showVolumeSlider)}
-              title="Ajustar Volume"
-              aria-label="Ajustar o volume da live"
-            >
-              <span className="material-symbols-outlined text-[13px]">expand_less</span>
-            </button>
-          </div>
-
-          <Divider />
-
-          {/* Zoom — só visual, não toca em captura, áudio, SDP nem diagnóstico */}
-          <ControlButton
-            icon="zoom_out"
-            title="Diminuir zoom (tecla -)"
-            onClick={zoomOut}
-            disabled={zoomIndex === 0}
-          />
-
-          <span
-            className="min-w-[40px] text-center font-label-mono text-[11px] font-semibold text-primary select-none"
-            title="Zoom atual"
-            aria-live="polite"
-          >
-            {Math.round(ZOOM_LEVELS[zoomIndex] * 100)}%
-          </span>
-
-          <ControlButton
-            icon="zoom_in"
-            title="Aumentar zoom (tecla +)"
-            onClick={zoomIn}
-            disabled={zoomIndex === ZOOM_LEVELS.length - 1}
-          />
-
-          <ControlButton
-            icon="fit_screen"
-            title="Restaurar zoom (tecla 0)"
-            onClick={resetZoom}
-            disabled={zoomIndex === 0}
-          />
-
-          <Divider />
-
-          {/* Stats (Stitch icon: info) */}
-          <ControlButton icon="info" title="Estatísticas" onClick={() => setShowStats(!showStats)} active={showStats} />
-
-          {/* Fullscreen */}
-          <ControlButton
-            icon={isFullscreen ? 'fullscreen_exit' : 'fullscreen'}
-            title={isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
-            onClick={toggleFullscreen}
-          />
-
-          {/* Close */}
-          <ControlButton icon="close" title="Fechar transmissão" onClick={handleClose} danger />
-        </div>
+        <StreamControls
+          nickname={nickname}
+          muted={volume === 0}
+          volume={volume}
+          onVolumeChange={commitVolume}
+          onToggleMute={() => commitVolume(volume === 0 ? 0.7 : 0)}
+          paused={isPaused}
+          onTogglePause={togglePause}
+          zoom={zoom}
+          onZoomChange={(next) => setZoomIndex(Math.max(0, ZOOM_LEVELS.findIndex((level) => level === next)))}
+          onToggleFullscreen={toggleFullscreen}
+          onShowStats={subscribeStats ? () => setShowStats((open) => !open) : undefined}
+          statsActive={showStats}
+          onClose={handleClose}
+        />
       </div>
     </div>
   );
-}
-
-/* ── Helpers ── */
-
-function ControlButton({
-  icon,
-  title,
-  onClick,
-  active,
-  danger,
-  disabled,
-}: {
-  icon: string;
-  title: string;
-  onClick: () => void;
-  active?: boolean;
-  danger?: boolean;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      title={title}
-      aria-label={title}
-      disabled={disabled}
-      className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:bg-transparent ${
-        danger
-          ? 'text-white/80 hover:text-error hover:bg-error-container/20 ml-0.5'
-          : active
-          ? 'text-primary bg-white/10'
-          : 'text-white/80 hover:text-white hover:bg-white/10'
-      }`}
-    >
-      <span className="material-symbols-outlined text-[18px]">{icon}</span>
-    </button>
-  );
-}
-
-function Divider() {
-  return <div className="h-4 w-[1px] bg-white/15 mx-0.5" />;
 }

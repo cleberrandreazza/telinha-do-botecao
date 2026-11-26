@@ -9,6 +9,9 @@ export interface StreamConfig {
   audioMode: AudioMode;
 }
 
+/** Taxas de quadros aceitas pelo encoder. */
+export type StreamFrameRate = 30 | 15 | 5;
+
 const AUDIO_MODES: { value: AudioMode; label: string; desc: string }[] = [
   { value: 'off', label: 'Sem áudio', desc: 'Só vídeo.' },
   { value: 'source', label: 'Áudio da aba', desc: 'Padrão. Som da guia. Janela e tela inteira saem sem áudio global.' },
@@ -23,7 +26,8 @@ export const RESOLUTIONS = [
   { value: '480', label: 'SD', desc: '480p' },
 ] as const;
 
-const FRAMERATES = [
+/** Taxas de quadros — reusada pela barra do streamer (troca durante a live). */
+export const FRAMERATES = [
   { value: 30, label: '30 FPS', desc: 'Fluido' },
   { value: 15, label: '15 FPS', desc: 'Moderado' },
   { value: 5, label: '5 FPS', desc: 'Slides' },

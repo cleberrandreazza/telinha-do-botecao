@@ -36,12 +36,15 @@ O que entrou na branch `feature/room-experience`:
 3. **Zoom in/out na live assistida** — de 100% a 200% em passos de 25%, com atalhos `+` / `-` / `0`.
 4. **Grade de até 4 transmissões** — 2 a 4 streams lado a lado, com foco em tela cheia por stream e
    áudio/volume independentes em cada tile.
-5. **Sala fixa do Botecão** — o código `BOTECO` nunca muda: compartilhe com a galera sem passar
-   código por aí. Detalhes em [`docs/rooms.md`](docs/rooms.md).
+5. **Sala só com código sorteado** — cada sala nova nasce com um código aleatório de 6
+   caracteres; o código é o convite e a sala morre quando esvazia. Detalhes em
+   [`docs/rooms.md`](docs/rooms.md).
 6. **Reconexão após recarregar a página** — a sessão da sala é salva por 12 h e o app reentra
    sozinho; o histórico do chat sobrevive ao F5.
-7. **Login lado a lado** — "Criar sala" e "Entrar na sala" na mesma tela, com acesso rápido à
-   sala fixa (`BOTECO`).
+7. **Login lado a lado** — "Criar sala" e "Entrar na sala" na mesma tela.
+8. **Identidade do chat após o F5** — um identificador estável no navegador (`sessionStorage`)
+   acompanha as mensagens: depois de recarregar, as mensagens suas continuam do lado direito
+   do chat.
 
 ## Como funciona
 
@@ -124,7 +127,7 @@ telinha-do-botecao/
 ├── web/                   # Frontend React
 │   └── src/
 │       ├── components/    # Componentes da UI
-│       │   ├── Home.tsx           # Tela inicial (criar/entrar sala, sala fixa)
+│       │   ├── Home.tsx           # Tela inicial (criar/entrar sala)
 │       │   ├── Room.tsx           # Sala com sidebar + viewer + grade
 │       │   ├── StreamViewer.tsx   # Player de stream com controles e zoom
 │       │   ├── StreamTile.tsx     # Tile da grade (áudio e zoom próprios)
@@ -137,7 +140,7 @@ telinha-do-botecao/
 │       ├── lib/           # Lógica de negócio
 │       │   ├── signaling.ts       # Cliente WebSocket
 │       │   ├── webrtc.ts          # Conexões WebRTC, ABR e monitor
-│       │   ├── constants.ts       # Código da sala fixa e limite de streams
+│       │   ├── constants.ts       # Limite de transmissões simultâneas
 │       │   ├── diagnostics/       # Cálculo, histórico, diagnóstico e exportação
 │       │   ├── mock.ts            # Dados fake pra testes
 │       │   └── types.ts           # Tipos TypeScript

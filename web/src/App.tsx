@@ -1,15 +1,24 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { SignalingClient } from './lib/signaling';
-import { WebRTCManager } from './lib/webrtc';
+import { WebRTCManager, RESOLUTION_MAP } from './lib/webrtc';
 import { getSignalingUrl } from './lib/utils';
-import { detectScreenShareSupport, readScreenShareEnvironment } from './lib/screenShare';
-import type { AppScreen, ChatMessage, PeerInfo, StreamInfo, ServerMessage } from './lib/types';
-import { sanitizeChatText } from './lib/chat';
-import { MAX_SIMULTANEOUS_STREAMS } from './lib/constants';
+import {
+  detectScreenShareSupport,
+  readScreenShareEnvironment,
+  captureLimitNotice,
+  isScreenShareCancellation,
+  SHARE_CANCEL_NOTICE,
+} from './lib/screenShare';
+import type { AppScreen, ChatMessage, GridMode, PeerInfo, StreamInfo, ServerMessage } from './lib/types';
+import { sanitizeChatText, isOwnMessage } from './lib/chat';
+import { installAudioUnlock, playSound, setSoundsEnabled } from './lib/sounds';
+import { loadSettings } from './components/SettingsModal';
+import { limitNoticeForMode, loadGridMode, maxStreamsForMode, saveGridMode } from './lib/grid';
 import {
   loadRoomSession,
   saveRoomSession,
   clearRoomSession,
+  getClientId,
   type RoomSession,
 } from './lib/session';
 import Home from './components/Home';
@@ -17,12 +26,15 @@ import Room from './components/Room';
 import Reconnecting from './components/Reconnecting';
 import StreamSettings from './components/StreamSettings';
 import type { StreamResolution } from './components/ResolutionControl';
+import type { StreamFrameRate } from './components/StreamSettings';
+import { describeSwitchError, type DisplaySource } from './lib/sourceSwitch';
 import type { StreamConfig } from './lib/webrtc';
 import { describeCapture, readTrackSettings } from './lib/diagnostics/index';
 import type { AudioPlaybackReport, DiagnosticsSnapshot, PlaybackSample } from './lib/diagnostics/index';
 import {
   isMockMode,
   isMockSharing,
+  isMockCancelNotice,
   createMockLocalStream,
   generateMockData,
   generateMockStreamsDelayed,
@@ -67,6 +79,72 @@ function readMeasuredResolution(stream: MediaStream | null): string | null {
   }
   if (settings.width === null || settings.height === null) return null;
   return describeCapture(settings);
+}
+
+/**
+ * Aviso de "a captura é menor que a resolução pedida" (M10).
+ *
+ * O navegador não amplia: uma aba entrega o tamanho da própria janela. O
+ * aviso usa só o que foi medido na faixa capturada — sem medição não há o
+ * que afirmar (docs/diagnostics.md).
+ */
+function readCaptureLimitNotice(
+  stream: MediaStream | null,
+  resolution: StreamResolution,
+): string | null {
+  if (!stream) return null;
+  const track = stream.getVideoTracks()[0];
+  if (!track) return null;
+  let settings = null;
+  try {
+    settings = readTrackSettings(track.getSettings() as Record<string, unknown>);
+  } catch {
+    return null;
+  }
+  if (settings.width === null || settings.height === null) return null;
+  const target = RESOLUTION_MAP[resolution];
+  if (!target) return null;
+  return captureLimitNotice(
+    { width: settings.width, height: settings.height },
+    target,
+    settings.displaySurface,
+  );
+}
+
+/**
+ * Lê a taxa de quadros REAL da captura local.
+ *
+ * O navegador nem sempre expõe o frameRate da faixa capturada: sem o dado,
+ * o valor é null (a UI mostra "n/d"). Nada é estimado (docs/diagnostics.md).
+ */
+function readMeasuredFrameRate(stream: MediaStream | null): number | null {
+  if (!stream) return null;
+  const track = stream.getVideoTracks()[0];
+  if (!track) return null;
+  try {
+    const frameRate = track.getSettings().frameRate;
+    return typeof frameRate === 'number' && Number.isFinite(frameRate) ? frameRate : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Lê a superfície REAL capturada ("browser"/"window"/"monitor").
+ *
+ * Quem decide é o seletor nativo do navegador; aqui só se registra o que o
+ * navegador entregou. Sem o dado, null (a UI mostra "n/d").
+ */
+function readMeasuredSurface(stream: MediaStream | null): string | null {
+  if (!stream) return null;
+  const track = stream.getVideoTracks()[0];
+  if (!track) return null;
+  try {
+    const surface = track.getSettings().displaySurface;
+    return typeof surface === 'string' ? surface : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -123,21 +201,52 @@ export default function App() {
   const [isSharing, setIsSharing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [audioNotice, setAudioNotice] = useState<string | null>(null);
+  /**
+   * Aviso de cancelamento do seletor nativo (a pessoa fechou o "Escolher o
+   * que compartilhar"). Sem ele, quem cancelava ficava sem nenhuma explicação
+   * do que tinha acontecido. Some sozinho e some ao tentar de novo.
+   *
+   * O `id` muda a cada cancelamento: assim o aviso reaparece e o contador de
+   * 6 s recomeça quando a pessoa cancela de novo dentro do prazo.
+   */
+  const [shareCancelNotice, setShareCancelNotice] = useState<{ id: number; text: string } | null>(null);
+  const shareCancelIdRef = useRef(0);
 
-  // ── Resolução da live (troca durante a transmissão) ──
+  // ── Controles do streamer (troca durante a transmissão) ──
   const [streamResolution, setStreamResolution] = useState<StreamResolution>('1080');
-  const [resolutionBusy, setResolutionBusy] = useState(false);
-  const [resolutionNotice, setResolutionNotice] = useState<string | null>(null);
+  const [streamFrameRate, setStreamFrameRate] = useState<StreamFrameRate>(30);
+  const [streamerBusy, setStreamerBusy] = useState(false);
+  const [streamerNotice, setStreamerNotice] = useState<string | null>(null);
   /** Resolução medida na captura (null = o navegador não informa). */
   const [measuredResolution, setMeasuredResolution] = useState<string | null>(null);
+  /** Taxa de quadros medida na captura (null = o navegador não informa). */
+  const [measuredFrameRate, setMeasuredFrameRate] = useState<number | null>(null);
+  /** Superfície capturada ("browser"/"window"/"monitor") ou null. */
+  const [measuredSurface, setMeasuredSurface] = useState<string | null>(null);
+  /**
+   * Aviso de "a captura é menor que o alvo" (M10). Vai para o mesmo espaço
+   * do aviso de resolução — a tela não ganha nenhum elemento novo.
+   */
+  const [captureNotice, setCaptureNotice] = useState<string | null>(null);
 
   // ── Chat da sala ──
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatUnread, setChatUnread] = useState(0);
+  /**
+   * Identificador estável do navegador (sessionStorage). Ele sobrevive ao F5
+   * — o `peerId` do servidor não — e é o que permite reconhecer as próprias
+   * mensagens no histórico depois de recarregar a página.
+   */
+  const [myClientId] = useState<string>(() => getClientId());
 
-  // ── Limite de transmissões simultâneas (grade de até 4) ──
+  // ── Limite de transmissões simultâneas (vem do modo da grade) ──
   /** Aviso exibido quando o pedido de uma live é barrado pelo limite. */
   const [streamLimitNotice, setStreamLimitNotice] = useState<string | null>(null);
+  /**
+   * Modo da grade: 1, 2 ou 4 telas. O modo escolhido na sala define
+   * quantas lives são assistidas ao mesmo tempo (e fica salvo no browser).
+   */
+  const [gridMode, setGridMode] = useState<GridMode>(() => loadGridMode());
 
   // ── Reconexão automática (F5) ──
   const [reconnectState, setReconnectState] = useState<'idle' | 'connecting' | 'failed'>('idle');
@@ -149,9 +258,20 @@ export default function App() {
   // ── Refs para manter instâncias estáveis ──
   const signalRef = useRef<SignalingClient | null>(null);
   const rtcRef = useRef<WebRTCManager | null>(null);
+  /**
+   * Conexão em andamento. Duas chamadas concorrentes (o StrictMode monta o
+   * efeito duas vezes) compartilham a MESMA promessa: sem isso a aba abre
+   * dois sockets, entra na sala duas vezes e cada mensagem do servidor
+   * chega duplicada.
+   */
+  const connectPromiseRef = useRef<Promise<SignalingClient> | null>(null);
+  /** Código da sala para o qual o join-room já foi enviado (evita entrar 2x). */
+  const joinedCodeRef = useRef<string | null>(null);
   const peersRef = useRef<PeerInfo[]>([]);
   const nickRef = useRef<string>('');
   const myPeerIdRef = useRef('');
+  /** clientId estável (sessionStorage) — espelho para os handlers. */
+  const myClientIdRef = useRef(myClientId);
   /** true enquanto o painel de chat está aberto (para o contador de não lidas). */
   const chatOpenRef = useRef(true);
   /** true enquanto estamos tentando restaurar a sessão após o F5. */
@@ -172,10 +292,18 @@ export default function App() {
   const chatMessagesRef = useRef<ChatMessage[]>([]);
   /** Espelho da resolução atual (para reverter a troca em caso de falha). */
   const streamResolutionRef = useRef<StreamResolution>('1080');
+  /** Espelho da taxa de quadros atual (para reverter a troca em caso de falha). */
+  const streamFrameRateRef = useRef<StreamFrameRate>(30);
   /** true enquanto uma troca de resolução está em andamento. */
-  const resolutionBusyRef = useRef(false);
+  const streamerBusyRef = useRef(false);
   /** Peers cujas lives estou recebendo agora (ocupa um slot da grade). */
   const requestedSharersRef = useRef<Set<string>>(new Set());
+  /** Peers que o usuário mandou "parar de assistir" (não voltam sozinhos). */
+  const unwatchedRef = useRef<Set<string>>(new Set());
+  /** Todas as lives simuladas do mock (para poder reassistir). */
+  const mockStreamsRef = useRef<StreamInfo[]>([]);
+  /** Modo da grade em vigor (o limite de slots vem dele). */
+  const gridModeRef = useRef<GridMode>(gridMode);
 
   // Sync refs
   useEffect(() => {
@@ -188,11 +316,21 @@ export default function App() {
     myPeerIdRef.current = myPeerId;
   }, [myPeerId]);
   useEffect(() => {
+    myClientIdRef.current = myClientId;
+  }, [myClientId]);
+  useEffect(() => {
     chatMessagesRef.current = chatMessages;
   }, [chatMessages]);
   useEffect(() => {
     streamResolutionRef.current = streamResolution;
   }, [streamResolution]);
+  useEffect(() => {
+    streamFrameRateRef.current = streamFrameRate;
+  }, [streamFrameRate]);
+  useEffect(() => {
+    gridModeRef.current = gridMode;
+    saveGridMode(gridMode);
+  }, [gridMode]);
 
   // ── Callbacks de stream ──
   const handleNewStream = useCallback((info: StreamInfo) => {
@@ -214,23 +352,37 @@ export default function App() {
     setStreamLimitNotice(null);
   }, []);
 
-  // ── Grade: pedir a live de um peer (até MAX_SIMULTANEOUS_STREAMS por vez) ──
+  // ── Grade: pedir a live de um peer (até o limite do modo da grade) ──
   const handleRequestStream = useCallback((peerId: string) => {
     const requested = requestedSharersRef.current;
     if (requested.has(peerId)) return;
-    if (requested.size >= MAX_SIMULTANEOUS_STREAMS) {
+    const limit = maxStreamsForMode(gridModeRef.current);
+    if (requested.size >= limit) {
       // Sem slot: o peer continua na sidebar e o aviso explica o motivo.
-      setStreamLimitNotice('Máximo de 4 transmissões simultâneas');
+      setStreamLimitNotice(limitNoticeForMode(gridModeRef.current));
       return;
     }
     requested.add(peerId);
+    // Pedido explícito: o usuário quer assistir de novo.
+    unwatchedRef.current.delete(peerId);
     setStreamLimitNotice(null);
+    if (isMockMode()) {
+      // No mock não existe servidor: a live simulada volta direto.
+      const mock = mockStreamsRef.current.find(s => s.peerId === peerId);
+      if (mock) {
+        setStreams(prev => (prev.some(s => s.peerId === peerId) ? prev : [...prev, mock]));
+      }
+      return;
+    }
     rtcRef.current?.requestStream(peerId);
   }, []);
 
-  /** O tile foi fechado na grade: para de receber a live e libera o slot. */
+  /** "Parar de assistir": para de receber a live e libera o slot da grade. */
   const handleStreamRemoved = useCallback((peerId: string) => {
     requestedSharersRef.current.delete(peerId);
+    // O tile some da grade de vez: o App deixa de ter a stream.
+    unwatchedRef.current.add(peerId);
+    setStreams(prev => prev.filter(s => s.peerId !== peerId));
     rtcRef.current?.stopReceiving(peerId);
     setStreamLimitNotice(null);
   }, []);
@@ -253,6 +405,7 @@ export default function App() {
 
       case 'room-joined': {
         const selfJoined: PeerInfo = { id: msg.peerId, nickname: nickRef.current, isSharing: false };
+        joinedCodeRef.current = msg.code;
         const peersWithSelf = msg.peers.some((p: PeerInfo) => p.id === msg.peerId)
           ? msg.peers
           : [...msg.peers, selfJoined];
@@ -286,7 +439,8 @@ export default function App() {
 
         // Solicita streams de quem já está compartilhando (até o limite da grade)
         for (const peer of msg.peers) {
-          if (peer.isSharing) {
+          // Quem o usuário mandou "parar de assistir" não volta sozinho.
+          if (peer.isSharing && !unwatchedRef.current.has(peer.id)) {
             handleRequestStream(peer.id);
           }
         }
@@ -295,20 +449,27 @@ export default function App() {
 
       case 'peer-joined':
         setPeers(prev => [...prev, msg.peer]);
+        playSound('peer-joined');
         break;
 
       case 'peer-left':
         setPeers(prev => prev.filter(p => p.id !== msg.peerId));
         setStreams(prev => prev.filter(s => s.peerId !== msg.peerId));
         requestedSharersRef.current.delete(msg.peerId);
+        unwatchedRef.current.delete(msg.peerId);
+        playSound('peer-left');
         break;
 
       case 'sharing-started':
         setPeers(prev =>
           prev.map(p => p.id === msg.peerId ? { ...p, isSharing: true } : p)
         );
-        // Solicita o stream automaticamente (se houver slot livre na grade)
-        handleRequestStream(msg.peerId);
+        // Solicita o stream automaticamente (se houver slot livre na grade e o
+        // usuário não tiver parado de assistir antes).
+        if (!unwatchedRef.current.has(msg.peerId)) {
+          handleRequestStream(msg.peerId);
+        }
+        playSound('stream-started');
         break;
 
       case 'sharing-stopped':
@@ -317,6 +478,7 @@ export default function App() {
         );
         setStreams(prev => prev.filter(s => s.peerId !== msg.peerId));
         requestedSharersRef.current.delete(msg.peerId);
+        unwatchedRef.current.delete(msg.peerId);
         break;
 
       case 'left-room':
@@ -330,6 +492,7 @@ export default function App() {
           nickname: msg.nickname,
           text: msg.text,
           ts: msg.ts,
+          clientId: msg.clientId,
         };
         // O broadcast não devolve `id`: a mensagem otimista é casada por
         // from + ts + text e substituída pelo eco do servidor. O casamento é
@@ -350,8 +513,20 @@ export default function App() {
         });
         // Mensagem chegando com o painel fechado conta como não lida
         // (a própria mensagem já está na tela: não conta).
-        if (!chatOpenRef.current && msg.from !== myPeerIdRef.current) {
+        // A identidade usa o clientId: depois do F5 o peerId mudou, mas o
+        // clientId continua o mesmo.
+        const isMine = isOwnMessage(entry, {
+          clientId: myClientIdRef.current,
+          peerId: myPeerIdRef.current,
+          nickname: nickRef.current,
+        });
+        if (!chatOpenRef.current && !isMine) {
           setChatUnread((count) => count + 1);
+        }
+        // O som da mensagem de OUTREM toca mesmo com o chat aberto e em foco
+        // (decisão do Cleber): em volume baixo. A própria nunca toca.
+        if (!isMine) {
+          playSound('message');
         }
         break;
       }
@@ -368,6 +543,7 @@ export default function App() {
           // a sessão salva é apagada e a tela de reconexão vira estado de falha.
           reconnectingRef.current = false;
           restoreRef.current = null;
+          joinedCodeRef.current = null;
           if (reconnectTimerRef.current !== null) {
             window.clearTimeout(reconnectTimerRef.current);
             reconnectTimerRef.current = null;
@@ -389,21 +565,43 @@ export default function App() {
       return signalRef.current;
     }
 
-    const signal = new SignalingClient(getSignalingUrl());
+    // Já tem uma conexão subindo: espera a mesma promessa (um socket só).
+    if (connectPromiseRef.current) {
+      return connectPromiseRef.current;
+    }
 
-    // Setup WebRTC manager
-    const rtc = new WebRTCManager(signal, handleNewStream, handleStreamEnd);
-    rtc.startListening();
+    const pending = (async (): Promise<SignalingClient> => {
+      const signal = new SignalingClient(getSignalingUrl());
 
-    // Listen to signaling messages for room management
-    signal.onMessage(handleSignalMessage);
+      // Setup WebRTC manager
+      const rtc = new WebRTCManager(signal, handleNewStream, handleStreamEnd);
+      rtc.startListening();
 
-    await signal.connect();
+      // Listen to signaling messages for room management
+      signal.onMessage(handleSignalMessage);
 
-    signalRef.current = signal;
-    rtcRef.current = rtc;
+      await signal.connect();
 
-    return signal;
+      // A conexão pode ter sido derrubada enquanto conectava (ex.: resetRoom):
+      // nesse caso ela não vale mais.
+      if (!signal.connected) {
+        rtc.destroy();
+        signal.disconnect();
+        throw new Error('conexão encerrada antes de ficar pronta');
+      }
+
+      signalRef.current = signal;
+      rtcRef.current = rtc;
+
+      return signal;
+    })();
+
+    connectPromiseRef.current = pending;
+    try {
+      return await pending;
+    } finally {
+      if (connectPromiseRef.current === pending) connectPromiseRef.current = null;
+    }
   };
 
   // ── Ações ──
@@ -442,8 +640,33 @@ export default function App() {
       return;
     }
     setError(null);
+    // Tentar de novo limpa o aviso de cancelamento anterior.
+    setShareCancelNotice(null);
     setShowSettings(true);
   };
+
+  /**
+   * Liga o `onended` da faixa de vídeo local: quando a pessoa encerra a
+   * captura pelo navegador, a sala volta ao estado sem transmissão.
+   *
+   * Serve tanto para a captura inicial quanto para a troca de fonte: nos dois
+   * casos a faixa nova precisa derrubar a sala quando o navegador a mata.
+   */
+  const attachLocalTrackHandlers = useCallback((stream: MediaStream) => {
+    const videoTrack = stream.getVideoTracks()[0];
+    if (!videoTrack) return;
+    const prior = videoTrack.onended;
+    videoTrack.onended = (event) => {
+      if (typeof prior === 'function') prior.call(videoTrack, event);
+      setLocalStream(null);
+      setIsSharing(false);
+      setAudioNotice(null);
+      setPeers(prev => prev.map(p => p.id === myPeerId ? { ...p, isSharing: false } : p));
+      if (roomCode) {
+        saveRoomSession({ code: roomCode, nickname, wasSharing: false, savedAt: Date.now() });
+      }
+    };
+  }, [myPeerId, nickname, roomCode]);
 
   const handleStartSharing = async (config?: StreamConfig) => {
     setShowSettings(false);
@@ -453,9 +676,12 @@ export default function App() {
         setLocalStream(stream);
         setIsSharing(true);
         setAudioNotice(rtcRef.current?.getAudioNotice() ?? null);
+        // Transmitindo: nenhum aviso de cancelamento na tela.
+        setShareCancelNotice(null);
         // A resolução inicial é a escolhida no StreamSettings.
         setStreamResolution(config?.resolution ?? '1080');
-        setResolutionNotice(null);
+        setStreamFrameRate(config?.frameRate ?? 30);
+        setStreamerNotice(null);
 
         // Atualiza o próprio peer na lista
         setPeers(prev => prev.map(p => p.id === myPeerId ? { ...p, isSharing: true } : p));
@@ -463,26 +689,18 @@ export default function App() {
           saveRoomSession({ code: roomCode, nickname, wasSharing: true, savedAt: Date.now() });
         }
 
-        const videoTrack = stream.getVideoTracks()[0];
-        if (videoTrack) {
-          const prior = videoTrack.onended;
-          videoTrack.onended = (event) => {
-            if (typeof prior === 'function') prior.call(videoTrack, event);
-            setLocalStream(null);
-            setIsSharing(false);
-            setAudioNotice(null);
-            setPeers(prev => prev.map(p => p.id === myPeerId ? { ...p, isSharing: false } : p));
-            if (roomCode) {
-              saveRoomSession({ code: roomCode, nickname, wasSharing: false, savedAt: Date.now() });
-            }
-          };
-        }
+        attachLocalTrackHandlers(stream);
       }
     } catch (err: any) {
       // Usuário cancelou o dialog de compartilhamento
       if (err?.name === 'ScreenShareUnsupportedError') {
         setError(err.message);
-      } else if (err?.name !== 'NotAllowedError') {
+      } else if (isScreenShareCancellation(err)) {
+        // O seletor nativo foi fechado sem escolher nada: nenhum vídeo foi
+        // capturado e nada foi transmitido. O aviso diz isso explicitamente.
+        shareCancelIdRef.current += 1;
+        setShareCancelNotice({ id: shareCancelIdRef.current, text: SHARE_CANCEL_NOTICE });
+      } else {
         setError('Erro ao compartilhar tela: ' + err.message);
       }
     }
@@ -493,6 +711,7 @@ export default function App() {
     setLocalStream(null);
     setIsSharing(false);
     setAudioNotice(null);
+    setShareCancelNotice(null);
     // Atualiza o próprio peer na lista
     setPeers(prev => prev.map(p => p.id === myPeerId ? { ...p, isSharing: false } : p));
     if (roomCode) {
@@ -508,19 +727,27 @@ export default function App() {
     resetRoom();
   };
 
-  // ── Resolução da live ──
+  // ── Medição da live ──
   // A medição vem da própria captura: o navegador nem sempre expõe a faixa
   // capturada, e nesse caso o valor é null (a UI mostra "n/d").
   useEffect(() => {
     if (!isSharing || !localStream) {
       setMeasuredResolution(null);
+      setMeasuredFrameRate(null);
+      setMeasuredSurface(null);
+      setCaptureNotice(null);
       return;
     }
-    const read = () => setMeasuredResolution(readMeasuredResolution(localStream));
+    const read = () => {
+      setMeasuredResolution(readMeasuredResolution(localStream));
+      setMeasuredFrameRate(readMeasuredFrameRate(localStream));
+      setMeasuredSurface(readMeasuredSurface(localStream));
+      setCaptureNotice(readCaptureLimitNotice(localStream, streamResolution));
+    };
     read();
     const timer = window.setInterval(read, 1000);
     return () => window.clearInterval(timer);
-  }, [isSharing, localStream]);
+  }, [isSharing, localStream, streamResolution]);
 
   /**
    * Troca a resolução durante a live.
@@ -532,13 +759,13 @@ export default function App() {
    * continua valendo — a transmissão não cai e a UI avisa.
    */
   const handleSelectResolution = useCallback(async (next: StreamResolution) => {
-    if (resolutionBusyRef.current) return;
+    if (streamerBusyRef.current) return;
     if (next === streamResolutionRef.current) return;
 
     const previous = streamResolutionRef.current;
-    resolutionBusyRef.current = true;
-    setResolutionBusy(true);
-    setResolutionNotice(null);
+    streamerBusyRef.current = true;
+    setStreamerBusy(true);
+    setStreamerNotice(null);
 
     const startedAt = Date.now();
     try {
@@ -556,21 +783,111 @@ export default function App() {
       if (applied) {
         streamResolutionRef.current = next;
         setStreamResolution(next);
-        setResolutionNotice(null);
+        setStreamerNotice(null);
       } else {
         streamResolutionRef.current = previous;
         setStreamResolution(previous);
-        setResolutionNotice('Não foi possível mudar a resolução. A transmissão continua como estava.');
+        setStreamerNotice('Não foi possível mudar a resolução. A transmissão continua como estava.');
       }
     } catch {
       streamResolutionRef.current = previous;
       setStreamResolution(previous);
-      setResolutionNotice('Não foi possível mudar a resolução. A transmissão continua como estava.');
+      setStreamerNotice('Não foi possível mudar a resolução. A transmissão continua como estava.');
     } finally {
-      resolutionBusyRef.current = false;
-      setResolutionBusy(false);
+      streamerBusyRef.current = false;
+      setStreamerBusy(false);
       // A captura pode ter mudado de tamanho: relê a medição.
       setMeasuredResolution(readMeasuredResolution(localStream));
+    }
+  }, [localStream]);
+
+  /**
+   * Troca a taxa de quadros durante a live.
+   *
+   * Mesmo núcleo da resolução: `setParameters` em cada conexão de papel
+   * `sender` (maxFramerate/degradationPreference). Se NENHUMA conexão aceitar,
+   * o valor anterior continua valendo — a transmissão não cai.
+   */
+  const handleSelectFrameRate = useCallback(async (next: StreamFrameRate) => {
+    if (streamerBusyRef.current) return;
+    if (next === streamFrameRateRef.current) return;
+
+    const previous = streamFrameRateRef.current;
+    streamerBusyRef.current = true;
+    setStreamerBusy(true);
+    setStreamerNotice(null);
+
+    const startedAt = Date.now();
+    try {
+      const rtc = rtcRef.current;
+      // Sem WebRTC real (modo ?mock) não existe encoder para reconfigurar:
+      // a seleção vale para a UI da simulação.
+      const applied = rtc ? await rtc.setStreamFrameRate(next) : true;
+
+      const elapsed = Date.now() - startedAt;
+      if (elapsed < RESOLUTION_BUSY_MIN_MS) {
+        await new Promise((resolve) => window.setTimeout(resolve, RESOLUTION_BUSY_MIN_MS - elapsed));
+      }
+
+      if (applied) {
+        streamFrameRateRef.current = next;
+        setStreamFrameRate(next);
+        setStreamerNotice(null);
+      } else {
+        streamFrameRateRef.current = previous;
+        setStreamFrameRate(previous);
+        setStreamerNotice('Não foi possível mudar a taxa de quadros. A transmissão continua como estava.');
+      }
+    } catch {
+      streamFrameRateRef.current = previous;
+      setStreamFrameRate(previous);
+      setStreamerNotice('Não foi possível mudar a taxa de quadros. A transmissão continua como estava.');
+    } finally {
+      streamerBusyRef.current = false;
+      setStreamerBusy(false);
+      setMeasuredFrameRate(readMeasuredFrameRate(localStream));
+    }
+  }, [localStream]);
+
+  /**
+   * Troca a fonte capturada (aba, janela ou tela) durante a live.
+   *
+   * O seletor nativo é quem decide o que capturar: a escolha aqui é só uma
+   * dica. A troca acontece por `replaceTrack` nos senders, sem renegociar —
+   * os espectadores veem a nova fonte sem cair. Quando a troca não
+   * acontece, a fonte atual continua valendo e o motivo real aparece na
+   * faixa âmbar da barra.
+   */
+  const handleSwitchSource = useCallback(async (source: DisplaySource) => {
+    if (streamerBusyRef.current) return;
+
+    streamerBusyRef.current = true;
+    setStreamerBusy(true);
+    setStreamerNotice(null);
+
+    try {
+      const rtc = rtcRef.current;
+      if (!rtc) {
+        // Sem WebRTC real (modo ?mock) não há captura para trocar.
+        setStreamerNotice('A troca de fonte precisa de uma transmissão real.');
+        return;
+      }
+      const result = await rtc.switchSource(source);
+      if (result.ok && result.stream) {
+        setLocalStream(result.stream);
+        setStreamerNotice(result.reason);
+        attachLocalTrackHandlers(result.stream);
+        setMeasuredSurface(result.surface);
+      } else {
+        setStreamerNotice(result.reason ?? 'Não foi possível trocar a fonte. A fonte atual continua valendo.');
+      }
+    } catch (err) {
+      setStreamerNotice(describeSwitchError(err));
+    } finally {
+      streamerBusyRef.current = false;
+      setStreamerBusy(false);
+      setMeasuredResolution(readMeasuredResolution(localStream));
+      setMeasuredFrameRate(readMeasuredFrameRate(localStream));
     }
   }, [localStream]);
 
@@ -599,11 +916,16 @@ export default function App() {
         nickname: nickRef.current,
         text: clean,
         ts: Date.now(),
+        clientId: myClientIdRef.current,
         pending: true,
       };
       setChatMessages((prev) => appendChat(prev, entry));
       if (signalRef.current) {
-        signalRef.current.send({ type: 'chat-message', text: clean });
+        signalRef.current.send({
+          type: 'chat-message',
+          text: clean,
+          clientId: myClientIdRef.current,
+        });
       } else if (isMockMode()) {
         // No mock não existe servidor: simulamos o eco para a mensagem
         // otimista ser reconciliada (igual acontece na sala real).
@@ -625,6 +947,7 @@ export default function App() {
         nickname: nickRef.current,
         text: clean,
         ts: Date.now(),
+        clientId: myClientIdRef.current,
         pending: true,
       };
       setChatMessages((prev) => {
@@ -632,7 +955,11 @@ export default function App() {
         return appendChat(without, entry);
       });
       if (signalRef.current) {
-        signalRef.current.send({ type: 'chat-message', text: clean });
+        signalRef.current.send({
+          type: 'chat-message',
+          text: clean,
+          clientId: myClientIdRef.current,
+        });
       } else if (isMockMode()) {
         simulateMockChatEcho(entry, (echo) => handleSignalMessage(echo));
       }
@@ -665,18 +992,27 @@ export default function App() {
     setReconnectCanRetry(false);
     setStreamResolution('1080');
     streamResolutionRef.current = '1080';
-    setResolutionBusy(false);
-    resolutionBusyRef.current = false;
-    setResolutionNotice(null);
+    setStreamFrameRate(30);
+    streamFrameRateRef.current = 30;
+    setStreamerBusy(false);
+    streamerBusyRef.current = false;
+    setStreamerNotice(null);
     setMeasuredResolution(null);
+    setMeasuredFrameRate(null);
+    setMeasuredSurface(null);
+    setCaptureNotice(null);
     setStreamLimitNotice(null);
+    setShareCancelNotice(null);
     requestedSharersRef.current.clear();
+    unwatchedRef.current.clear();
 
     // Cleanup
     rtcRef.current?.destroy();
     signalRef.current?.disconnect();
     signalRef.current = null;
     rtcRef.current = null;
+    connectPromiseRef.current = null;
+    joinedCodeRef.current = null;
   };
 
   // Cleanup on unmount
@@ -687,12 +1023,30 @@ export default function App() {
     };
   }, []);
 
+  // O browser só deixa tocar áudio depois de um gesto do usuário: o primeiro
+  // clique/tecla da página libera os sons de evento. A preferência salva em
+  // Configurações (M11) decide se eles tocam: desligado é desligado desde já.
+  useEffect(() => {
+    installAudioUnlock();
+    setSoundsEnabled(loadSettings().eventSounds);
+  }, []);
+
   // O aviso de limite some sozinho: ele é informativo, não bloqueia a sala.
   useEffect(() => {
     if (!streamLimitNotice) return;
     const timer = window.setTimeout(() => setStreamLimitNotice(null), 8000);
     return () => window.clearTimeout(timer);
   }, [streamLimitNotice]);
+
+  // O aviso de cancelamento some sozinho (6 s). Cancelar de novo reinicia o
+  // tempo, porque o `id` do aviso muda a cada cancelamento.
+  useEffect(() => {
+    if (!shareCancelNotice) return;
+    // No preview (?mock&cancel) o aviso fica na tela para revisão visual.
+    if (isMockCancelNotice()) return;
+    const timer = window.setTimeout(() => setShareCancelNotice(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [shareCancelNotice]);
 
   // ── Mock mode: ?mock na URL ──
   useEffect(() => {
@@ -713,15 +1067,49 @@ export default function App() {
       setPeers(prev => prev.map(p => p.id === mock.myPeerId ? { ...p, isSharing: true } : p));
     }
 
+    // ?mock&cancel — mostra o aviso de cancelamento (o seletor nativo não
+    // existe no mock; a flag existe para o preview visual do aviso).
+    if (isMockCancelNotice()) {
+      shareCancelIdRef.current += 1;
+      setShareCancelNotice({ id: shareCancelIdRef.current, text: SHARE_CANCEL_NOTICE });
+    }
+
     // Streams arrive after 5 seconds (simulates WebRTC connection)
     const timer = generateMockStreamsDelayed((readyStreams, peerIds) => {
-      setStreams(readyStreams);
+      // Todas as lives do mock ficam guardadas: dá para reassistir ("Assistir")
+      // depois de "Parar de assistir".
+      mockStreamsRef.current = readyStreams;
+      // A grade do mock respeita o limite do modo: só as lives que cabem são
+      // assistidas — as outras ficam na lista lateral ("fora da grade").
+      const limit = maxStreamsForMode(gridModeRef.current);
+      const visible = readyStreams.slice(0, limit);
+      requestedSharersRef.current = new Set(visible.map(s => s.peerId));
+      setStreams(visible);
       // Flip isSharing on peers whose streams just arrived
       setPeers(prev => prev.map(p => peerIds.includes(p.id) ? { ...p, isSharing: true } : p));
     }, 5000);
 
     return () => clearTimeout(timer);
   }, []);
+
+  // ── Mock: trocar o modo da grade reassiste as lives simuladas ──
+  useEffect(() => {
+    if (!isMockMode()) return;
+    const mock = mockStreamsRef.current;
+    if (mock.length === 0) return;
+    const limit = maxStreamsForMode(gridMode);
+    // Mantém quem já estava sendo assistido e completa com os demais —
+    // sem ressuscitar quem o usuário mandou "parar de assistir".
+    const next = mock.filter(s => requestedSharersRef.current.has(s.peerId)).slice(0, limit);
+    for (const s of mock) {
+      if (next.length >= limit) break;
+      if (next.some(x => x.peerId === s.peerId)) continue;
+      if (unwatchedRef.current.has(s.peerId)) continue;
+      next.push(s);
+    }
+    requestedSharersRef.current = new Set(next.map(s => s.peerId));
+    setStreams(next);
+  }, [gridMode]);
 
   // ── Reconexão automática após o F5 ──
   // A sessão (código + apelido) fica no sessionStorage; ao recarregar a
@@ -748,6 +1136,8 @@ export default function App() {
       reconnectTimerRef.current = null;
       if (!reconnectingRef.current) return;
       reconnectingRef.current = false;
+      // O join-room não foi confirmado: libera para o "Tentar de novo".
+      joinedCodeRef.current = null;
       setReconnectState('failed');
       setReconnectCanRetry(true);
       setReconnectError('A sala não respondeu. Ela pode ter sido encerrada ou o servidor caiu.');
@@ -763,13 +1153,20 @@ export default function App() {
         rtcRef.current = null;
         return;
       }
-      signal.send({ type: 'join-room', code: session.code, nickname: session.nickname });
+      // Só entra na sala uma vez por código: o StrictMode monta o efeito de
+      // reconexão duas vezes e, sem esta trava, o peer pisca na lista da sala
+      // (o servidor remove e reinsere o mesmo peer).
+      if (joinedCodeRef.current !== session.code) {
+        joinedCodeRef.current = session.code;
+        signal.send({ type: 'join-room', code: session.code, nickname: session.nickname });
+      }
     } catch {
       if (reconnectCancelledRef.current) return;
       if (reconnectTimerRef.current !== null) {
         window.clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
       }
+      joinedCodeRef.current = null;
       reconnectingRef.current = false;
       setReconnectState('failed');
       setReconnectCanRetry(true);
@@ -875,6 +1272,7 @@ export default function App() {
           getSenderSnapshots={getSenderSnapshots}
           exportSenderDiagnostics={exportSenderDiagnostics}
           chatMessages={chatMessages}
+          myClientId={myClientId}
           onSendChat={handleSendChat}
           onRetryChat={handleRetryChat}
           chatUnread={chatUnread}
@@ -882,10 +1280,18 @@ export default function App() {
           notice={restoredNotice}
           streamResolution={streamResolution}
           measuredResolution={measuredResolution}
-          resolutionBusy={resolutionBusy}
-          resolutionNotice={resolutionNotice}
+          streamFrameRate={streamFrameRate}
+          measuredFrameRate={measuredFrameRate}
+          measuredSurface={measuredSurface}
+          streamerBusy={streamerBusy}
+          streamerNotice={streamerNotice ?? captureNotice}
           onSelectResolution={handleSelectResolution}
+          onSelectFrameRate={handleSelectFrameRate}
+          onSwitchSource={handleSwitchSource}
           streamLimitNotice={streamLimitNotice}
+          shareCancelNotice={shareCancelNotice?.text ?? null}
+          gridMode={gridMode}
+          onGridModeChange={setGridMode}
           onRequestStream={handleRequestStream}
           onStreamRemoved={handleStreamRemoved}
         />

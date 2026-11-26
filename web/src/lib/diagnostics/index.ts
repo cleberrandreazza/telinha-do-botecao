@@ -64,9 +64,11 @@ export {
   negotiationFromSdp,
   policyLabel,
   readAudioCapture,
+  readDisplaySurface,
   requestDisplayMedia,
   resolvePlayback,
   shouldRebindSrcObject,
+  stripDisallowedAudio,
 } from './audio.ts';
 export type { AudioCaptureContext, AudioLinkContext, AudioMode, AudioSdpInfo, PreparedShare, ScopeStream } from './audio.ts';
 export { ConnectionMonitor } from './monitor.ts';

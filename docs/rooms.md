@@ -4,18 +4,18 @@ Uma sala é o lugar onde a gente se encontra: um código, as pessoas dentro dela
 
 O vídeo nunca passa pelo servidor: ele vai direto de quem compartilha para quem assiste (WebRTC P2P). O servidor só sabe quem está em qual sala e distribui a sinalização.
 
-## Sala aleatória e sala fixa
+## A sala e seu código
 
-| | Sala aleatória | Sala fixa |
-| --- | --- | --- |
-| Código | 6 caracteres sorteados pelo servidor a cada sala nova | sempre `BOTECO` |
-| Quando existe | quando alguém pede "criar sala" | desde o boot do servidor |
-| Quem entra | quem tiver o código | quem souber o código `BOTECO` |
-| Fica vazia | espera `ROOM_EMPTY_GRACE_MS` e é removida | nunca é removida, mesmo vazia |
+Toda sala é criada sob demanda: quem pede "criar sala" recebe um **código de 6 caracteres sorteado pelo servidor**. Esse código é o convite — quem tiver o código entra.
 
-O código aleatório sai do alfabeto `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` — sem `I`, `1`, `O` e `0`, que se confundem na tela. O servidor nunca sorteia um código que já exista nem o `BOTECO`.
+| | Sala |
+| --- | --- |
+| Código | 6 caracteres sorteados pelo servidor a cada sala nova |
+| Quando existe | quando alguém pede "criar sala" |
+| Quem entra | quem tiver o código |
+| Fica vazia | espera `ROOM_EMPTY_GRACE_MS` e é removida |
 
-A sala fixa é criada quando o servidor sobe (`server/index.mjs`) e carrega `isFixed: true`. Esse sinalizador faz duas coisas: ela não passa pelo temporizador de sala vazia e o histórico dela nunca é apagado por remoção automática. Por isso o `BOTECO` funciona como ponto de encontro permanente: compartilhe o mesmo código com todo mundo, sempre.
+O código sai do alfabeto `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` — sem `I`, `1`, `O` e `0`, que se confundem na tela. O servidor nunca sorteia um código que já exista.
 
 Para entrar, o servidor normaliza o que foi digitado (`toUpperCase()` + `trim()`). No navegador, `cleanCode()` (`web/src/lib/utils.ts`) remove traço e espaço, joga para maiúsculas e corta em 6 caracteres; `formatCode()` mostra o código como `ABC-DEF`.
 
@@ -39,7 +39,13 @@ O app guarda a sessão da sala no `sessionStorage` do navegador, na chave `telin
 
 A reconexão tem **6 segundos** de paciência (`RECONNECT_TIMEOUT_MS`, `web/src/App.tsx`). Sem resposta do servidor nesse tempo, a tela vira o estado de falha do componente `Reconnecting`, com o botão **"Tentar de novo"**, que reenvia o `join-room` e arma o timeout de novo.
 
-Do lado do servidor, a sala que ficou vazia **não é removida na hora**: ela espera `ROOM_EMPTY_GRACE_MS` (padrão **30 s**, ajustável por variável de ambiente). Quem deu F5 volta dentro dessa janela e ainda encontra a sala e o histórico do chat. Se alguém voltou, a remoção pendente é cancelada. A sala fixa é imune a esse temporizador.
+Do lado do servidor, a sala que ficou vazia **não é removida na hora**: ela espera `ROOM_EMPTY_GRACE_MS` (padrão **30 s**, ajustável por variável de ambiente). Quem deu F5 volta dentro dessa janela e ainda encontra a sala e o histórico do chat. Se alguém voltou, a remoção pendente é cancelada.
+
+### Identidade do chat depois do F5
+
+O `peerId` que o servidor dá a cada conexão morre junto com a conexão: depois do F5 o app recebe um novo. Para que as mensagens próprias continuem do lado direito do chat, o app guarda um **clientId** estável no `sessionStorage` (chave `telinha-client-id`, `web/src/lib/session.ts`) e o envia em cada `chat-message`. O servidor guarda o `clientId` no histórico e o repassa no broadcast; o cliente compara `clientId` com o seu.
+
+Sem `clientId` (histórico antigo), a identidade cai para o `peerId` e, por último, para o apelido — a regra completa está em `isOwnMessage` (`web/src/lib/chat.ts`).
 
 ## Grade de até 4 transmissões
 
@@ -61,19 +67,27 @@ Na grade (2 a 4 streams):
 
 Quem compartilha também pode trocar a resolução da live durante a transmissão — ver [`diagnostics.md`](diagnostics.md) para o que cada número de qualidade significa.
 
+## Cancelar o seletor nativo de compartilhamento
+
+Fechar o seletor "Escolher o que compartilhar" do navegador (Cancelar ou Esc) **não é erro de captura**: o Chrome rejeita o `getDisplayMedia` com `NotAllowedError` e nada é capturado nem transmitido. O app trata esse caso à parte e mostra o aviso **no próprio botão "Compartilhar Tela"**, que fica âmbar por alguns segundos com o texto "Cancelado — tente de novo"; a frase completa vai para leitores de tela (`role="status"`, `aria-live="polite"`):
+
+> Compartilhamento cancelado. Nada foi transmitido — tente de novo quando quiser.
+
+O aviso **some sozinho em 6 s** e desaparece na hora se a pessoa clicar de novo em "Compartilhar Tela" ou se a transmissão começar. As demais falhas de captura (hardware ocupado, permissão negada pelo sistema, navegador sem suporte) continuam com o tratamento de erro de sempre — ver `isScreenShareCancellation` em `web/src/lib/screenShare.ts`. Para conferir visualmente sem abrir o seletor real, use `http://localhost:3000/?mock&cancel`.
+
 ## Onde ficam as constantes
 
 | Constante | Onde | Valor |
 | --- | --- | --- |
-| `FIXED_ROOM_CODE` | `web/src/lib/constants.ts` **e** `server/index.mjs` | `BOTECO` |
 | `MAX_SIMULTANEOUS_STREAMS` | `web/src/lib/constants.ts` | `4` |
 | `ROOM_EMPTY_GRACE_MS` | `server/index.mjs` (env) | `30000` ms |
 | `CHAT_MAX_LENGTH` | `server/index.mjs` | `500` |
 | `CHAT_HISTORY_LIMIT` | `server/index.mjs` | `50` |
 | `CHAT_RATE_LIMIT_MS` | `server/index.mjs` | `500` ms |
 | `SESSION_TTL` | `web/src/lib/session.ts` | 12 h |
+| `CLIENT_ID_KEY` | `web/src/lib/session.ts` | `telinha-client-id` |
 | `RECONNECT_TIMEOUT_MS` | `web/src/App.tsx` | `6000` ms |
 
-`FIXED_ROOM_CODE` é a única constante duplicada: ela existe no cliente e no servidor, e as duas cópias precisam ficar em sincronia — mudar uma sem a outra quebra o acesso à sala fixa. O limite de 4 transmissões é do cliente (`MAX_SIMULTANEOUS_STREAMS`): ele segura o número de streams *pedidos* por sala, e o servidor não impõe teto de transmissões.
+O limite de 4 transmissões é do cliente (`MAX_SIMULTANEOUS_STREAMS`): ele segura o número de streams *pedidos* por sala, e o servidor não impõe teto de transmissões.
 
 O endereço do servidor de sinalização é outra variável, e essa é de build: `VITE_SIGNAL_HOST` (só o host, sem esquema e sem porta), lida em `web/src/lib/utils.ts` (`getSignalingHost` / `getSignalingUrl`). Sem ela, o app cai no fallback `${hostname}:4000`.

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChatMessage } from '../lib/types';
-import { CHAT_MAX_LENGTH, formatChatTime } from '../lib/chat';
+import { CHAT_MAX_LENGTH, formatChatTime, isOwnMessage } from '../lib/chat';
 import { getInitials, colorFromString } from '../lib/profile';
 
 /**
@@ -17,6 +17,10 @@ const NEAR_BOTTOM_PX = 80;
 interface ChatPanelProps {
   messages: ChatMessage[];
   myPeerId: string;
+  /** Identificador estável do cliente: sobrevive ao F5. */
+  myClientId?: string;
+  /** Meu apelido — fallback quando a mensagem não tem clientId. */
+  myNickname?: string;
   onSend: (text: string) => void;
   open: boolean;
   onClose: () => void;
@@ -35,6 +39,8 @@ const COUNTER_THRESHOLD = Math.floor(CHAT_MAX_LENGTH * 0.8);
 export default function ChatPanel({
   messages,
   myPeerId,
+  myClientId,
+  myNickname,
   onSend,
   open,
   onClose,
@@ -162,7 +168,13 @@ export default function ChatPanel({
           </div>
         ) : (
           messages.map((message) => {
-            const isMine = message.from === myPeerId;
+            // A identidade vem do clientId (sobrevive ao F5); o peerId e o
+            // apelido são os fallbacks para mensagens sem clientId.
+            const isMine = isOwnMessage(message, {
+              clientId: myClientId,
+              peerId: myPeerId,
+              nickname: myNickname,
+            });
             const color = colorFromString(message.nickname);
             return (
               <div

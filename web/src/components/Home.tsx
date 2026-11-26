@@ -1,7 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
-import { cleanCode, formatCode, copyToClipboard } from '../lib/utils';
+import { useState, useEffect } from 'react';
+import { cleanCode, formatCode } from '../lib/utils';
 import { loadProfile, saveProfile } from '../lib/profile';
-import { FIXED_ROOM_CODE } from '../lib/constants';
 
 interface HomeProps {
   onCreateRoom: (nickname: string, password?: string) => void;
@@ -13,10 +12,10 @@ interface HomeProps {
 /** Erro de campo: aparece colado ao input que-o causou. */
 type FieldError = { field: 'nickname' | 'code'; message: string } | null;
 
-/** Modo de criação: sala nova a cada vez ou a sala fixa do boteco. */
-type CreateMode = 'random' | 'fixed';
-
-const INPUT = 'w-full bg-surface-input/90 text-white placeholder:text-slate-500 border border-white/10 rounded-xl px-4 py-3 text-sm transition-all outline-none';
+// A cor da borda fica fora do INPUT: no estado de erro a borda precisa
+// ficar vermelha (Tela A) e, com `border-white/10` no mesmo lugar, quem
+// vence dependeria da ordem de geração do Tailwind.
+const INPUT = 'w-full bg-surface-input/90 text-white placeholder:text-slate-500 border rounded-xl px-4 py-3 text-sm transition-all outline-none';
 const LABEL = 'block text-xs font-semibold uppercase tracking-wider text-slate-300';
 
 export default function Home({ onCreateRoom, onJoinRoom, error, connecting }: HomeProps) {
@@ -27,10 +26,7 @@ export default function Home({ onCreateRoom, onJoinRoom, error, connecting }: Ho
   const [createPassword, setCreatePassword] = useState('');
   const [joinPassword, setJoinPassword] = useState('');
   const [code, setCode] = useState('');
-  const [createMode, setCreateMode] = useState<CreateMode>('random');
   const [fieldError, setFieldError] = useState<FieldError>(null);
-  const [copied, setCopied] = useState(false);
-  const joinButtonRef = useRef<HTMLButtonElement>(null);
 
   // Carrega perfil salvo ao montar
   useEffect(() => {
@@ -49,11 +45,6 @@ export default function Home({ onCreateRoom, onJoinRoom, error, connecting }: Ho
     }
     setFieldError(null);
     saveProfile(nickname.trim());
-    if (createMode === 'fixed') {
-      // A sala fixa já existe no servidor: entrar é o mesmo que criar.
-      onJoinRoom(FIXED_ROOM_CODE, nickname.trim());
-      return;
-    }
     onCreateRoom(nickname.trim(), createPassword || undefined);
   };
 
@@ -71,21 +62,6 @@ export default function Home({ onCreateRoom, onJoinRoom, error, connecting }: Ho
     setFieldError(null);
     saveProfile(nickname.trim());
     onJoinRoom(cleanCode(code), nickname.trim(), joinPassword || undefined);
-  };
-
-  // ── Sala fixa: preenche o código e foca o botão de entrar ──
-  const useFixedRoom = () => {
-    setCode(FIXED_ROOM_CODE);
-    setFieldError(null);
-    requestAnimationFrame(() => joinButtonRef.current?.focus());
-  };
-
-  // ── Copia o código cru da sala fixa (sem traço) ──
-  const handleCopyFixedCode = async () => {
-    const ok = await copyToClipboard(FIXED_ROOM_CODE);
-    if (!ok) return;
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1800);
   };
 
   return (
@@ -193,7 +169,7 @@ export default function Home({ onCreateRoom, onJoinRoom, error, connecting }: Ho
               autoFocus
               aria-describedby={fieldError?.field === 'nickname' ? 'home-nickname-error' : undefined}
               aria-invalid={fieldError?.field === 'nickname' ? true : undefined}
-              className={`${INPUT} focus:border-emerald-500 focus:ring-emerald-500/20`}
+              className={`${INPUT} ${fieldError?.field === 'nickname' ? 'border-red-400 focus:border-red-400 focus:ring-red-500/20' : 'border-white/10 focus:border-emerald-500 focus:ring-emerald-500/20'}`}
             />
             {fieldError?.field === 'nickname' && (
               <p id="home-nickname-error" role="alert" className="text-xs text-red-300 pt-1">
@@ -222,114 +198,35 @@ export default function Home({ onCreateRoom, onJoinRoom, error, connecting }: Ho
                 Criar sala
               </h2>
 
-              {/* Escolha: sala aleatória ou sala fixa */}
-              <div className="space-y-2" role="radiogroup" aria-label="Tipo de sala">
-                <label
-                  className={`flex items-start gap-3 p-3 rounded-xl cursor-pointer transition-colors ${
-                    createMode === 'random'
-                      ? 'border-2 border-primary bg-primary/10'
-                      : 'border border-outline-variant/20 bg-surface-container-high/40 hover:border-outline-variant/40'
-                  }`}
-                >
+              {/* noValidate: a validação é nossa (mensagem no campo + borda
+                  vermelha). O balão nativo do browser destoa do layout. */}
+              <form onSubmit={handleCreate} noValidate className="space-y-4">
+                <div className="space-y-1.5">
+                  <label htmlFor="create-password" className={LABEL}>
+                    Senha <span className="text-slate-500 normal-case font-normal">(opcional)</span>
+                  </label>
                   <input
-                    type="radio"
-                    name="create-mode"
-                    value="random"
-                    checked={createMode === 'random'}
-                    onChange={() => setCreateMode('random')}
-                    className="mt-0.5 accent-primary w-4 h-4 shrink-0 cursor-pointer"
+                    id="create-password"
+                    type="password"
+                    value={createPassword}
+                    onChange={(e) => setCreatePassword(e.target.value)}
+                    placeholder="Deixe vazio para sala aberta"
+                    className={`${INPUT} border-white/10 focus:border-emerald-500 focus:ring-emerald-500/20`}
                   />
-                  <span className="min-w-0">
-                    <span className="block text-sm font-semibold text-white">Sala aleatória</span>
-                    <span className="block text-[11px] text-slate-400">Um código novo a cada sala</span>
-                  </span>
-                </label>
+                </div>
 
-                <label
-                  className={`flex items-start gap-3 p-3 rounded-xl cursor-pointer transition-colors ${
-                    createMode === 'fixed'
-                      ? 'border-2 border-primary bg-primary/10'
-                      : 'border border-outline-variant/20 bg-surface-container-high/40 hover:border-outline-variant/40'
-                  }`}
+                <button
+                  type="submit"
+                  disabled={!nickname.trim() || connecting}
+                  className="w-full mt-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 disabled:from-slate-700 disabled:to-slate-700 disabled:text-slate-500 text-slate-950 font-bold py-3.5 px-5 rounded-xl shadow-glow transition-all duration-200 transform active:scale-[0.99] flex items-center justify-center gap-2 group cursor-pointer disabled:cursor-not-allowed disabled:shadow-none"
                 >
-                  <input
-                    type="radio"
-                    name="create-mode"
-                    value="fixed"
-                    checked={createMode === 'fixed'}
-                    onChange={() => setCreateMode('fixed')}
-                    className="mt-0.5 accent-primary w-4 h-4 shrink-0 cursor-pointer"
-                  />
-                  <span className="min-w-0">
-                    <span className="block text-sm font-semibold text-white">Sala fixa do Botecão</span>
-                    <span className="block text-[11px] text-slate-400">
-                      O mesmo código sempre: <span className="font-mono text-amber-400">BOTECO</span>
-                    </span>
-                  </span>
-                </label>
-              </div>
-
-              <form onSubmit={handleCreate} className="space-y-4 mt-4">
-                {createMode === 'random' && (
-                  <div className="space-y-1.5">
-                    <label htmlFor="create-password" className={LABEL}>
-                      Senha <span className="text-slate-500 normal-case font-normal">(opcional)</span>
-                    </label>
-                    <input
-                      id="create-password"
-                      type="password"
-                      value={createPassword}
-                      onChange={(e) => setCreatePassword(e.target.value)}
-                      placeholder="Deixe vazio para sala aberta"
-                      className={`${INPUT} focus:border-emerald-500 focus:ring-emerald-500/20`}
-                    />
-                  </div>
-                )}
-
-                {createMode === 'fixed' ? (
-                  <div className="space-y-3">
-                    <button
-                      type="submit"
-                      disabled={!nickname.trim() || connecting}
-                      className="w-full mt-2 border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 disabled:border-slate-700 disabled:text-slate-500 font-bold py-3.5 px-5 rounded-xl transition-all duration-200 transform active:scale-[0.99] flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
-                    >
-                      <span>{connecting ? 'Entrando...' : 'Entrar na sala fixa'}</span>
-                      {!connecting && (
-                        <svg className="w-4 h-4 stroke-[2.5]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleCopyFixedCode}
-                      title="Copiar o código BOTECO"
-                      aria-label="Copiar o código da sala fixa BOTECO"
-                      className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl border border-white/10 bg-surface-container-high/40 hover:border-amber-500/40 transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-amber-400/60"
-                    >
-                      <span className="material-symbols-outlined text-[15px] text-amber-400">
-                        {copied ? 'check' : 'content_copy'}
-                      </span>
-                      <span className="font-mono text-amber-400 text-sm font-bold tracking-widest">BOTECO</span>
-                      <span className="text-[10px] font-label-mono uppercase tracking-wider text-outline">
-                        {copied ? 'copiado' : 'copiar'}
-                      </span>
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    type="submit"
-                    disabled={!nickname.trim() || connecting}
-                    className="w-full mt-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 disabled:from-slate-700 disabled:to-slate-700 disabled:text-slate-500 text-slate-950 font-bold py-3.5 px-5 rounded-xl shadow-glow transition-all duration-200 transform active:scale-[0.99] flex items-center justify-center gap-2 group cursor-pointer disabled:cursor-not-allowed disabled:shadow-none"
-                  >
-                    <span>{connecting ? 'Criando...' : 'Criar Sala Agora'}</span>
-                    {!connecting && (
-                      <svg className="w-4 h-4 stroke-[2.5] transition-transform duration-200 group-hover:translate-x-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    )}
-                  </button>
-                )}
+                  <span>{connecting ? 'Criando...' : 'Criar Sala Agora'}</span>
+                  {!connecting && (
+                    <svg className="w-4 h-4 stroke-[2.5] transition-transform duration-200 group-hover:translate-x-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  )}
+                </button>
               </form>
             </div>
 
@@ -340,16 +237,7 @@ export default function Home({ onCreateRoom, onJoinRoom, error, connecting }: Ho
                 Entrar na sala
               </h2>
 
-              <form onSubmit={handleJoin} className="space-y-4">
-                {/* Atalho para a sala fixa */}
-                <button
-                  type="button"
-                  onClick={useFixedRoom}
-                  className="rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[11px] text-amber-200 hover:bg-amber-500/20 transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-amber-400/60"
-                >
-                  Usar a sala fixa · BOTECO
-                </button>
-
+              <form onSubmit={handleJoin} noValidate className="space-y-4">
                 <div className="space-y-1.5">
                   <label htmlFor="join-code" className={LABEL}>
                     Código da sala
@@ -364,7 +252,7 @@ export default function Home({ onCreateRoom, onJoinRoom, error, connecting }: Ho
                     required
                     aria-describedby={fieldError?.field === 'code' ? 'join-code-error' : undefined}
                     aria-invalid={fieldError?.field === 'code' ? true : undefined}
-                    className={`${INPUT} text-amber-400 placeholder:text-slate-600 text-center text-base sm:text-lg font-mono font-bold tracking-widest uppercase focus:border-amber-400 focus:ring-amber-400/20`}
+                    className={`${INPUT} ${fieldError?.field === 'code' ? 'border-red-400' : 'border-white/10'} text-amber-400 placeholder:text-slate-600 text-center text-base sm:text-lg font-mono font-bold tracking-widest uppercase ${fieldError?.field === 'code' ? 'focus:border-red-400 focus:ring-red-500/20' : 'focus:border-amber-400 focus:ring-amber-400/20'}`}
                   />
                   {fieldError?.field === 'code' && (
                     <p id="join-code-error" role="alert" className="text-xs text-red-300 pt-1">
@@ -383,14 +271,13 @@ export default function Home({ onCreateRoom, onJoinRoom, error, connecting }: Ho
                     value={joinPassword}
                     onChange={(e) => setJoinPassword(e.target.value)}
                     placeholder="Senha da sala"
-                    className={`${INPUT} focus:border-amber-400 focus:ring-amber-400/20`}
+                    className={`${INPUT} border-white/10 focus:border-amber-400 focus:ring-amber-400/20`}
                   />
                 </div>
 
                 <button
-                  ref={joinButtonRef}
                   type="submit"
-                  disabled={!nickname.trim() || code.length < 6 || connecting}
+                  disabled={!nickname.trim() || connecting}
                   className="w-full mt-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 disabled:from-slate-700 disabled:to-slate-700 disabled:text-slate-500 text-slate-950 font-bold py-3.5 px-5 rounded-xl shadow-lg shadow-amber-950/40 transition-all duration-200 transform active:scale-[0.99] flex items-center justify-center gap-2 group cursor-pointer disabled:cursor-not-allowed disabled:shadow-none"
                 >
                   <span>{connecting ? 'Entrando...' : 'Entrar na Sala'}</span>

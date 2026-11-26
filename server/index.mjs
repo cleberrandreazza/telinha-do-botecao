@@ -9,11 +9,6 @@ const MAX_CONNECTIONS = 512;
 const HEARTBEAT_INTERVAL = 30_000; // 30s
 const PEER_TTL = 90_000; // 90s sem heartbeat = desconecta
 
-// Sala fixa: existe desde o boot e nunca é removida.
-// ATENÇÃO: web/src/lib/constants.ts define o mesmo código — os dois precisam
-// ficar em sincronia.
-const FIXED_ROOM_CODE = 'BOTECO';
-
 // Sala vazia não some na hora: ela espera este tempo antes de ser removida.
 // É o que permite a reconexão depois do F5 — quem recarregou a página volta
 // para o MESMO código (e com o histórico do chat intacto).
@@ -24,6 +19,7 @@ const ROOM_EMPTY_GRACE_MS = parseInt(process.env.ROOM_EMPTY_GRACE_MS || '30000',
 const CHAT_MAX_LENGTH = 500;        // caracteres por mensagem
 const CHAT_HISTORY_LIMIT = 50;      // mensagens guardadas por sala
 const CHAT_RATE_LIMIT_MS = 500;     // intervalo mínimo entre mensagens do mesmo peer
+const CHAT_CLIENT_ID_MAX_LENGTH = 64; // tamanho máximo do clientId vindo do cliente
 
 let nextChatId = 1;
 
@@ -38,8 +34,8 @@ let nextPeerId = 1;
 
 /**
  * @typedef {{ id: string, ws: WebSocket, nickname: string, roomCode: string|null, isSharing: boolean, lastSeen: number, lastChatAt: number }} PeerInfo
- * @typedef {{ id: string, from: string, nickname: string, text: string, ts: number }} ChatEntry
- * @typedef {{ code: string, password: string|null, peers: Map<string, PeerInfo>, createdAt: number, isFixed: boolean, history: ChatEntry[], emptySince: number|null, cleanupTimer: NodeJS.Timeout|null }} Room
+ * @typedef {{ id: string, from: string, nickname: string, text: string, ts: number, clientId: string|null }} ChatEntry
+ * @typedef {{ code: string, password: string|null, peers: Map<string, PeerInfo>, createdAt: number, history: ChatEntry[], emptySince: number|null, cleanupTimer: NodeJS.Timeout|null }} Room
  */
 
 // ── Helpers ─────────────────────────────────────────────
@@ -48,8 +44,7 @@ function generateCode() {
   let code;
   do {
     code = Array.from(randomBytes(6), b => chars[b % chars.length]).join('');
-    // nunca colide com a sala fixa (o charset já exclui O, mas garantimos)
-  } while (rooms.has(code) || code === FIXED_ROOM_CODE);
+  } while (rooms.has(code));
   return code;
 }
 
@@ -83,10 +78,8 @@ function broadcast(room, msg, excludeId = null) {
  * Sala que ficou vazia não é removida na hora: ela espera
  * ROOM_EMPTY_GRACE_MS. Quem recarregou a página (F5) volta para o mesmo
  * código dentro dessa janela e ainda recebe o histórico do chat.
- * A sala fixa nunca é removida.
  */
 function scheduleRoomCleanup(room) {
-  if (room.isFixed) return;
   if (room.cleanupTimer) return;
   room.emptySince = Date.now();
   room.cleanupTimer = setTimeout(() => {
@@ -128,7 +121,7 @@ function removeFromRoom(peer) {
   }
 
   // Sala vazia: fica de pé por ROOM_EMPTY_GRACE_MS para o F5 poder reconectar
-  // no mesmo código. A sala fixa nunca é removida (ela existe desde o boot).
+  // no mesmo código.
   if (room.peers.size === 0) {
     scheduleRoomCleanup(room);
   }
@@ -209,7 +202,6 @@ wss.on('connection', (ws) => {
           password: msg.password || null,
           peers: new Map([[peerId, peer]]),
           createdAt: Date.now(),
-          isFixed: false,
           history: [],
           emptySince: null,
           cleanupTimer: null,
@@ -325,6 +317,13 @@ wss.on('connection', (ws) => {
         }
         peer.lastChatAt = now;
 
+        // clientId: identificador estável do navegador (sessionStorage).
+        // Ele sobrevive ao F5, ao contrário do peerId — é o que permite ao
+        // cliente reconhecer as próprias mensagens no histórico.
+        const clientId = typeof msg.clientId === 'string'
+          ? msg.clientId.trim().slice(0, CHAT_CLIENT_ID_MAX_LENGTH)
+          : '';
+
         /** @type {ChatEntry} */
         const entry = {
           id: `m${nextChatId++}`,
@@ -332,6 +331,7 @@ wss.on('connection', (ws) => {
           nickname: peer.nickname || 'Anônimo',
           text,
           ts: now,
+          clientId: clientId || null,
         };
 
         // guarda no histórico da sala (últimas 50)
@@ -340,13 +340,15 @@ wss.on('connection', (ws) => {
           room.history.splice(0, room.history.length - CHAT_HISTORY_LIMIT);
         }
 
-        broadcast(room, {
+        const payload = {
           type: 'chat-message',
           from: entry.from,
           nickname: entry.nickname,
           text: entry.text,
           ts: entry.ts,
-        });
+        };
+        if (entry.clientId) payload.clientId = entry.clientId;
+        broadcast(room, payload);
         break;
       }
 
@@ -421,19 +423,6 @@ setInterval(() => {
 }, HEARTBEAT_INTERVAL);
 
 // ── Start ───────────────────────────────────────────────
-// Sala fixa: criada no boot, sem senha e nunca removida.
-rooms.set(FIXED_ROOM_CODE, {
-  code: FIXED_ROOM_CODE,
-  password: null,
-  peers: new Map(),
-  createdAt: Date.now(),
-  isFixed: true,
-  history: [],
-  emptySince: null,
-  cleanupTimer: null,
-});
-console.log(`[sala] fixa disponível: ${FIXED_ROOM_CODE}`);
-
 httpServer.listen(PORT, () => {
   console.log(`\n  🍺 Telinha do Botecão - Servidor de Sinalização`);
   console.log(`  ➜ Rodando em http://localhost:${PORT}`);

@@ -127,6 +127,18 @@ export function isMockSharing(): boolean {
   return params.has('mock') && params.has('share');
 }
 
+/**
+ * ?mock&cancel — mostra o aviso de "compartilhamento cancelado".
+ *
+ * O aviso só aparece quando a pessoa fecha o seletor nativo do navegador, o
+ * que o mock não reproduz: esta flag existe para o preview visual do
+ * comportamento novo (issue #75).
+ */
+export function isMockCancelNotice(): boolean {
+  const params = new URLSearchParams(window.location.search);
+  return params.has('mock') && params.has('cancel');
+}
+
 /** Stream falsa da sua própria captura (usada no preview de quem transmite). */
 export function createMockLocalStream(): MediaStream {
   return createFakeStream('Você (Dev)', '#0f766e');
@@ -218,6 +230,7 @@ export interface MockChatEcho {
   nickname: string;
   text: string;
   ts: number;
+  clientId?: string;
 }
 
 /**
@@ -228,7 +241,7 @@ export interface MockChatEcho {
  * Devolve a função de cancelamento.
  */
 export function simulateMockChatEcho(
-  message: { from: string; nickname: string; text: string },
+  message: { from: string; nickname: string; text: string; clientId?: string },
   onEcho: (echo: MockChatEcho) => void,
   delayMs: number = 600,
 ): () => void {
@@ -239,6 +252,7 @@ export function simulateMockChatEcho(
       nickname: message.nickname,
       text: message.text,
       ts: Date.now(),
+      clientId: message.clientId,
     });
   }, delayMs);
   return () => clearTimeout(timer);

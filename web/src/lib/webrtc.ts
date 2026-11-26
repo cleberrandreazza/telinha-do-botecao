@@ -1,20 +1,24 @@
 import { SignalingClient } from './signaling';
 import { configureAudioSenderParameters, configureOpusReceiverSdp, configureOpusSenderSdp } from './opus';
-import { assertScreenShareSupported } from './screenShare';
+import { assertScreenShareSupported, contentHintForSurface, scaleFactorForCapture } from './screenShare';
 import { asLinkRole, linkKey, oppositeRole, parseLinkKey, type LinkRole } from './links';
+import { describeSwitchError, errorNameOf, replaceTrackOnSenders, type DisplaySource, type TrackSenderLike } from './sourceSwitch';
 import type { ServerMessage, StreamInfo } from './types';
 import {
   AdaptiveBitrateController,
   ConnectionMonitor,
   audioModeFromConfig,
   commitPreparedShare,
+  decideAudioScope,
   negotiationFromSdp,
   inspectAudioSdp,
   readAudioCapture,
   readCaptureProbe,
+  readDisplaySurface,
   readEncoderEncoding,
   reportFilename,
   requestDisplayMedia,
+  stripDisallowedAudio,
   triggerJsonDownload,
   SessionTimeline,
   type AudioLinkContext,
@@ -50,7 +54,19 @@ export interface StreamConfig {
   audioMode?: AudioMode;
 }
 
-const RESOLUTION_MAP: Record<string, { width: number; height: number }> = {
+/** Resultado de uma troca de fonte durante a live. */
+export interface SwitchSourceResult {
+  /** A troca aconteceu. */
+  ok: boolean;
+  /** Motivo real quando não aconteceu (ou o aviso de áudio). */
+  reason: string | null;
+  /** Stream novo, quando a troca aconteceu. */
+  stream: MediaStream | null;
+  /** Superfície medida pelo navegador ("browser"/"window"/"monitor"). */
+  surface: string | null;
+}
+
+export const RESOLUTION_MAP: Record<string, { width: number; height: number }> = {
   '2160': { width: 3840, height: 2160 },
   '1080': { width: 1920, height: 1080 },
   '720': { width: 1280, height: 720 },
@@ -230,9 +246,13 @@ export class WebRTCManager {
             frameRate: this.currentConfig.frameRate,
           }, videoTrack);
           console.info('[WebRTC] Captura', this.captureProbe);
-          videoTrack.contentHint = 'motion';
           const actualSettings = videoTrack.getSettings();
-          console.log(`[WebRTC] Video track settings: ${actualSettings.width}x${actualSettings.height} @ ${actualSettings.frameRate}fps`);
+          // Aba = texto e interface: 'detail' spende os bits com nitidez.
+          // Tela/janela = vídeo ou jogo: 'motion' mantém a taxa de quadros.
+          videoTrack.contentHint = contentHintForSurface(
+            typeof actualSettings.displaySurface === 'string' ? actualSettings.displaySurface : null,
+          );
+          console.log(`[WebRTC] Video track settings: ${actualSettings.width}x${actualSettings.height} @ ${actualSettings.frameRate}fps (superfície: ${actualSettings.displaySurface ?? 'n/d'}, contentHint: ${videoTrack.contentHint})`);
           videoTrack.onended = () => {
             this.stopScreenShare();
           };
@@ -251,7 +271,6 @@ export class WebRTCManager {
       this.localStream.getTracks().forEach(t => t.stop());
       this.localStream = null;
     }
-
     // Só fecha as conexões de papel `sender` (as que EU transmito). As de
     // papel `receiver` — as lives que eu estava assistindo — continuam vivas.
     for (const key of [...this.connections.keys()]) {
@@ -279,6 +298,218 @@ export class WebRTCManager {
     this.pendingAudioEvents = [];
     this.captureProbe = null;
     this.encoderProbes.clear();
+  }
+
+  /**
+   * Troca a fonte capturada (aba / janela / tela) SEM derrubar os
+   * espectadores: novo `getDisplayMedia` + `replaceTrack` nos senders, sem
+   * renegociar.
+   *
+   * O navegador decide o que capturar: a escolha da UI é só uma dica
+   * (`displaySurface`). Se o navegador recusar a dica, a captura é refeita sem
+   * ela — o áudio continua o mesmo. `audio: true` e as constraints de
+   * processamento só depois da captura (docs/audio.md).
+   *
+   * Quando nada pode ser trocado, a fonte atual continua valendo e o motivo
+   * real volta no `reason`.
+   */
+  async switchSource(source: DisplaySource): Promise<SwitchSourceResult> {
+    try {
+      assertScreenShareSupported();
+    } catch (error) {
+      return { ok: false, reason: describeSwitchError(error), stream: null, surface: null };
+    }
+
+    const mode = audioModeFromConfig(this.currentConfig);
+    const res = RESOLUTION_MAP[this.currentConfig.resolution];
+    const fps = this.currentConfig.frameRate;
+    const base: Record<string, unknown> = {
+      width: { ideal: res.width },
+      height: { ideal: res.height },
+      frameRate: { ideal: fps, max: fps },
+    };
+
+    const capture = (video: Record<string, unknown>, fallbackToVideoOnly?: boolean) =>
+      requestDisplayMedia(
+        (options) => navigator.mediaDevices.getDisplayMedia(options as DisplayMediaStreamOptions),
+        video,
+        mode,
+        { fallbackToVideoOnly },
+      );
+
+    let captured: { stream: MediaStream; audioScopeFallback: boolean };
+    try {
+      captured = await capture({ ...base, displaySurface: source }, false);
+    } catch (error) {
+      const name = errorNameOf(error);
+      try {
+        if (name === 'OverconstrainedError') {
+          // O navegador recusou a dica de superfície: repete sem ela, com o
+          // mesmo escopo de áudio.
+          captured = await capture(base, false);
+        } else if (name === 'NotSupportedError' || name === 'TypeError') {
+          // O navegador não oferece opções suficientes: cai para vídeo só.
+          captured = await capture(base);
+        } else {
+          throw error;
+        }
+      } catch (retryError) {
+        return { ok: false, reason: describeSwitchError(retryError), stream: null, surface: null };
+      }
+    }
+
+    const stream = captured.stream as MediaStream;
+    const scope = displayScope(stream);
+    const surface = readDisplaySurface(scope);
+    const decision = captured.audioScopeFallback
+      ? {
+          keepAudio: false,
+          policy: 'scope-unsupported',
+          message: 'Navegador não oferece opções suficientes para garantir o escopo solicitado. A transmissão segue só com vídeo.',
+        }
+      : decideAudioScope(mode, surface);
+    stripDisallowedAudio(scope, decision.keepAudio);
+
+    const videoTrack = stream.getVideoTracks()[0];
+    if (!videoTrack) {
+      stream.getTracks().forEach((track) => track.stop());
+      return {
+        ok: false,
+        reason: 'O navegador devolveu a captura sem faixa de vídeo. A fonte atual continua valendo.',
+        stream: null,
+        surface,
+      };
+    }
+
+    // Vídeo: cada sender recebe o seu próprio clone (encoder independente).
+    // Áudio: uma track só, compartilhada — e `null` quando o escopo não
+    // permite áudio.
+    const videoSenders: TrackSenderLike[] = [];
+    const audioSenders: TrackSenderLike[] = [];
+    for (const [key, pc] of [...this.connections.entries()]) {
+      const parsed = parseLinkKey(key);
+      if (!parsed || parsed.role !== 'sender') continue;
+      for (const sender of pc.getSenders()) {
+        const kind = sender.track?.kind;
+        if (kind === 'video') videoSenders.push(sender);
+        else if (kind === 'audio') audioSenders.push(sender);
+      }
+    }
+
+    const previousStream = this.localStream;
+    const oldVideoTrack = previousStream?.getVideoTracks()[0] ?? null;
+    const videoReport = await replaceTrackOnSenders(videoSenders, () => videoTrack.clone());
+    if (videoReport.attempted > 0 && videoReport.replaced === 0) {
+      // Nenhuma conexão aceitou: a fonte atual continua valendo.
+      stream.getTracks().forEach((track) => track.stop());
+      return {
+        ok: false,
+        reason: 'Nenhuma conexão aceitou a nova fonte. A fonte atual continua valendo.',
+        stream: null,
+        surface,
+      };
+    }
+
+    const newAudioTrack = stream.getAudioTracks()[0] ?? null;
+    await replaceTrackOnSenders(audioSenders, newAudioTrack);
+
+    // Descarta o que sobrou (clone antigo e faixa antiga) e só o que não está
+    // mais em uso por nenhum sender.
+    const inUse = new Set<MediaStreamTrack>();
+    for (const [key, pc] of [...this.connections.entries()]) {
+      const parsed = parseLinkKey(key);
+      if (!parsed || parsed.role !== 'sender') continue;
+      for (const sender of pc.getSenders()) {
+        if (sender.track) inUse.add(sender.track);
+      }
+    }
+    if (oldVideoTrack && !inUse.has(oldVideoTrack)) oldVideoTrack.stop();
+    if (previousStream) {
+      for (const track of previousStream.getTracks()) {
+        if (!inUse.has(track)) track.stop();
+      }
+    }
+
+    this.localStream = stream;
+    this.hasAudioTrack = stream.getAudioTracks().length > 0;
+    this.audioCapture.displaySurface = surface;
+    this.audioCapture.policy = decision.policy;
+    this.audioCapture.trackCount = stream.getAudioTracks().length;
+
+    const actualSettings = videoTrack.getSettings();
+    videoTrack.contentHint = contentHintForSurface(
+      typeof actualSettings.displaySurface === 'string' ? actualSettings.displaySurface : null,
+    );
+    videoTrack.onended = () => {
+      this.stopScreenShare();
+    };
+    this.captureProbe = readCaptureProbe({
+      label: this.currentConfig.resolution,
+      width: res.width,
+      height: res.height,
+      frameRate: this.currentConfig.frameRate,
+    }, videoTrack);
+    console.info('[WebRTC] Fonte trocada', { surface, decisão: decision.policy });
+
+    return { ok: true, reason: decision.message, stream, surface };
+  }
+
+  /**
+   * Troca o frame rate da live SEM derrubar o compartilhamento.
+   *
+   * Mesmo padrão de `setStreamResolution`: cada conexão de papel `sender`
+   * recebe o seu `setParameters` (maxFramerate/degradationPreference) com
+   * try/catch individual. Devolve false só quando nenhuma conexão aceitou —
+   * nesse caso o valor anterior continua valendo e a UI avisa.
+   */
+  async setStreamFrameRate(frameRate: 30 | 15 | 5): Promise<boolean> {
+    const previous = this.currentConfig.frameRate;
+    this.currentConfig = { ...this.currentConfig, frameRate };
+
+    let attempted = 0;
+    let applied = 0;
+    for (const [key, pc] of [...this.connections.entries()]) {
+      const parsed = parseLinkKey(key);
+      if (!parsed || parsed.role !== 'sender') continue;
+      const videoSender = pc.getSenders().find((sender) => sender.track?.kind === 'video');
+      if (!videoSender) continue;
+      attempted += 1;
+      try {
+        const params = videoSender.getParameters();
+        if (!params.encodings || params.encodings.length === 0) {
+          params.encodings = [{}];
+        }
+        params.encodings[0].maxFramerate = frameRate;
+        // @ts-ignore - degradationPreference exists but TypeScript doesn't know about it
+        params.degradationPreference = 'maintain-framerate';
+        await videoSender.setParameters(params);
+        applied += 1;
+        console.info(`[WebRTC] ${frameRate} fps aplicado em ${key}`);
+      } catch (error) {
+        console.warn(`[WebRTC] Falha ao aplicar ${frameRate} fps em ${key}:`, error);
+      }
+    }
+
+    if (attempted > 0 && applied === 0) {
+      this.currentConfig = { ...this.currentConfig, frameRate: previous };
+      return false;
+    }
+
+    // Só tentamos pela captura quando não sabemos o fps capturado — senão o
+    // encoder voltaria a reduzir o que a captura já limitou.
+    const track = this.localStream?.getVideoTracks()[0];
+    if (track) {
+      const capturedFps = track.getSettings().frameRate ?? null;
+      if (capturedFps === null) {
+        try {
+          await track.applyConstraints({ frameRate: { ideal: frameRate, max: frameRate } });
+        } catch (error) {
+          console.warn('[WebRTC] Captura recusou o novo frame rate (best effort):', error);
+        }
+      }
+    }
+
+    return true;
   }
 
   requestStream(sharerId: string) {
@@ -522,15 +753,14 @@ export class WebRTCManager {
   /**
    * Fator de redução aplicado pelo encoder para chegar na resolução pedida.
    * A largura capturada vem de getSettings(); se a captura for menor que o
-   * alvo, o fator é 1 (não há o que reduzir).
+   * alvo, o fator é 1 (não há o que reduzir). Sem largura medida não há como
+   * saber o tamanho da fonte: assumir um valor faria o encoder reduzir a
+   * imagem duas vezes, então fica 1.
    */
   private scaleResolutionDownBy(resolution: string): number {
-    const target = RESOLUTION_MAP[resolution];
-    if (!target) return 1;
+    const target = RESOLUTION_MAP[resolution] ?? null;
     const capturedWidth = this.localStream?.getVideoTracks()[0]?.getSettings().width ?? null;
-    const sourceWidth = capturedWidth ?? RESOLUTION_MAP['2160'].width;
-    if (!capturedWidth || capturedWidth < target.width) return 1;
-    return Math.max(1, Math.round((sourceWidth / target.width) * 100) / 100);
+    return scaleFactorForCapture(capturedWidth, target);
   }
 
   /**
@@ -1046,17 +1276,24 @@ export class WebRTCManager {
       return false;
     }
 
-    // Secundário, no melhor esforço: pedir a resolução direto na captura.
+    // A redução para o alvo é feita pelo encoder (scaleResolutionDownBy).
+    // Aplicar o mesmo limite também na captura reduziria a imagem duas
+    // vezes: o encoder voltaria a reduzir o que a captura já reduziu.
+    // Só tentamos pela captura quando não sabemos o tamanho dela — aí não
+    // existe encoder capaz de medir o quanto falta.
     const track = this.localStream?.getVideoTracks()[0];
     if (track) {
-      try {
-        await track.applyConstraints({
-          width: { ideal: target.width },
-          height: { ideal: target.height },
-          frameRate: { ideal: fps, max: fps },
-        });
-      } catch (error) {
-        console.warn('[WebRTC] Captura recusou a nova resolução (best effort):', error);
+      const capturedWidth = track.getSettings().width ?? null;
+      if (capturedWidth === null) {
+        try {
+          await track.applyConstraints({
+            width: { ideal: target.width },
+            height: { ideal: target.height },
+            frameRate: { ideal: fps, max: fps },
+          });
+        } catch (error) {
+          console.warn('[WebRTC] Captura recusou a nova resolução (best effort):', error);
+        }
       }
     }
 
