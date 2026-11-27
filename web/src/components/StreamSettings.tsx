@@ -9,20 +9,25 @@ export interface StreamConfig {
   audioMode: AudioMode;
 }
 
+/** Taxas de quadros aceitas pelo encoder. */
+export type StreamFrameRate = 30 | 15 | 5;
+
 const AUDIO_MODES: { value: AudioMode; label: string; desc: string }[] = [
   { value: 'off', label: 'Sem áudio', desc: 'Só vídeo.' },
   { value: 'source', label: 'Áudio da aba', desc: 'Padrão. Som da guia. Janela e tela inteira saem sem áudio global.' },
   { value: 'system', label: 'Áudio de todo o Windows', desc: 'Separado do padrão. Só quando a superfície for a tela inteira.' },
 ];
 
-const RESOLUTIONS = [
+/** Lista de resoluções — reutilizada pelo ResolutionControl (troca durante a live). */
+export const RESOLUTIONS = [
   { value: '2160', label: '4K', desc: '2160p' },
   { value: '1080', label: 'Full HD', desc: '1080p' },
   { value: '720', label: 'HD', desc: '720p' },
   { value: '480', label: 'SD', desc: '480p' },
 ] as const;
 
-const FRAMERATES = [
+/** Taxas de quadros — reusada pela barra do streamer (troca durante a live). */
+export const FRAMERATES = [
   { value: 30, label: '30 FPS', desc: 'Fluido' },
   { value: 15, label: '15 FPS', desc: 'Moderado' },
   { value: 5, label: '5 FPS', desc: 'Slides' },

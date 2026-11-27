@@ -137,7 +137,7 @@ O arquivo traz:
 - navegador e versão, a partir do user agent
 - configuração de resolução/FPS/áudio, só em quem compartilha
 - `capture`: pedido, `getSettings`, `getConstraints`, `getCapabilities` (ou `null` se o navegador não tiver), `readyState` e `contentHint` de antes de ajustarmos o hint
-- `encoder`: por `connectionId`, `maxBitrate`, `maxFramerate`, `scaleResolutionDownBy` e `degradationPreference` antes e depois de `setParameters`. `after: null` significa que a aplicação falhou
+- `encoder`: por `connectionId`, `maxBitrate`, `maxFramerate`, `scaleResolutionDownBy` e `degradationPreference` antes e depois de `setParameters`. `after: null` significa que a aplicação falhou. O `scaleResolutionDownBy` sai da largura medida da captura (`getSettings().width`): quando a captura já é menor que o alvo, ele vale 1, porque o navegador não amplia e reduzir de novo só pioraria a imagem
 - `resolution`: solicitada, track capturada, origem WebRTC, codificada e recebida, cada uma com `null` quando aquela etapa não existe neste navegador
 - `audio.captureFormat`: `getSettings`, `getConstraints` e `getCapabilities` da track de áudio autorizada, mais `suppressLocalAudioPlayback` da superfície quando o navegador informa. Cada grupo fica separado
 - `audio.localNegotiation` e `audio.remoteNegotiation`: codec, payload, clock rate, canais e os parâmetros Opus permitidos. O SDP bruto não entra

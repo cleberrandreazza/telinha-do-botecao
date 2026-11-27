@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { getInitials } from '../lib/profile';
 import { migrateAudioMode, type AudioMode } from '../lib/diagnostics/audio';
+import { resolveEventSounds, setSoundsEnabled } from '../lib/sounds';
 
 const STORAGE_KEY = 'botecao-settings';
 
@@ -10,6 +11,8 @@ export interface BotecaoSettings {
   resolution: '2160p' | '1080p' | '720p' | '480p';
   fps: 30 | 15 | 5;
   audioMode: AudioMode;
+  /** Bipes curtos de evento da sala (mensagem, entrou, saiu, nova stream). */
+  eventSounds: boolean;
 }
 
 const DEFAULT_SETTINGS: BotecaoSettings = {
@@ -18,6 +21,7 @@ const DEFAULT_SETTINGS: BotecaoSettings = {
   resolution: '1080p',
   fps: 30,
   audioMode: 'source',
+  eventSounds: true,
 };
 
 const AUDIO_MODES: { key: AudioMode; label: string; desc: string }[] = [
@@ -30,8 +34,13 @@ export function loadSettings(): BotecaoSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as { audioMode?: unknown; shareAudio?: unknown };
-      return { ...DEFAULT_SETTINGS, ...parsed, audioMode: migrateAudioMode(parsed) };
+      const parsed = JSON.parse(raw) as { audioMode?: unknown; shareAudio?: unknown; eventSounds?: unknown };
+      return {
+        ...DEFAULT_SETTINGS,
+        ...parsed,
+        audioMode: migrateAudioMode(parsed),
+        eventSounds: resolveEventSounds(parsed.eventSounds),
+      };
     }
   } catch { /* ignore */ }
   return { ...DEFAULT_SETTINGS };
@@ -39,10 +48,12 @@ export function loadSettings(): BotecaoSettings {
 
 function saveSettings(settings: BotecaoSettings) {
   const audioMode = migrateAudioMode(settings);
+  const eventSounds = resolveEventSounds(settings.eventSounds);
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
     ...settings,
     audioMode,
     shareAudio: audioMode !== 'off',
+    eventSounds,
   }));
 }
 
@@ -79,6 +90,8 @@ export default function SettingsModal({ nickname, onClose, onSave }: SettingsMod
 
   const handleSave = () => {
     saveSettings(settings);
+    // O motor de sons obedece a preferência salva: desliga religa na hora.
+    setSoundsEnabled(resolveEventSounds(settings.eventSounds));
     onSave(settings);
     onClose();
   };
@@ -273,6 +286,30 @@ export default function SettingsModal({ nickname, onClose, onSave }: SettingsMod
                 );
               })}
             </div>
+
+            {/* Sons de evento (M11): bipes curtos da sala, preferência persistida. */}
+            <div className="flex items-center justify-between p-3 rounded-xl bg-surface-container/60 border border-outline-variant/30">
+              <div className="flex flex-col gap-0.5 pr-3">
+                <span className="font-body-md text-body-md text-on-surface font-medium leading-none">Sons de eventos</span>
+                <span className="text-[11px] pt-0.5 text-on-surface-variant">Bipes curtos quando alguém entra, sai, começa a transmitir ou manda mensagem.</span>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={settings.eventSounds}
+                onClick={() => update('eventSounds', !settings.eventSounds)}
+                className={`shrink-0 w-11 h-6 rounded-full transition-colors relative cursor-pointer ${
+                  settings.eventSounds ? 'bg-primary' : 'bg-surface-container-high border border-outline-variant/40'
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 w-5 h-5 rounded-full transition-all ${
+                    settings.eventSounds ? 'left-[22px] bg-on-primary' : 'left-0.5 bg-outline'
+                  }`}
+                />
+              </button>
+            </div>
+
             <span className="font-body-sm text-body-sm text-on-surface-variant">Não captura microfone. Uma janela não transmite o áudio do Windows.</span>
           </div>
         </div>

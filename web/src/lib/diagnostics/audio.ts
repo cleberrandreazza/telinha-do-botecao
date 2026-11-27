@@ -363,6 +363,7 @@ export async function requestDisplayMedia<T>(
   getDisplayMedia: (options: Record<string, unknown>) => Promise<T>,
   video: Record<string, unknown>,
   mode: AudioMode,
+  options: { fallbackToVideoOnly?: boolean } = {},
 ): Promise<{ stream: T; audioScopeFallback: boolean }> {
   const full = buildDisplayMediaOptions(video, mode);
   const capture = async (options: Record<string, unknown>): Promise<T> => {
@@ -385,6 +386,9 @@ export async function requestDisplayMedia<T>(
   } catch (err) {
     const name = errorName(err);
     if (mode === 'off' || CANCELLED.has(name) || !UNSUPPORTED.has(name)) throw err;
+    // A troca de fonte precisa do erro na mão: quem chamou decide se repete
+    // sem a dica de superfície em vez de cair para vídeo só.
+    if (options.fallbackToVideoOnly === false) throw err;
     // Uma segunda tentativa, só vídeo. Não se tira `exclude` e se segue com áudio.
     const stream = await capture(buildDisplayMediaOptions(video, 'off'));
     return { stream, audioScopeFallback: true };

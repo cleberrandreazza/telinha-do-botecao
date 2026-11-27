@@ -25,6 +25,27 @@
 
 A comunicação é **peer-to-peer (P2P)** via WebRTC, ou seja, o vídeo vai direto de quem compartilha pra quem assiste. O servidor só faz a conexão inicial (sinalização) — nenhum vídeo passa por ele.
 
+## Novidades
+
+O que entrou na branch `feature/room-experience`:
+
+1. **Chat por sala** — painel lateral com o histórico da sala; as mensagens são sanitizadas no
+   servidor, com rate limit de 500 ms e no máximo 500 caracteres por mensagem.
+2. **Trocar resolução durante a live** — quem transmite muda entre 4K / Full HD / HD / SD sem
+   derrubar o compartilhamento; se a troca falhar, a transmissão continua como estava.
+3. **Zoom in/out na live assistida** — de 100% a 200% em passos de 25%, com atalhos `+` / `-` / `0`.
+4. **Grade de até 4 transmissões** — 2 a 4 streams lado a lado, com foco em tela cheia por stream e
+   áudio/volume independentes em cada tile.
+5. **Sala só com código sorteado** — cada sala nova nasce com um código aleatório de 6
+   caracteres; o código é o convite e a sala morre quando esvazia. Detalhes em
+   [`docs/rooms.md`](docs/rooms.md).
+6. **Reconexão após recarregar a página** — a sessão da sala é salva por 12 h e o app reentra
+   sozinho; o histórico do chat sobrevive ao F5.
+7. **Login lado a lado** — "Criar sala" e "Entrar na sala" na mesma tela.
+8. **Identidade do chat após o F5** — um identificador estável no navegador (`sessionStorage`)
+   acompanha as mensagens: depois de recarregar, as mensagens suas continuam do lado direito
+   do chat.
+
 ## Como funciona
 
 ```
@@ -107,8 +128,11 @@ telinha-do-botecao/
 │   └── src/
 │       ├── components/    # Componentes da UI
 │       │   ├── Home.tsx           # Tela inicial (criar/entrar sala)
-│       │   ├── Room.tsx           # Sala com sidebar + viewer
-│       │   ├── StreamViewer.tsx   # Player de stream com controles
+│       │   ├── Room.tsx           # Sala com sidebar + viewer + grade
+│       │   ├── StreamViewer.tsx   # Player de stream com controles e zoom
+│       │   ├── StreamTile.tsx     # Tile da grade (áudio e zoom próprios)
+│       │   ├── ChatPanel.tsx      # Chat da sala
+│       │   ├── ResolutionControl.tsx # Troca de resolução durante a live
 │       │   ├── StatsPanel.tsx     # Painel de diagnóstico do player
 │       │   ├── CrtEmptyState.tsx  # TV retrô quando ninguém transmite
 │       │   ├── SettingsModal.tsx  # Config de qualidade/fps
@@ -116,13 +140,15 @@ telinha-do-botecao/
 │       ├── lib/           # Lógica de negócio
 │       │   ├── signaling.ts       # Cliente WebSocket
 │       │   ├── webrtc.ts          # Conexões WebRTC, ABR e monitor
+│       │   ├── constants.ts       # Limite de transmissões simultâneas
 │       │   ├── diagnostics/       # Cálculo, histórico, diagnóstico e exportação
 │       │   ├── mock.ts            # Dados fake pra testes
 │       │   └── types.ts           # Tipos TypeScript
 │       └── App.tsx        # Estado global da aplicação
 ├── docs/
 │   ├── diagnostics.md     # Métricas, painel, exportação e testes
-│   └── audio.md           # Captura, reprodução e diagnóstico de áudio
+│   ├── audio.md           # Captura, reprodução e diagnóstico de áudio
+│   └── rooms.md           # Salas, chat, grade e reconexão
 ├── render.yaml            # Config de deploy no Render
 └── package.json           # Scripts de dev e build
 ```
@@ -134,7 +160,7 @@ O projeto já está configurado para deploy gratuito:
 - **Frontend (Vercel):** Faça deploy da pasta `web/` como projeto Vite
 - **Servidor (Render):** Use o `render.yaml` incluído — ele configura o serviço automaticamente
 
-Lembre de setar a variável de ambiente `VITE_SIGNALING_URL` no Vercel apontando para a URL do servidor no Render.
+Lembre de setar a variável de ambiente `VITE_SIGNAL_HOST` no Vercel apontando para o host do servidor no Render (só o host, sem `https://` e sem porta: `telinha-do-botecao.onrender.com`). Sem ela, o app cai no fallback `${hostname}:4000`.
 
 ## Licença
 

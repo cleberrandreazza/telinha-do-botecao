@@ -24,6 +24,8 @@ Há três modos, gravados em `localStorage` como `audioMode`:
 
 A captura pede `audio: true` como boolean. Logo depois, aplica `echoCancellation: false`, `noiseSuppression: false` e `autoGainControl: false` na track de áudio capturada, sem interromper o vídeo se o navegador rejeitar esses constraints.
 
+Medido no Chrome, com faixa de áudio de aba de verdade (`Tab audio`, mono, 48 kHz): esse `applyConstraints` é recusado com `OverconstrainedError` — a faixa de áudio de aba do Chromium não aceita o trio `echoCancellation`/`noiseSuppression`/`autoGainControl`. O erro é engolido de propósito, a faixa segue com os valores do navegador (`true`) e o vídeo não cai. Ou seja: no Chromium, desativar o cancelamento por `applyConstraints` não tem efeito na faixa de áudio de aba; o `catch` existe para a transmissão não quebrar.
+
 Se o navegador rejeitar uma opção com `TypeError`, `NotSupportedError` ou `OverconstrainedError`, há uma segunda tentativa, só com vídeo. A restrição `exclude` não é retirada para seguir com áudio. Cancelamento (`NotAllowedError`) não é repetido. Uma falha só de áudio não cancela o vídeo.
 
 Depois que a pessoa confirma o seletor, e antes de `localStream` e de `start-sharing`, o código lê `videoTrack.getSettings().displaySurface` e aplica a política. Track descartada é interrompida com `stop()` e removida da stream. Não se usa `track.label`.

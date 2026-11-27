@@ -9,6 +9,20 @@ const MAX_CONNECTIONS = 512;
 const HEARTBEAT_INTERVAL = 30_000; // 30s
 const PEER_TTL = 90_000; // 90s sem heartbeat = desconecta
 
+// Sala vazia não some na hora: ela espera este tempo antes de ser removida.
+// É o que permite a reconexão depois do F5 — quem recarregou a página volta
+// para o MESMO código (e com o histórico do chat intacto).
+// O env existe só para o teste de fumaça encurtar a janela.
+const ROOM_EMPTY_GRACE_MS = parseInt(process.env.ROOM_EMPTY_GRACE_MS || '30000', 10);
+
+// ── Chat ────────────────────────────────────────────────
+const CHAT_MAX_LENGTH = 500;        // caracteres por mensagem
+const CHAT_HISTORY_LIMIT = 50;      // mensagens guardadas por sala
+const CHAT_RATE_LIMIT_MS = 500;     // intervalo mínimo entre mensagens do mesmo peer
+const CHAT_CLIENT_ID_MAX_LENGTH = 64; // tamanho máximo do clientId vindo do cliente
+
+let nextChatId = 1;
+
 // ── State ───────────────────────────────────────────────
 /** @type {Map<string, Room>} code → Room */
 const rooms = new Map();
@@ -19,8 +33,9 @@ const peers = new Map();
 let nextPeerId = 1;
 
 /**
- * @typedef {{ id: string, ws: WebSocket, nickname: string, roomCode: string|null, isSharing: boolean, lastSeen: number }} PeerInfo
- * @typedef {{ code: string, password: string|null, peers: Map<string, PeerInfo>, createdAt: number }} Room
+ * @typedef {{ id: string, ws: WebSocket, nickname: string, roomCode: string|null, isSharing: boolean, lastSeen: number, lastChatAt: number }} PeerInfo
+ * @typedef {{ id: string, from: string, nickname: string, text: string, ts: number, clientId: string|null }} ChatEntry
+ * @typedef {{ code: string, password: string|null, peers: Map<string, PeerInfo>, createdAt: number, history: ChatEntry[], emptySince: number|null, cleanupTimer: NodeJS.Timeout|null }} Room
  */
 
 // ── Helpers ─────────────────────────────────────────────
@@ -31,6 +46,18 @@ function generateCode() {
     code = Array.from(randomBytes(6), b => chars[b % chars.length]).join('');
   } while (rooms.has(code));
   return code;
+}
+
+/**
+ * Sanitiza texto de chat: remove caracteres de controle (menos `\n`),
+ * apara espaços e corta no limite. Texto vazio vira string vazia.
+ */
+function sanitizeChatText(input) {
+  if (typeof input !== 'string') return '';
+  return input
+    .replace(/[\x00-\x09\x0B-\x1F\x7F]/g, '')
+    .trim()
+    .slice(0, CHAT_MAX_LENGTH);
 }
 
 function send(ws, msg) {
@@ -45,6 +72,37 @@ function broadcast(room, msg, excludeId = null) {
       send(peer.ws, msg);
     }
   }
+}
+
+/**
+ * Sala que ficou vazia não é removida na hora: ela espera
+ * ROOM_EMPTY_GRACE_MS. Quem recarregou a página (F5) volta para o mesmo
+ * código dentro dessa janela e ainda recebe o histórico do chat.
+ */
+function scheduleRoomCleanup(room) {
+  if (room.cleanupTimer) return;
+  room.emptySince = Date.now();
+  room.cleanupTimer = setTimeout(() => {
+    room.cleanupTimer = null;
+    // alguém pode ter voltado dentro da janela: nesse caso, não remove
+    if (room.peers.size > 0) {
+      room.emptySince = null;
+      return;
+    }
+    room.history = [];
+    rooms.delete(room.code);
+    console.log(`[sala] removida: ${room.code}`);
+  }, ROOM_EMPTY_GRACE_MS);
+  // a limpeza não pode segurar o processo do Node vivo
+  if (typeof room.cleanupTimer.unref === 'function') room.cleanupTimer.unref();
+}
+
+/** A sala voltou a ter gente: cancela a remoção pendente. */
+function cancelRoomCleanup(room) {
+  if (!room.cleanupTimer) return;
+  clearTimeout(room.cleanupTimer);
+  room.cleanupTimer = null;
+  room.emptySince = null;
 }
 
 function removeFromRoom(peer) {
@@ -62,10 +120,10 @@ function removeFromRoom(peer) {
     broadcast(room, { type: 'sharing-stopped', peerId: peer.id });
   }
 
-  // remove sala vazia
+  // Sala vazia: fica de pé por ROOM_EMPTY_GRACE_MS para o F5 poder reconectar
+  // no mesmo código.
   if (room.peers.size === 0) {
-    rooms.delete(peer.roomCode);
-    console.log(`[sala] removida: ${peer.roomCode}`);
+    scheduleRoomCleanup(room);
   }
 
   peer.roomCode = null;
@@ -89,7 +147,9 @@ const httpServer = createServer((req, res) => {
 });
 
 // ── WebSocket server ────────────────────────────────────
-const wss = new WebSocketServer({ server: httpServer });
+// maxPayload: 64 KB — o suficiente para SDP e candidatos de ICE, e o bastante
+// para o servidor não carregar uma mensagem gigante.
+const wss = new WebSocketServer({ server: httpServer, maxPayload: 64 * 1024 });
 
 wss.on('connection', (ws) => {
   if (peers.size >= MAX_CONNECTIONS) {
@@ -107,6 +167,7 @@ wss.on('connection', (ws) => {
     roomCode: null,
     isSharing: false,
     lastSeen: Date.now(),
+    lastChatAt: 0,
   };
   peers.set(ws, peer);
   console.log(`[peer] conectado: ${peerId}`);
@@ -141,6 +202,9 @@ wss.on('connection', (ws) => {
           password: msg.password || null,
           peers: new Map([[peerId, peer]]),
           createdAt: Date.now(),
+          history: [],
+          emptySince: null,
+          cleanupTimer: null,
         };
         rooms.set(code, room);
 
@@ -172,6 +236,8 @@ wss.on('connection', (ws) => {
         peer.nickname = (msg.nickname || 'Anônimo').slice(0, 30);
         peer.roomCode = code;
         room.peers.set(peerId, peer);
+        // a sala voltou a ter gente: cancela a remoção pendente (F5)
+        cancelRoomCleanup(room);
 
         // envia lista de peers atuais
         const peerList = [];
@@ -186,6 +252,12 @@ wss.on('connection', (ws) => {
           code,
           peerId,
           peers: peerList,
+        });
+
+        // histórico de chat da sala (últimas 50 mensagens)
+        send(ws, {
+          type: 'chat-history',
+          messages: room.history.slice(),
         });
 
         // notifica os outros
@@ -227,6 +299,59 @@ wss.on('connection', (ws) => {
         break;
       }
 
+      // ── Chat da sala ──
+      case 'chat-message': {
+        if (!peer.roomCode) return;
+        const room = rooms.get(peer.roomCode);
+        if (!room) return;
+
+        const text = sanitizeChatText(msg.text);
+        if (!text) return; // texto vazio é ignorado
+
+        const now = Date.now();
+        // rate limit: descarta silenciosamente mensagens enviadas menos de
+        // CHAT_RATE_LIMIT_MS após a última do mesmo peer
+        if (peer.lastChatAt && now - peer.lastChatAt < CHAT_RATE_LIMIT_MS) {
+          peer.lastChatAt = now;
+          return;
+        }
+        peer.lastChatAt = now;
+
+        // clientId: identificador estável do navegador (sessionStorage).
+        // Ele sobrevive ao F5, ao contrário do peerId — é o que permite ao
+        // cliente reconhecer as próprias mensagens no histórico.
+        const clientId = typeof msg.clientId === 'string'
+          ? msg.clientId.trim().slice(0, CHAT_CLIENT_ID_MAX_LENGTH)
+          : '';
+
+        /** @type {ChatEntry} */
+        const entry = {
+          id: `m${nextChatId++}`,
+          from: peer.id,
+          nickname: peer.nickname || 'Anônimo',
+          text,
+          ts: now,
+          clientId: clientId || null,
+        };
+
+        // guarda no histórico da sala (últimas 50)
+        room.history.push(entry);
+        if (room.history.length > CHAT_HISTORY_LIMIT) {
+          room.history.splice(0, room.history.length - CHAT_HISTORY_LIMIT);
+        }
+
+        const payload = {
+          type: 'chat-message',
+          from: entry.from,
+          nickname: entry.nickname,
+          text: entry.text,
+          ts: entry.ts,
+        };
+        if (entry.clientId) payload.clientId = entry.clientId;
+        broadcast(room, payload);
+        break;
+      }
+
       // ── Sinalização WebRTC (relay) ──
       case 'offer':
       case 'answer':
@@ -240,6 +365,12 @@ wss.on('connection', (ws) => {
         const relay = { type: msg.type, from: peer.id };
         if (msg.sdp) relay.sdp = msg.sdp;
         if (msg.candidate) relay.candidate = msg.candidate;
+        // Papel da conexão: 'sender' ou 'receiver' valem; qualquer outro valor
+        // é descartado e o cliente cai no fallback (aplicar em todas as
+        // conexões daquele peer, sem derrubar nenhuma).
+        if (msg.linkRole === 'sender' || msg.linkRole === 'receiver') {
+          relay.linkRole = msg.linkRole;
+        }
         send(target.ws, relay);
         break;
       }
