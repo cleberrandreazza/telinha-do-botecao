@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import pg from 'pg';
 
 const { Pool } = pg;
@@ -71,6 +71,40 @@ export function createDiscordStore(databaseUrl) {
         )
       `);
       await pool.query('CREATE INDEX IF NOT EXISTS discord_web_sessions_expiry_idx ON discord_web_sessions (expires_at)');
+      await pool.query(`CREATE TABLE IF NOT EXISTS discord_oauth_states (state_hash TEXT PRIMARY KEY, room_code TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`);
+      await pool.query('CREATE INDEX IF NOT EXISTS discord_oauth_states_expiry_idx ON discord_oauth_states (expires_at)');
+    },
+
+    async saveOAuthState(state, roomCode, expiresAt) {
+      const hash = createHash('sha256').update(state).digest('hex');
+      await pool.query('INSERT INTO discord_oauth_states (state_hash, room_code, expires_at) VALUES ($1, $2, $3)', [hash, roomCode, new Date(expiresAt)]);
+    },
+
+    async consumeOAuthState(state) {
+      const hash = createHash('sha256').update(String(state || '')).digest('hex');
+      const result = await pool.query('DELETE FROM discord_oauth_states WHERE state_hash = $1 AND expires_at > NOW() RETURNING room_code', [hash]);
+      return result.rows[0]?.room_code ?? null;
+    },
+
+    async createWebSession(discordUserId, rawToken, expiresAt) {
+      const hash = createHash('sha256').update(rawToken).digest('hex');
+      await pool.query('INSERT INTO discord_web_sessions (session_hash, discord_user_id, expires_at) VALUES ($1, $2, $3)', [hash, discordUserId, new Date(expiresAt)]);
+    },
+
+    async getWebSession(rawToken) {
+      const hash = createHash('sha256').update(String(rawToken || '')).digest('hex');
+      const result = await pool.query(`SELECT a.discord_user_id, a.username FROM discord_web_sessions s JOIN discord_authorizations a USING (discord_user_id) WHERE s.session_hash = $1 AND s.expires_at > NOW()`, [hash]);
+      return result.rows[0] ? { discordUserId: result.rows[0].discord_user_id, username: result.rows[0].username } : null;
+    },
+
+    async deleteWebSession(rawToken) {
+      const hash = createHash('sha256').update(String(rawToken || '')).digest('hex');
+      await pool.query('DELETE FROM discord_web_sessions WHERE session_hash = $1', [hash]);
+    },
+
+    async getVoiceRoom(guildId, voiceChannelId) {
+      const result = await pool.query('SELECT room_code FROM discord_voice_rooms WHERE guild_id = $1 AND voice_channel_id = $2', [guildId, voiceChannelId]);
+      return result.rows[0]?.room_code ?? null;
     },
 
     async saveAuthorization({ discordUserId, username, refreshToken, scope = 'identify' }) {
