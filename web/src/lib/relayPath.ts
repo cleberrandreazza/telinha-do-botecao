@@ -13,12 +13,19 @@ export const RELAY_CHANNEL_LABEL = 'telinha-relay';
 export const RELAY_CHANNEL_OPTIONS = { ordered: false, maxRetransmits: 0 };
 const MIN_DIRECT_BITRATE_RATIO = 0.25;
 
+export interface RelayHopView {
+  peerId: string;
+  parentId: string;
+  hop: number;
+}
+
 export interface RelayPlan {
   primaryRelayId: string | null;
   secondaryRelayId: string | null;
   splitEvenOdd: boolean;
   canLocalNodeRelay: boolean;
   sharerId?: string | null;
+  hops?: RelayHopView[];
 }
 
 export interface TopologyView {

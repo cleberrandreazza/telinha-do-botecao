@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
-import { cleanCode, formatCode } from '../lib/utils';
+import { cleanCode, formatCode, isTauriDesktop } from '../lib/utils';
 import { loadProfile, saveProfile } from '../lib/profile';
+import { DesktopDownloadCard } from './DesktopAppPrompt';
 
 interface HomeProps {
   onCreateRoom: (nickname: string, password?: string) => void;
@@ -291,6 +292,8 @@ export default function Home({ onCreateRoom, onJoinRoom, error, connecting }: Ho
             </div>
           </div>
         </section>
+
+        {!isTauriDesktop() && <DesktopDownloadCard />}
       </main>
 
       {/* Footer */}
@@ -301,6 +304,15 @@ export default function Home({ onCreateRoom, onJoinRoom, error, connecting }: Ho
           <span>Sem servidor de vídeo</span>
           <span className="text-slate-700 select-none">•</span>
           <span className="text-emerald-500/80 font-medium">100% gratuito</span>
+          <span className="text-slate-700 select-none">•</span>
+          <a
+            href="https://github.com/cleberrandreazza/telinha-do-botecao"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-slate-400 transition-colors duration-200 hover:text-emerald-400"
+          >
+            Código aberto no GitHub
+          </a>
         </div>
       </footer>
     </div>

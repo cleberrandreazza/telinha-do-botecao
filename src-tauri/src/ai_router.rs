@@ -279,6 +279,15 @@ impl AiTopologyEngine {
         self.local_children = children.min(MAX_RELAY_CHILDREN);
     }
 
+    /// Tira o participante da árvore. O retorno diz se ele estava no motor.
+    pub fn remove_peer(&mut self, peer_id: &str) -> bool {
+        let Some(arm) = self.peers.remove(peer_id) else {
+            return false;
+        };
+        self.total_pulls = self.total_pulls.saturating_sub(arm.pulls);
+        true
+    }
+
     pub fn refresh_local_probe(&mut self) {
         let (cpu, upload) = self.probe.sample();
         self.local_cpu = cpu;
@@ -424,6 +433,12 @@ pub fn update_peer_telemetry(
     let mut engine = state.0.lock().map_err(|err| err.to_string())?;
     engine.update_peer(telemetry);
     Ok(())
+}
+
+#[tauri::command]
+pub fn forget_routing_peer(state: tauri::State<'_, RouterState>, peer_id: String) -> Result<bool, String> {
+    let mut engine = state.0.lock().map_err(|err| err.to_string())?;
+    Ok(engine.remove_peer(&peer_id))
 }
 
 #[tauri::command]
@@ -625,5 +640,27 @@ mod tests {
         assert_eq!(plan.max_hops, 6);
         assert_eq!(plan.primary_relay_id.as_deref(), Some("d00"));
         assert_one_desktop_upload(&plan);
+    }
+
+    #[test]
+    fn removing_the_primary_relay_promotes_the_next_peer() {
+        let mut engine = AiTopologyEngine::new();
+        engine.local_cpu = 10.0;
+        engine.local_upload_kbps = 8_000.0;
+        for _ in 0..8 {
+            engine.update_peer(capable_desktop("relay-1", 12.0));
+            engine.update_peer(capable_desktop("relay-2", 28.0));
+            engine.update_peer(capable_desktop("folha", 40.0));
+        }
+        let before = engine.compute_plan(true, "host");
+        assert_eq!(before.primary_relay_id.as_deref(), Some("relay-1"));
+        assert!(before.hops.iter().any(|hop| hop.parent_id == "relay-1"));
+        assert!(engine.remove_peer("relay-1"));
+        assert!(!engine.remove_peer("relay-1"));
+        let after = engine.compute_plan(true, "host");
+        assert_eq!(after.viewer_count, 2);
+        assert_eq!(after.primary_relay_id.as_deref(), Some("relay-2"));
+        assert!(after.hops.iter().all(|hop| hop.peer_id != "relay-1" && hop.parent_id != "relay-1"));
+        assert_one_desktop_upload(&after);
     }
 }

@@ -15,6 +15,7 @@ import type { StreamFrameRate } from './StreamSettings';
 import type { DisplaySource } from '../lib/sourceSwitch';
 import SettingsModal, { loadSettings, type BotecaoSettings } from './SettingsModal';
 import BotecaoIcon from './BotecaoIcon';
+import { DesktopDownloadCapsule, DesktopViewerHint } from './DesktopAppPrompt';
 import { SHARE_SLOTS_FULL_NOTICE, areShareSlotsFull, gridClassForMode, gridFullLabel, limitNoticeForMode, maxStreamsForMode, remoteSlotsForMode } from '../lib/grid';
 import type { AudioPlaybackReport, DiagnosticsSnapshot, PlaybackSample } from '../lib/diagnostics/index';
 
@@ -83,6 +84,12 @@ interface RoomProps {
   onRequestStream?: (peerId: string) => void;
   /** O App libera o slot quando uma stream é ocultada da grade. */
   onStreamRemoved?: (peerId: string) => void;
+  /** Convite do .exe. Só a Web liga isto; o app desktop deixa falso. */
+  showDesktopCta?: boolean;
+  /** Sala cheia só de navegadores: sugere o app a quem assiste. */
+  showDesktopStabilityHint?: boolean;
+  /** Preset da live travado em 720p / 30 fps. */
+  qualityLimited?: boolean;
 }
 
 export default function Room({
@@ -127,6 +134,9 @@ export default function Room({
   gridMode = 4,
   onRequestStream,
   onStreamRemoved,
+  showDesktopCta = false,
+  showDesktopStabilityHint = false,
+  qualityLimited = false,
 }: RoomProps) {
   const [mouseInactive, setMouseInactive] = useState(false);
   // A live começa muda: o som só liga quando a pessoa pede.
@@ -153,6 +163,7 @@ export default function Room({
   const [tilePaused, setTilePaused] = useState<Record<string, boolean>>({});
 
   // Chat aberto por padrão no desktop; fechado em telas pequenas.
+  const [desktopHintDismissed, setDesktopHintDismissed] = useState(false);
   const [chatOpen, setChatOpen] = useState<boolean>(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
     return window.matchMedia('(min-width: 1024px)').matches;
@@ -466,6 +477,14 @@ export default function Room({
                 <p className="min-w-0">{audioNotice}</p>
               </div>
             )}
+            {showDesktopCta && !chatOpen && (
+              <div className="shrink-0">
+                <DesktopDownloadCapsule />
+              </div>
+            )}
+            {showDesktopStabilityHint && !desktopHintDismissed && !chatOpen && (
+              <DesktopViewerHint onDismiss={() => setDesktopHintDismissed(true)} />
+            )}
             <div className="flex-1 min-h-0 w-full flex items-center justify-center">
               {showGrid ? (
                 /* ── Grade: 1, 2 ou 4 transmissões ao mesmo tempo.
@@ -497,6 +516,7 @@ export default function Room({
                           busy={streamerBusy}
                           notice={streamerNotice}
                           informative={streamerNoticeInformative}
+                          qualityLimited={qualityLimited}
                         />
                       }
                     />
@@ -667,6 +687,9 @@ export default function Room({
           shareTitle={canShare ? undefined : shareSlotsFull ? SHARE_SLOTS_FULL_NOTICE : screenShare.message}
           onStartSharing={onStartSharing}
           onStopSharing={onStopSharing}
+          showDesktopCta={showDesktopCta}
+          showDesktopStabilityHint={showDesktopStabilityHint && !desktopHintDismissed}
+          onDismissDesktopHint={() => setDesktopHintDismissed(true)}
         />
       </div>
 

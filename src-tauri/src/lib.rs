@@ -10,6 +10,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(capture::CaptureHost::default())
         .manage(ai_router::RouterState::default())
+        .manage(packet_buffer::PacketHub::default())
         .invoke_handler(tauri::generate_handler![
             updater::check_for_update,
             updater::install_portable_update,
@@ -17,8 +18,12 @@ pub fn run() {
             capture::start_native_capture,
             capture::stop_native_capture,
             ai_router::update_peer_telemetry,
+            ai_router::forget_routing_peer,
             ai_router::compute_routing_plan,
             ai_router::get_local_system_load,
+            packet_buffer::fragment_encoded_frame,
+            packet_buffer::ingest_p2p_packet,
+            packet_buffer::drain_ready_frames,
         ])
         .setup(|app| {
             updater::spawn_startup(app.handle().clone());

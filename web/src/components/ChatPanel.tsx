@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChatMessage, PeerInfo } from '../lib/types';
 import { CHAT_MAX_LENGTH, formatChatTime, isOwnMessage } from '../lib/chat';
 import { getInitials, colorFromString } from '../lib/profile';
+import { DesktopDownloadCapsule, DesktopViewerHint } from './DesktopAppPrompt';
 
 /**
  * Intervalo mínimo entre dois envios. O servidor descarta silenciosamente
@@ -39,6 +40,11 @@ interface ChatPanelProps {
   shareTitle?: string;
   onStartSharing?: () => void;
   onStopSharing?: () => void;
+  /** Link do .exe na cápsula da sala. O app desktop deixa isto falso. */
+  showDesktopCta?: boolean;
+  /** Aviso para quem assiste uma sala cheia só de navegadores. */
+  showDesktopStabilityHint?: boolean;
+  onDismissDesktopHint?: () => void;
 }
 
 /** Acima de 80% do limite o contador de caracteres aparece. */
@@ -66,6 +72,9 @@ export default function ChatPanel({
   shareTitle,
   onStartSharing,
   onStopSharing,
+  showDesktopCta = false,
+  showDesktopStabilityHint = false,
+  onDismissDesktopHint,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState('');
   const [copied, setCopied] = useState(false);
@@ -202,6 +211,16 @@ export default function ChatPanel({
           <span className="font-body text-[11px] font-medium">Sair</span>
         </button>
       </div>
+      {showDesktopCta && (
+        <div className="px-3.5 py-2 border-b border-[#1f222e] shrink-0">
+          <DesktopDownloadCapsule />
+        </div>
+      )}
+      {showDesktopStabilityHint && (
+        <div className="px-3.5 py-2 border-b border-[#1f222e] shrink-0">
+          <DesktopViewerHint onDismiss={() => onDismissDesktopHint?.()} />
+        </div>
+      )}
 
       {(onStartSharing || onStopSharing) && (
         <div className="px-3.5 py-2 border-b border-[#1f222e] shrink-0">

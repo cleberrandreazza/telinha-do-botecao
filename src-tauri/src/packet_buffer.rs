@@ -3,7 +3,11 @@
 //! O relay reencaminha estes bytes sem re-codificar. O buffer só remonta e
 //! ordena. Perda de um delta pede PLI até o próximo keyframe.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Mutex;
+
+use base64::Engine;
+use serde::Serialize;
 
 pub const HEADER_LEN: usize = 16;
 pub const MAX_PACKET_LEN: usize = 16_000;
@@ -19,6 +23,24 @@ pub enum PacketError {
     LengthMismatch,
     BadFragment,
     FrameTooLarge,
+}
+
+impl std::fmt::Display for PacketError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            PacketError::Short => "pacote curto",
+            PacketError::TooLarge => "pacote grande demais",
+            PacketError::LengthMismatch => "tamanho do pacote não confere",
+            PacketError::BadFragment => "fragmento inválido",
+            PacketError::FrameTooLarge => "quadro grande demais",
+        })
+    }
+}
+
+impl From<PacketError> for String {
+    fn from(err: PacketError) -> Self {
+        err.to_string()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,10 +193,10 @@ pub struct PushOutcome {
 
 struct Slot {
     media_type: u8,
-    flags: u8,
     timestamp: u32,
     stream_id: u32,
     frag_total: u8,
+    keyframe: bool,
     frags: BTreeMap<u8, Vec<u8>>,
 }
 
@@ -182,10 +204,10 @@ impl Slot {
     fn new(header: &PacketHeader) -> Self {
         Self {
             media_type: header.media_type,
-            flags: header.flags,
             timestamp: header.timestamp,
             stream_id: header.stream_id,
             frag_total: header.frag_total,
+            keyframe: header.is_keyframe(),
             frags: BTreeMap::new(),
         }
     }
@@ -195,7 +217,7 @@ impl Slot {
     }
 
     fn is_keyframe(&self) -> bool {
-        self.flags & KEYFRAME_FLAG != 0
+        self.keyframe
     }
 
     fn assemble(self, seq_number: u16) -> AssembledFrame {
@@ -240,6 +262,10 @@ impl JitterBuffer {
 
     pub fn target_ms(&self) -> u32 {
         self.target_ms
+    }
+
+    pub fn drain_ready(&mut self) -> PushOutcome {
+        self.drain()
     }
 
     pub fn push(&mut self, bytes: &[u8]) -> Result<PushOutcome, PacketError> {
@@ -313,6 +339,121 @@ impl JitterBuffer {
         let stalled = self.slots.get(&expected).map(|slot| slot.timestamp).unwrap_or(0);
         later.wrapping_sub(stalled) > self.target_ms
     }
+}
+
+fn frame_view(frame: AssembledFrame) -> BufferedFrame {
+    BufferedFrame {
+        seq_number: frame.seq_number,
+        timestamp: frame.timestamp,
+        stream_id: frame.stream_id,
+        media_type: frame.media_type,
+        keyframe: frame.keyframe,
+        payload_base64: base64::engine::general_purpose::STANDARD.encode(frame.payload),
+    }
+}
+
+fn outcome_view(outcome: PushOutcome, target_ms: u32) -> IngestedPackets {
+    IngestedPackets {
+        frames: outcome.frames.into_iter().map(frame_view).collect(),
+        request_pli: outcome.request_pli,
+        target_ms,
+    }
+}
+
+fn decode_blob(value: &str) -> Result<Vec<u8>, String> {
+    base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map_err(|err| err.to_string())
+}
+
+/// Um buffer por stream. O host e o relay usam ids diferentes para não misturar os dois sentidos.
+pub struct PacketHub {
+    buffers: Mutex<HashMap<u32, JitterBuffer>>,
+}
+
+impl Default for PacketHub {
+    fn default() -> Self {
+        Self { buffers: Mutex::new(HashMap::new()) }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FragmentedFrame {
+    pub packets_base64: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BufferedFrame {
+    pub seq_number: u16,
+    pub timestamp: u32,
+    pub stream_id: u32,
+    pub media_type: u8,
+    pub keyframe: bool,
+    pub payload_base64: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IngestedPackets {
+    pub frames: Vec<BufferedFrame>,
+    pub request_pli: bool,
+    pub target_ms: u32,
+}
+
+#[tauri::command]
+pub fn fragment_encoded_frame(
+    media_type: u8,
+    flags: u8,
+    seq_number: u16,
+    timestamp: u32,
+    stream_id: u32,
+    payload_base64: String,
+) -> Result<FragmentedFrame, String> {
+    let payload = decode_blob(&payload_base64)?;
+    let packets = fragment_frame(media_type, flags, seq_number, timestamp, stream_id, &payload)?;
+    Ok(FragmentedFrame {
+        packets_base64: packets
+            .iter()
+            .map(|packet| base64::engine::general_purpose::STANDARD.encode(packet))
+            .collect(),
+    })
+}
+
+#[tauri::command]
+pub fn ingest_p2p_packet(
+    state: tauri::State<'_, PacketHub>,
+    stream_id: u32,
+    gaming_mode: bool,
+    packet_base64: String,
+) -> Result<IngestedPackets, String> {
+    let packet = decode_blob(&packet_base64)?;
+    let mut buffers = state.buffers.lock().map_err(|err| err.to_string())?;
+    let buffer = buffers.entry(stream_id).or_insert_with(|| {
+        JitterBuffer::new(if gaming_mode { BufferMode::Gaming } else { BufferMode::Cinema })
+    });
+    let outcome = buffer.push(&packet)?;
+    let target_ms = buffer.target_ms();
+    Ok(outcome_view(outcome, target_ms))
+}
+
+#[tauri::command]
+pub fn drain_ready_frames(
+    state: tauri::State<'_, PacketHub>,
+    stream_id: u32,
+) -> Result<IngestedPackets, String> {
+    let mut buffers = state.buffers.lock().map_err(|err| err.to_string())?;
+    let Some(buffer) = buffers.get_mut(&stream_id) else {
+        return Ok(IngestedPackets {
+            frames: Vec::new(),
+            request_pli: false,
+            target_ms: CINEMA_BUFFER_MS,
+        });
+    };
+    let outcome = buffer.drain_ready();
+    let target_ms = buffer.target_ms();
+    Ok(outcome_view(outcome, target_ms))
 }
 
 #[cfg(test)]

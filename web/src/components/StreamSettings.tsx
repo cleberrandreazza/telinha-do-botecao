@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { AudioMode } from '../lib/diagnostics/audio';
+import { clampWebPreset } from '../lib/desktopPrompt';
 import { loadSettings, type BotecaoSettings } from './SettingsModal';
 export interface StreamConfig {
   resolution: '2160' | '1080' | '720' | '480';
@@ -40,14 +41,24 @@ function settingsResToStreamRes(res: BotecaoSettings['resolution']): StreamConfi
 interface StreamSettingsProps {
   onStart: (config: StreamConfig) => void;
   onCancel: () => void;
+  /** Sem relay desktop: o preset não passa de 720p / 30 fps. */
+  qualityLimited?: boolean;
 }
 
-export default function StreamSettings({ onStart, onCancel }: StreamSettingsProps) {
+export default function StreamSettings({ onStart, onCancel, qualityLimited = false }: StreamSettingsProps) {
   // Load saved settings from localStorage
   const saved = loadSettings();
-  const [resolution, setResolution] = useState<StreamConfig['resolution']>(settingsResToStreamRes(saved.resolution));
-  const [frameRate, setFrameRate] = useState<StreamConfig['frameRate']>(saved.fps);
+  const initial = clampWebPreset(settingsResToStreamRes(saved.resolution), saved.fps, qualityLimited);
+  const [resolution, setResolution] = useState<StreamConfig['resolution']>(initial.resolution);
+  const [frameRate, setFrameRate] = useState<StreamConfig['frameRate']>(initial.frameRate);
   const [audioMode, setAudioMode] = useState<AudioMode>(saved.audioMode);
+  const resolutions = qualityLimited ? RESOLUTIONS.filter((item) => item.value === '720' || item.value === '480') : RESOLUTIONS;
+
+  useEffect(() => {
+    if (!qualityLimited) return;
+    setResolution((current) => clampWebPreset(current, frameRate, true).resolution);
+    setFrameRate((current) => clampWebPreset(resolution, current, true).frameRate);
+  }, [qualityLimited, frameRate, resolution]);
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className="bg-surface-container border border-outline-variant/30 rounded-2xl w-full max-w-md max-h-[90vh] overflow-y-auto mx-4 p-5 shadow-2xl">
@@ -67,8 +78,8 @@ export default function StreamSettings({ onStart, onCancel }: StreamSettingsProp
           <label className="block text-xs font-body font-semibold text-on-surface-variant uppercase tracking-wider mb-2">
             Resolução
           </label>
-          <div className="grid grid-cols-4 gap-1.5">
-            {RESOLUTIONS.map((r) => (
+          <div className={`grid gap-1.5 ${qualityLimited ? 'grid-cols-2' : 'grid-cols-4'}`}>
+            {resolutions.map((r) => (
               <button
                 key={r.value}
                 onClick={() => setResolution(r.value)}
@@ -83,6 +94,11 @@ export default function StreamSettings({ onStart, onCancel }: StreamSettingsProp
               </button>
             ))}
           </div>
+          {qualityLimited && (
+            <p className="mt-2 text-[11px] leading-snug text-outline">
+              Sem app desktop na sala, o navegador fica em até 720p / 30 fps.
+            </p>
+          )}
         </div>
 
         {/* Frame rate */}
@@ -142,7 +158,10 @@ export default function StreamSettings({ onStart, onCancel }: StreamSettingsProp
             Cancelar
           </button>
           <button
-            onClick={() => onStart({ resolution, frameRate, audio: audioMode !== 'off', audioMode })}
+            onClick={() => {
+              const capped = clampWebPreset(resolution, frameRate, qualityLimited);
+              onStart({ resolution: capped.resolution, frameRate: capped.frameRate, audio: audioMode !== 'off', audioMode });
+            }}
             className="flex-1 px-4 py-2.5 rounded-xl bg-primary hover:bg-primary-container text-on-primary-container transition-all text-sm font-body font-semibold cursor-pointer shadow-sm"
           >
             Compartilhar

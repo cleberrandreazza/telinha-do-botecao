@@ -34,6 +34,8 @@ import type { StreamResolution } from './components/ResolutionControl';
 import type { StreamFrameRate } from './components/StreamSettings';
 import { describeSwitchError, type DisplaySource } from './lib/sourceSwitch';
 import type { StreamConfig } from './lib/webrtc';
+import { clampWebPreset, webShareNeedsDesktopPrompt, webViewerShouldSuggestDesktop } from './lib/desktopPrompt';
+import { DesktopSharePrompt } from './components/DesktopAppPrompt';
 import { describeCapture, readTrackSettings } from './lib/diagnostics/index';
 import type { AudioPlaybackReport, DiagnosticsSnapshot, PlaybackSample } from './lib/diagnostics/index';
 import {
@@ -208,6 +210,10 @@ export default function App() {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [isSharing, setIsSharing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showDesktopPrompt, setShowDesktopPrompt] = useState(false);
+  const [webQualityLimited, setWebQualityLimited] = useState(false);
+  const webQualityLimitedRef = useRef(false);
+  const browserLimitAcceptedRef = useRef(false);
   const [showDesktopPicker, setShowDesktopPicker] = useState(false);
   const [desktopPickerMode, setDesktopPickerMode] = useState<'start' | 'switch'>('start');
   const [audioNotice, setAudioNotice] = useState<string | null>(null);
@@ -691,6 +697,22 @@ export default function App() {
       return;
     }
     setError(null);
+    if (webShareNeedsDesktopPrompt({
+      isDesktopApp: false,
+      peers: peersRef.current,
+      myPeerId: myPeerIdRef.current,
+    })) {
+      setShowDesktopPrompt(true);
+      return;
+    }
+    setShowSettings(true);
+  };
+
+  const handleContinueInBrowser = () => {
+    browserLimitAcceptedRef.current = true;
+    webQualityLimitedRef.current = true;
+    setWebQualityLimited(true);
+    setShowDesktopPrompt(false);
     setShowSettings(true);
   };
 
@@ -720,13 +742,19 @@ export default function App() {
   const handleStartSharing = async (config?: StreamConfig, prepared?: MediaStream) => {
     setShowSettings(false);
     setShowDesktopPicker(false);
+    const capped = config
+      ? clampWebPreset(config.resolution, config.frameRate, webQualityLimitedRef.current)
+      : null;
+    const shareConfig = config && capped
+      ? { ...config, resolution: capped.resolution, frameRate: capped.frameRate }
+      : config;
     try {
       const rtc = rtcRef.current;
       if (!rtc) {
         prepared?.getTracks().forEach((track) => track.stop());
         return;
       }
-      const stream = await rtc.startScreenShare(config, prepared);
+      const stream = await rtc.startScreenShare(shareConfig, prepared);
       if (stream) {
         setLocalStream(stream);
         setIsSharing(true);
@@ -734,8 +762,10 @@ export default function App() {
         // Transmitindo: nenhum aviso de cancelamento na tela.
         setShareCancelNotice(null);
         // A resolução inicial é a escolhida no StreamSettings.
-        setStreamResolution(config?.resolution ?? '1080');
-        setStreamFrameRate(config?.frameRate ?? 30);
+        setStreamResolution(shareConfig?.resolution ?? '1080');
+        streamResolutionRef.current = shareConfig?.resolution ?? '1080';
+        setStreamFrameRate(shareConfig?.frameRate ?? 30);
+        streamFrameRateRef.current = shareConfig?.frameRate ?? 30;
         setStreamerNotice(null);
 
         // Atualiza o próprio peer na lista
@@ -816,6 +846,7 @@ export default function App() {
    */
   const handleSelectResolution = useCallback(async (next: StreamResolution) => {
     if (streamerBusyRef.current) return;
+    if (webQualityLimitedRef.current && (next === '1080' || next === '2160')) return;
     if (next === streamResolutionRef.current) return;
 
     const previous = streamResolutionRef.current;
@@ -866,6 +897,7 @@ export default function App() {
    */
   const handleSelectFrameRate = useCallback(async (next: StreamFrameRate) => {
     if (streamerBusyRef.current) return;
+    if (webQualityLimitedRef.current && next > 30) return;
     if (next === streamFrameRateRef.current) return;
 
     const previous = streamFrameRateRef.current;
@@ -904,6 +936,33 @@ export default function App() {
       setMeasuredFrameRate(readMeasuredFrameRate(localStream));
     }
   }, [localStream]);
+
+  useEffect(() => {
+    if (isTauriDesktop()) {
+      browserLimitAcceptedRef.current = false;
+      webQualityLimitedRef.current = false;
+      setWebQualityLimited(false);
+      setShowDesktopPrompt(false);
+      return;
+    }
+    const needsLimit = browserLimitAcceptedRef.current && webShareNeedsDesktopPrompt({
+      isDesktopApp: false,
+      peers,
+      myPeerId,
+    });
+    webQualityLimitedRef.current = needsLimit;
+    setWebQualityLimited(needsLimit);
+    if (!webShareNeedsDesktopPrompt({ isDesktopApp: false, peers, myPeerId })) {
+      setShowDesktopPrompt(false);
+    }
+    if (!needsLimit || !isSharing) return;
+    if (streamResolutionRef.current === '1080' || streamResolutionRef.current === '2160') {
+      void handleSelectResolution('720');
+    }
+    if (streamFrameRateRef.current > 30) {
+      void handleSelectFrameRate(30);
+    }
+  }, [peers, myPeerId, isSharing, handleSelectResolution, handleSelectFrameRate]);
 
   /**
    * Troca a fonte capturada (aba, janela ou tela) durante a live.
@@ -1110,6 +1169,10 @@ export default function App() {
     setCaptureNotice(null);
     setStreamLimitNotice(null);
     setShareCancelNotice(null);
+    setShowDesktopPrompt(false);
+    setWebQualityLimited(false);
+    webQualityLimitedRef.current = false;
+    browserLimitAcceptedRef.current = false;
     requestedSharersRef.current.clear();
     unwatchedRef.current.clear();
 
@@ -1426,6 +1489,13 @@ export default function App() {
           gridMode={gridMode}
           onRequestStream={handleRequestStream}
           onStreamRemoved={handleStreamRemoved}
+          showDesktopCta={!isTauriDesktop()}
+          showDesktopStabilityHint={webViewerShouldSuggestDesktop({
+            isDesktopApp: isTauriDesktop(),
+            isSharing,
+            peers,
+          })}
+          qualityLimited={webQualityLimited}
         />
       )}
 
@@ -1440,10 +1510,15 @@ export default function App() {
         />
       )}
 
+      {showDesktopPrompt && (
+        <DesktopSharePrompt onContinue={handleContinueInBrowser} />
+      )}
+
       {showSettings && (
         <StreamSettings
           onStart={handleStartSharing}
           onCancel={() => setShowSettings(false)}
+          qualityLimited={webQualityLimited}
         />
       )}
       {showDesktopPicker && (

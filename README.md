@@ -75,6 +75,22 @@ O painel de estatísticas do player mede, em cada navegador, onde o FPS cai: cap
 | Comunicação | WebRTC (`getDisplayMedia` + `RTCPeerConnection`) |
 | Sinalização | Node.js + WebSocket (`ws`) |
 | Deploy | Vercel (frontend) + Render (servidor) |
+| App desktop | Tauri v2 + Rust (Windows, portátil) |
+
+## App Desktop Windows (Tauri v2 + Rust)
+
+O executável portátil não tem instalador. Ele abre a mesma interface da web e acrescenta captura e áudio nativos, além de uma árvore P2P para salas grandes.
+
+- **`windows-capture`** — captura da janela ou da tela pelo Windows Graphics Capture, em BGRA.
+- **WASAPI Process Loopback** — áudio isolado do programa compartilhado, sem mixar o som do Windows inteiro.
+- **Auto-update portátil** — o app confere a última release no GitHub e troca o próprio `.exe`.
+- **Motor P2P multi-salto** — UCB1 + Kalman 1D escolhe relays desktop saudáveis e mantém um único fluxo saindo do Host para até 50 participantes.
+
+Baixe o `.exe` em [Releases](https://github.com/cleberrandreazza/telinha-do-botecao/releases):
+
+[telinha-do-botecao.exe](https://github.com/cleberrandreazza/telinha-do-botecao/releases/latest/download/telinha-do-botecao.exe)
+
+Na primeira abertura, se o Windows alertar, clique em **Mais informações** e depois em **Executar assim mesmo**.
 
 ## Rodando localmente
 

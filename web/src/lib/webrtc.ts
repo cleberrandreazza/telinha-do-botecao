@@ -214,7 +214,13 @@ export class WebRTCManager {
   private readonly uplinkCaps = new Map<string, number>();
   private relayPlan: RelayPlan | null = null;
   private relayTimer: ReturnType<typeof setInterval> | null = null;
+  /** Quem saiu da sala não volta para o motor até entrar de novo. */
+  private readonly departedPeers = new Set<string>();
+  /** Invalida um relay-plan que ainda estava sendo calculado. */
+  private planGeneration = 0;
   private relaySeq = 0;
+  /** Serializa o IPC do jitter buffer para os quadros saírem na ordem. */
+  private relayIpc: Promise<void> = Promise.resolve();
 
   constructor(
     signal: SignalingClient,
@@ -759,6 +765,7 @@ export class WebRTCManager {
         for (const peer of msg.peers) this.noteDesktopPeer(peer.id, peer.isDesktop === true);
         break;
       case 'peer-joined':
+        this.departedPeers.delete(msg.peer.id);
         this.noteDesktopPeer(msg.peer.id, msg.peer.isDesktop === true);
         break;
       case 'offer':
@@ -811,15 +818,20 @@ export class WebRTCManager {
         this.closeLink('receiver', msg.peerId);
         this.onStreamEnd(msg.peerId);
         break;
-      case 'peer-left':
+      case 'peer-left': {
+        const affectsTree = this.peerAffectsTree(msg.peerId);
+        this.departedPeers.add(msg.peerId);
         this.forgetDesktopPeer(msg.peerId);
+        this.stopRelayPump(msg.peerId);
         // O peer saiu: fecha só a live que eu assistia (papel `receiver`).
         // O papel `sender` — a minha transmissão para ele — NÃO é derrubado
         // aqui: derrubá-lo derrubaria o meu compartilhamento. A própria
         // conexão morre junto com o peer e se fecha pelo `connectionState`.
         this.closeLink('receiver', msg.peerId);
         this.onStreamEnd(msg.peerId);
+        this.replanAfterPeerLeft(msg.peerId, affectsTree);
         break;
+      }
     }
   }
 
@@ -2006,6 +2018,7 @@ export class WebRTCManager {
     }
     if (!this.localStream || !load) return;
     for (const peerId of this.senderPeerIds()) {
+      if (this.departedPeers.has(peerId)) continue;
       const measured = this.readPath(peerId);
       const announced = this.relayAnnouncements.get(peerId);
       const desktop = announced?.isDesktop === true || this.desktopPeers.has(peerId);
@@ -2024,21 +2037,56 @@ export class WebRTCManager {
         },
       });
     }
+    await this.publishRoutingPlan(false);
+  }
+
+  /** Peer que era relay, filho ou pai na árvore atual. */
+  private peerAffectsTree(peerId: string): boolean {
+    const plan = this.relayPlan;
+    if (!plan) return false;
+    if (plan.primaryRelayId === peerId || plan.secondaryRelayId === peerId) return true;
+    return (plan.hops ?? []).some((hop) => hop.peerId === peerId || hop.parentId === peerId);
+  }
+
+  /**
+   * Saiu alguém da árvore: tira do motor e publica o plano novo agora,
+   * sem esperar o tick de 2 s.
+   */
+  private replanAfterPeerLeft(peerId: string, affectsTree: boolean) {
+    if (!isTauriDesktop() || !this.localStream) return;
+    void this.forgetAndPublish(peerId, affectsTree);
+  }
+
+  private async forgetAndPublish(peerId: string, affectsTree: boolean) {
+    const removed = await this.tauriInvoke<boolean>('forget_routing_peer', { peerId });
+    // Com transmissão ativa, a saída republica o plano na hora. O tick de 2 s
+    // não é a primeira reação, mesmo quando o peer era folha da árvore.
+    if (!affectsTree && removed !== true && !this.relayPlan) return;
+    await this.publishRoutingPlan(true);
+  }
+
+  private async publishRoutingPlan(force: boolean) {
+    const generation = ++this.planGeneration;
+    for (const peerId of this.departedPeers) {
+      await this.tauriInvoke('forget_routing_peer', { peerId });
+    }
+    if (generation !== this.planGeneration || !this.localStream) return;
     const plan = await this.tauriInvoke<RelayPlan>('compute_routing_plan', {
       gamingMode: gamingModeForFrameRate(this.currentConfig.frameRate),
       localPeerId: this.myPeerId,
       localChildren: Math.min(2, this.fanoutPcs.size),
     });
-    if (!plan) return;
+    if (!plan || generation !== this.planGeneration) return;
     this.relayPlan = { ...plan, sharerId: this.myPeerId };
     const state = await this.syncRelayPath();
-    if (state === 'waiting') return;
-    const published = state === 'active' ? plan : {
+    if (generation !== this.planGeneration) return;
+    if (state === 'waiting' && !force) return;
+    const published = state === 'fallback' ? {
       primaryRelayId: null,
       secondaryRelayId: null,
       splitEvenOdd: false,
       canLocalNodeRelay: plan.canLocalNodeRelay,
-    };
+    } : plan;
     if (state === 'fallback') this.relayPlan = { ...published, sharerId: this.myPeerId };
     this.signal.send({
       type: 'relay-plan',
@@ -2086,10 +2134,73 @@ export class WebRTCManager {
   }
 
   private sendEncodedFrame(peerId: string, frame: EncodedFrame) {
+    const seq = this.relaySeq;
+    this.relaySeq = (this.relaySeq + 1) & 0xffff;
+    if (!isTauriDesktop()) {
+      this.dispatchPackets(peerId, packetizeEncodedFrame(frame, seq, 1));
+      return;
+    }
+    void this.enqueueRelay(async () => {
+      const sent = await this.relayFrameThroughRust(peerId, frame, seq);
+      if (!sent) this.dispatchPackets(peerId, packetizeEncodedFrame(frame, seq, 1));
+    });
+  }
+
+  private enqueueRelay(job: () => Promise<void>) {
+    this.relayIpc = this.relayIpc.then(job, job);
+  }
+
+  private async relayFrameThroughRust(peerId: string, frame: EncodedFrame, seq: number): Promise<boolean> {
+    const payload = new Uint8Array(frame.data);
+    const fragmented = await this.tauriInvoke<{ packetsBase64: string[] }>('fragment_encoded_frame', {
+      mediaType: 1,
+      flags: frame.type === 'key' ? 1 : 0,
+      seqNumber: seq,
+      timestamp: Math.floor((frame.timestamp ?? 0) / 1000) >>> 0,
+      streamId: 1,
+      payloadBase64: bytesToBase64(payload),
+    });
+    if (!fragmented?.packetsBase64.length) return false;
+    const gamingMode = gamingModeForFrameRate(this.currentConfig.frameRate);
+    const ready: Uint8Array[] = [];
+    for (const packetBase64 of fragmented.packetsBase64) {
+      const ingested = await this.tauriInvoke<RustPacketBatch>('ingest_p2p_packet', {
+        streamId: 1,
+        gamingMode,
+        packetBase64,
+      });
+      if (!ingested) return false;
+      if (ingested.requestPli) this.requestRelayKeyframe();
+      ready.push(...await this.packetsForRustFrames(ingested.frames));
+    }
+    const drained = await this.tauriInvoke<RustPacketBatch>('drain_ready_frames', { streamId: 1 });
+    if (!drained) return false;
+    if (drained.requestPli) this.requestRelayKeyframe();
+    ready.push(...await this.packetsForRustFrames(drained.frames));
+    if (ready.length) this.dispatchPackets(peerId, ready);
+    return true;
+  }
+
+  private async packetsForRustFrames(frames: RustBufferedFrame[]): Promise<Uint8Array[]> {
+    const packets: Uint8Array[] = [];
+    for (const frame of frames) {
+      const fragmented = await this.tauriInvoke<{ packetsBase64: string[] }>('fragment_encoded_frame', {
+        mediaType: frame.mediaType,
+        flags: frame.keyframe ? 1 : 0,
+        seqNumber: frame.seqNumber,
+        timestamp: frame.timestamp,
+        streamId: frame.streamId,
+        payloadBase64: frame.payloadBase64,
+      });
+      if (!fragmented) continue;
+      for (const packet of fragmented.packetsBase64) packets.push(base64ToBytes(packet));
+    }
+    return packets;
+  }
+
+  private dispatchPackets(peerId: string, packets: Uint8Array[]) {
     const channel = this.relayChannels.get(peerId);
     if (!channel || channel.readyState !== 'open' || channel.bufferedAmount > 2_000_000) return;
-    const packets = packetizeEncodedFrame(frame, this.relaySeq, 1);
-    this.relaySeq = (this.relaySeq + 1) & 0xffff;
     for (const packet of packets) {
       const bytes = new ArrayBuffer(packet.byteLength);
       new Uint8Array(bytes).set(packet);
@@ -2123,6 +2234,38 @@ export class WebRTCManager {
       return;
     }
     if (!(data instanceof ArrayBuffer)) return;
+    if (!isTauriDesktop()) {
+      this.forwardRelayBytes(fromPeerId, new Uint8Array(data));
+      return;
+    }
+    const packet = new Uint8Array(data);
+    void this.enqueueRelay(() => this.ingestAndForward(fromPeerId, packet));
+  }
+
+  private async ingestAndForward(fromPeerId: string, packet: Uint8Array) {
+    const gamingMode = gamingModeForFrameRate(this.currentConfig.frameRate);
+    const ingested = await this.tauriInvoke<RustPacketBatch>('ingest_p2p_packet', {
+      streamId: 2,
+      gamingMode,
+      packetBase64: bytesToBase64(packet),
+    });
+    if (!ingested) {
+      this.forwardRelayBytes(fromPeerId, packet);
+      return;
+    }
+    if (ingested.requestPli) this.requestRelayKeyframe();
+    await this.forwardRustFrames(fromPeerId, ingested.frames);
+    const drained = await this.tauriInvoke<RustPacketBatch>('drain_ready_frames', { streamId: 2 });
+    if (drained?.requestPli) this.requestRelayKeyframe();
+    if (drained) await this.forwardRustFrames(fromPeerId, drained.frames);
+  }
+
+  private async forwardRustFrames(fromPeerId: string, frames: RustBufferedFrame[]) {
+    const packets = await this.packetsForRustFrames(frames);
+    for (const packet of packets) this.forwardRelayBytes(fromPeerId, packet);
+  }
+
+  private forwardRelayBytes(fromPeerId: string, packet: Uint8Array) {
     const plan = this.relayPlan;
     if (!plan?.sharerId || plan.sharerId !== fromPeerId) return;
     if (plan.primaryRelayId !== this.myPeerId && plan.secondaryRelayId !== this.myPeerId) return;
@@ -2130,7 +2273,9 @@ export class WebRTCManager {
     for (const childId of children) {
       const channel = this.relayChannels.get(childId);
       if (!channel || channel.readyState !== 'open' || channel.bufferedAmount > 2_000_000) continue;
-      channel.send(data);
+      const bytes = new ArrayBuffer(packet.byteLength);
+      new Uint8Array(bytes).set(packet);
+      channel.send(bytes);
     }
   }
 
@@ -2142,6 +2287,10 @@ export class WebRTCManager {
       return;
     }
     if (parsed?.type !== 'pli') return;
+    this.requestRelayKeyframe();
+  }
+
+  private requestRelayKeyframe() {
     for (const peerId of relayTargetIds(this.relayPlan)) {
       const sender = this.connections.get(linkKey('sender', peerId))?.getSenders().find((item) => item.track?.kind === 'video');
       const keyframe = sender as (RTCRtpSender & { generateKeyFrame?: () => Promise<void> }) | undefined;
@@ -2231,6 +2380,38 @@ export class WebRTCManager {
     for (const peerId of [...this.relayPumps.keys()]) this.stopRelayPump(peerId);
     setRelayTopology(null, false);
   }
+}
+
+interface RustBufferedFrame {
+  seqNumber: number;
+  timestamp: number;
+  streamId: number;
+  mediaType: number;
+  keyframe: boolean;
+  payloadBase64: string;
+}
+
+interface RustPacketBatch {
+  frames: RustBufferedFrame[];
+  requestPli: boolean;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  const chunk = new Array<number>(0x8000);
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += chunk.length) {
+    const size = Math.min(chunk.length, bytes.length - offset);
+    for (let i = 0; i < size; i += 1) chunk[i] = bytes[offset + i];
+    binary += String.fromCharCode(...chunk.slice(0, size));
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
 }
 
 /** O lib DOM daqui não declara `minBitrate`; o Chromium aplica o campo. */

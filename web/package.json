@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --test src/lib/diagnostics/diagnostics.test.ts src/lib/diagnostics/audio.test.ts src/lib/diagnostics/resolution.test.ts src/lib/diagnostics/timeline.test.ts src/lib/utils.test.ts src/lib/screenShare.test.ts src/lib/windowUpscale.test.ts src/lib/chat.test.ts src/lib/session.test.ts src/lib/links.test.ts src/lib/grid.test.ts src/lib/sourceSwitch.test.ts src/lib/sounds.test.ts src/lib/nativeCapture.test.ts src/lib/nativeFrameSurface.test.ts src/lib/relayPath.test.ts"
+    "test": "node --experimental-strip-types --test src/lib/diagnostics/diagnostics.test.ts src/lib/diagnostics/audio.test.ts src/lib/diagnostics/resolution.test.ts src/lib/diagnostics/timeline.test.ts src/lib/utils.test.ts src/lib/screenShare.test.ts src/lib/windowUpscale.test.ts src/lib/chat.test.ts src/lib/session.test.ts src/lib/links.test.ts src/lib/grid.test.ts src/lib/sourceSwitch.test.ts src/lib/sounds.test.ts src/lib/nativeCapture.test.ts src/lib/nativeFrameSurface.test.ts src/lib/relayPath.test.ts src/lib/desktopPrompt.test.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.5",

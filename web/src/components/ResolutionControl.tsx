@@ -12,6 +12,8 @@ interface ResolutionControlProps {
   busy: boolean;
   /** Chamado com a resolução pedida. */
   onSelect: (resolution: StreamResolution) => void;
+  /** Sem relay desktop, 1080p e 4K ficam fora do preset. */
+  qualityLimited?: boolean;
 }
 
 /**
@@ -26,7 +28,11 @@ export default function ResolutionControl({
   measured,
   busy,
   onSelect,
+  qualityLimited = false,
 }: ResolutionControlProps) {
+  const choices = qualityLimited
+    ? RESOLUTIONS.filter((item) => item.value === '720' || item.value === '480')
+    : RESOLUTIONS;
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between gap-2 px-0.5">
@@ -42,7 +48,7 @@ export default function ResolutionControl({
         </span>
       </div>
       <div className="grid grid-cols-4 gap-1">
-        {RESOLUTIONS.map((item) => {
+        {choices.map((item) => {
           const active = item.value === resolution;
           return (
             <button

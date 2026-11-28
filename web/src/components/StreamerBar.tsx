@@ -25,6 +25,8 @@ interface StreamerBarProps {
   notice: string | null;
   /** O aviso explica a captura; não é uma falha. */
   informative?: boolean;
+  /** Sem relay desktop, a resolução não passa de 720p. */
+  qualityLimited?: boolean;
 }
 
 /**
@@ -50,6 +52,7 @@ export default function StreamerBar({
   busy,
   notice,
   informative = false,
+  qualityLimited = false,
 }: StreamerBarProps) {
   const activeSource = measuredSurface ?? null;
 
@@ -119,6 +122,7 @@ export default function StreamerBar({
           measured={measuredResolution}
           busy={busy}
           onSelect={onSelectResolution}
+          qualityLimited={qualityLimited}
         />
 
         {/* ── Taxa de quadros ── */}
