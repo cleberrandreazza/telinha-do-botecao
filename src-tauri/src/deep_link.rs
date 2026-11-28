@@ -9,6 +9,7 @@ const SCHEME: &str = "telinha://";
 const ALPHABET: &str = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PendingRoom {
     pub code: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -26,6 +27,7 @@ impl Default for PendingJoin {
 }
 
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct JoinPayload {
     code: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -124,6 +126,7 @@ pub fn publish(app: &AppHandle, code: &str, ticket: Option<String>, discord_sess
         return;
     };
     let ticket = ticket.and_then(|value| normalize_ticket(&value));
+    let discord_session = discord_session.and_then(|value| normalize_discord_session(&value));
     let pending = PendingRoom {
         code: code.clone(),
         ticket: ticket.clone(),
@@ -134,7 +137,6 @@ pub fn publish(app: &AppHandle, code: &str, ticket: Option<String>, discord_sess
             *slot = Some(pending);
         }
     }
-    let discord_session = discord_session.and_then(|value| normalize_discord_session(&value));
     let _ = app.emit("telinha-join", JoinPayload { code, ticket, discord_session });
 }
 
