@@ -3,6 +3,25 @@ export interface PeerInfo {
   id: string;
   nickname: string;
   isSharing: boolean;
+  /** App desktop Tauri. Ausente em clientes antigos, que seguem no WebRTC direto. */
+  isDesktop?: boolean;
+}
+
+export interface PeerTelemetryReport {
+  rttMs: number;
+  jitterMs: number;
+  loss: number;
+  uploadKbps: number;
+  cpuPercent: number;
+  activeChildren: number;
+  isDesktop: boolean;
+}
+
+export interface RelayPlanReport {
+  primaryRelayId: string | null;
+  secondaryRelayId: string | null;
+  splitEvenOdd: boolean;
+  canLocalNodeRelay: boolean;
 }
 
 export interface RoomState {
@@ -39,18 +58,20 @@ export interface ChatMessage {
 
 // ── Signaling messages (client → server) ───────────────
 export type ClientMessage =
-  | { type: 'create-room'; nickname: string; password?: string }
-  | { type: 'join-room'; code: string; nickname: string; password?: string }
+  | { type: 'create-room'; nickname: string; password?: string; isDesktop?: boolean }
+  | { type: 'join-room'; code: string; nickname: string; password?: string; isDesktop?: boolean }
   | { type: 'leave-room' }
   | { type: 'start-sharing' }
   | { type: 'stop-sharing' }
   | { type: 'request-stream'; sharerId: string }
-  | { type: 'offer'; to: string; sdp: RTCSessionDescriptionInit }
-  | { type: 'answer'; to: string; sdp: RTCSessionDescriptionInit }
-  /** `linkRole` diz em que papel o candidato deve ser aplicado (ver lib/links.ts). */
-  | { type: 'ice-candidate'; to: string; candidate: RTCIceCandidateInit; linkRole?: 'sender' | 'receiver' }
+  | { type: 'offer'; to: string; sdp: RTCSessionDescriptionInit; purpose?: 'relay-fanout' }
+  | { type: 'answer'; to: string; sdp: RTCSessionDescriptionInit; purpose?: 'relay-fanout' }
+  /** `linkRole` diz em que papel o candidato deve ser aplicado (ver lib/links.ts). `relay` é só o datachannel de fanout. */
+  | { type: 'ice-candidate'; to: string; candidate: RTCIceCandidateInit; linkRole?: 'sender' | 'receiver' | 'relay' }
   | { type: 'chat-message'; text: string; clientId?: string }
-  | { type: 'heartbeat' };
+  | { type: 'heartbeat' }
+  | ({ type: 'peer-telemetry' } & PeerTelemetryReport)
+  | ({ type: 'relay-plan' } & RelayPlanReport);
 
 // ── Signaling messages (server → client) ───────────────
 export type ServerMessage =
@@ -62,14 +83,16 @@ export type ServerMessage =
   | { type: 'sharing-started'; peerId: string; nickname: string }
   | { type: 'sharing-stopped'; peerId: string }
   | { type: 'stream-requested'; from: string; nickname: string }
-  | { type: 'offer'; from: string; sdp: RTCSessionDescriptionInit }
-  | { type: 'answer'; from: string; sdp: RTCSessionDescriptionInit }
+  | { type: 'offer'; from: string; sdp: RTCSessionDescriptionInit; purpose?: 'relay-fanout' }
+  | { type: 'answer'; from: string; sdp: RTCSessionDescriptionInit; purpose?: 'relay-fanout' }
   /** `linkRole` propagado pelo servidor; ausente significa "sem papel definido". */
-  | { type: 'ice-candidate'; from: string; candidate: RTCIceCandidateInit; linkRole?: 'sender' | 'receiver' }
+  | { type: 'ice-candidate'; from: string; candidate: RTCIceCandidateInit; linkRole?: 'sender' | 'receiver' | 'relay' }
   | { type: 'chat-message'; from: string; nickname: string; text: string; ts: number; clientId?: string }
   | { type: 'chat-history'; messages: ChatMessage[] }
   | { type: 'error'; message: string }
-  | { type: 'heartbeat-ack' };
+  | { type: 'heartbeat-ack' }
+  | ({ type: 'peer-telemetry'; from: string } & PeerTelemetryReport)
+  | ({ type: 'relay-plan'; from: string } & RelayPlanReport);
 
 // ── App state ──────────────────────────────────────────
 export type AppScreen = 'home' | 'room';

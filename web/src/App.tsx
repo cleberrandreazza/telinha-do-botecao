@@ -423,7 +423,7 @@ export default function App() {
   const handleSignalMessage = useCallback((msg: ServerMessage) => {
     switch (msg.type) {
       case 'room-created': {
-        const selfPeer: PeerInfo = { id: msg.peerId, nickname: nickRef.current, isSharing: false };
+        const selfPeer: PeerInfo = { id: msg.peerId, nickname: nickRef.current, isSharing: false, isDesktop: isTauriDesktop() };
         setRoomCode(msg.code);
         setMyPeerId(msg.peerId);
         setPeers([selfPeer]);
@@ -436,7 +436,7 @@ export default function App() {
       }
 
       case 'room-joined': {
-        const selfJoined: PeerInfo = { id: msg.peerId, nickname: nickRef.current, isSharing: false };
+        const selfJoined: PeerInfo = { id: msg.peerId, nickname: nickRef.current, isSharing: false, isDesktop: isTauriDesktop() };
         joinedCodeRef.current = msg.code;
         const peersWithSelf = msg.peers.some((p: PeerInfo) => p.id === msg.peerId)
           ? msg.peers
@@ -596,6 +596,10 @@ export default function App() {
         setError(msg.message);
         setConnecting(false);
         break;
+
+      case 'peer-telemetry':
+      case 'relay-plan':
+        break;
     }
   }, []);
 
@@ -652,7 +656,7 @@ export default function App() {
 
     try {
       const signal = await ensureConnected();
-      signal.send({ type: 'create-room', nickname: nick, password });
+      signal.send({ type: 'create-room', nickname: nick, password, isDesktop: isTauriDesktop() });
     } catch (err) {
       setError('Não foi possível conectar ao servidor. Verifique se o servidor está rodando.');
       setConnecting(false);
@@ -666,7 +670,7 @@ export default function App() {
 
     try {
       const signal = await ensureConnected();
-      signal.send({ type: 'join-room', code, nickname: nick, password });
+      signal.send({ type: 'join-room', code, nickname: nick, password, isDesktop: isTauriDesktop() });
     } catch (err) {
       setError('Não foi possível conectar ao servidor. Verifique se o servidor está rodando.');
       setConnecting(false);
@@ -1273,7 +1277,7 @@ export default function App() {
       // (o servidor remove e reinsere o mesmo peer).
       if (joinedCodeRef.current !== session.code) {
         joinedCodeRef.current = session.code;
-        signal.send({ type: 'join-room', code: session.code, nickname: session.nickname });
+        signal.send({ type: 'join-room', code: session.code, nickname: session.nickname, isDesktop: isTauriDesktop() });
       }
     } catch {
       if (reconnectCancelledRef.current) return;

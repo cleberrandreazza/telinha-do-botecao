@@ -1,4 +1,5 @@
-import { useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { getRelayTopology, subscribeRelayTopology } from '../lib/relayStatus';
 import {
   diagnosisSummary,
   effectiveResolution,
@@ -277,6 +278,7 @@ function Technical({
   const inn = sample?.inbound;
   const net = sample?.network;
   const play = sample?.playback ?? livePlayback;
+  const topology = useSyncExternalStore(subscribeRelayTopology, getRelayTopology, getRelayTopology);
   return (
     <div className="flex flex-col gap-2">
       <Layer title="Captura / codificação">
@@ -296,6 +298,8 @@ function Technical({
       </Layer>
       <Layer title="Rede / transporte">
         <Row label="Rota" value={net ? routeLabel(net.route) : UNAVAILABLE_LABEL} />
+        <Row label="Topologia" value={topology.text} />
+        <Row label="Nó relay" value={topology.relayNodeId ?? UNAVAILABLE_LABEL} />
         <Row label="Candidato local" value={net?.localCandidateType ?? UNAVAILABLE_LABEL} />
         <Row label="Candidato remoto" value={net?.remoteCandidateType ?? UNAVAILABLE_LABEL} />
         <Row label="Protocolo" value={net?.protocol ?? UNAVAILABLE_LABEL} />

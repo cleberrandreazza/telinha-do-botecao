@@ -6,7 +6,9 @@
   "main": "index.mjs",
   "scripts": {
     "start": "node index.mjs",
-    "dev": "node index.mjs"
+    "dev": "node index.mjs",
+    "test": "node --test relay-protocol.test.mjs",
+    "build": "node --check index.mjs && node --check relay-protocol.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"

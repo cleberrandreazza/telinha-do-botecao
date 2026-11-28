@@ -1,6 +1,15 @@
 import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
 import { randomBytes } from 'node:crypto';
+import {
+  announcedPeer,
+  publicPeer,
+  readIsDesktop,
+  relayLinkRole,
+  relayPurpose,
+  summarizePlan,
+  summarizeTelemetry,
+} from './relay-protocol.mjs';
 
 // ── Config ──────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT || '4000', 10);
@@ -33,7 +42,7 @@ const peers = new Map();
 let nextPeerId = 1;
 
 /**
- * @typedef {{ id: string, ws: WebSocket, nickname: string, roomCode: string|null, isSharing: boolean, lastSeen: number, lastChatAt: number }} PeerInfo
+ * @typedef {{ id: string, ws: WebSocket, nickname: string, roomCode: string|null, isSharing: boolean, isDesktop: boolean, lastSeen: number, lastChatAt: number }} PeerInfo
  * @typedef {{ id: string, from: string, nickname: string, text: string, ts: number, clientId: string|null }} ChatEntry
  * @typedef {{ code: string, password: string|null, peers: Map<string, PeerInfo>, createdAt: number, history: ChatEntry[], emptySince: number|null, cleanupTimer: NodeJS.Timeout|null }} Room
  */
@@ -166,6 +175,7 @@ wss.on('connection', (ws) => {
     nickname: '',
     roomCode: null,
     isSharing: false,
+    isDesktop: false,
     lastSeen: Date.now(),
     lastChatAt: 0,
   };
@@ -194,6 +204,7 @@ wss.on('connection', (ws) => {
 
         const code = generateCode();
         peer.nickname = (msg.nickname || 'Anônimo').slice(0, 30);
+        peer.isDesktop = readIsDesktop(msg.isDesktop);
         peer.roomCode = code;
 
         /** @type {Room} */
@@ -234,6 +245,7 @@ wss.on('connection', (ws) => {
         removeFromRoom(peer);
 
         peer.nickname = (msg.nickname || 'Anônimo').slice(0, 30);
+        peer.isDesktop = readIsDesktop(msg.isDesktop);
         peer.roomCode = code;
         room.peers.set(peerId, peer);
         // a sala voltou a ter gente: cancela a remoção pendente (F5)
@@ -243,7 +255,7 @@ wss.on('connection', (ws) => {
         const peerList = [];
         for (const p of room.peers.values()) {
           if (p.id !== peerId) {
-            peerList.push({ id: p.id, nickname: p.nickname, isSharing: p.isSharing });
+            peerList.push(publicPeer(p));
           }
         }
 
@@ -263,7 +275,7 @@ wss.on('connection', (ws) => {
         // notifica os outros
         broadcast(room, {
           type: 'peer-joined',
-          peer: { id: peerId, nickname: peer.nickname },
+          peer: announcedPeer(peer),
         }, peerId);
 
         console.log(`[sala] ${peer.nickname} entrou em ${code}`);
@@ -368,10 +380,32 @@ wss.on('connection', (ws) => {
         // Papel da conexão: 'sender' ou 'receiver' valem; qualquer outro valor
         // é descartado e o cliente cai no fallback (aplicar em todas as
         // conexões daquele peer, sem derrubar nenhuma).
-        if (msg.linkRole === 'sender' || msg.linkRole === 'receiver') {
-          relay.linkRole = msg.linkRole;
-        }
+        const linkRole = relayLinkRole(msg.linkRole);
+        if (linkRole) relay.linkRole = linkRole;
+        const purpose = relayPurpose(msg.purpose);
+        if (purpose) relay.purpose = purpose;
         send(target.ws, relay);
+        break;
+      }
+
+      // Telemetria e plano são opcionais. Cliente antigo cai no `default`.
+      case 'peer-telemetry': {
+        if (!peer.roomCode) return;
+        const room = rooms.get(peer.roomCode);
+        if (!room) return;
+        const summary = summarizeTelemetry(msg);
+        if (!summary) return;
+        broadcast(room, { type: 'peer-telemetry', from: peer.id, ...summary }, peer.id);
+        break;
+      }
+
+      case 'relay-plan': {
+        if (!peer.roomCode) return;
+        const room = rooms.get(peer.roomCode);
+        if (!room) return;
+        const plan = summarizePlan(msg);
+        if (!plan) return;
+        broadcast(room, { type: 'relay-plan', from: peer.id, ...plan }, peer.id);
         break;
       }
 

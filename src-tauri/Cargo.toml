@@ -1,6 +1,6 @@
 [package]
 name = "telinha-do-botecao"
-version = "0.1.1"
+version = "0.1.2"
 description = "Telinha do Botecao para Windows"
 edition = "2021"
 rust-version = "1.77"
@@ -25,6 +25,7 @@ windows-capture = "2.0"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 base64 = "0.22"
 cpal = "0.15"
+sysinfo = "0.33"
 windows-core = "0.61.2"
 windows = { version = "0.61.3", features = [
     "Win32_Foundation",

@@ -1,4 +1,20 @@
 import { SignalingClient } from './signaling';
+import { isTauriDesktop } from './utils';
+import {
+  RELAY_CHANNEL_LABEL,
+  RELAY_CHANNEL_OPTIONS,
+  directBitrateCeiling,
+  directSenderIds,
+  gamingModeForFrameRate,
+  packetizeEncodedFrame,
+  relayTargetIds,
+  startEncodedPump,
+  supportsEncodedStreams,
+  viewersForRelay,
+  type EncodedFrame,
+  type RelayPlan,
+} from './relayPath';
+import { setRelayTopology } from './relayStatus';
 import { configureAudioSenderParameters, configureOpusReceiverSdp, configureOpusSenderSdp } from './opus';
 import { assertScreenShareSupported, captureFrameRateConstraints, captureVideoConstraints, contentHintForSurface, orderVideoCodecs } from './screenShare';
 import { asLinkRole, linkKey, oppositeRole, parseLinkKey, type LinkRole } from './links';
@@ -190,6 +206,15 @@ export class WebRTCManager {
     : `s_${Date.now().toString(36)}`;
   private diagnosticsListeners = new Set<() => void>();
   private readonly timeline: SessionTimeline;
+  private readonly desktopPeers = new Set<string>();
+  private readonly relayAnnouncements = new Map<string, { uploadKbps: number; cpuPercent: number; activeChildren: number; isDesktop: boolean }>();
+  private readonly relayChannels = new Map<string, RTCDataChannel>();
+  private readonly relayPumps = new Map<string, { stop: () => void }>();
+  private readonly fanoutPcs = new Map<string, RTCPeerConnection>();
+  private readonly uplinkCaps = new Map<string, number>();
+  private relayPlan: RelayPlan | null = null;
+  private relayTimer: ReturnType<typeof setInterval> | null = null;
+  private relaySeq = 0;
 
   constructor(
     signal: SignalingClient,
@@ -211,11 +236,14 @@ export class WebRTCManager {
     this.unsubSignal = this.signal.onMessage((msg) => {
       this.handleSignalMessage(msg);
     });
+    this.startRelayLoop();
   }
 
   stopListening() {
     this.unsubSignal?.();
     this.unsubSignal = null;
+    this.stopRelayLoop();
+    this.closeFanouts();
   }
 
   /**
@@ -727,14 +755,56 @@ export class WebRTCManager {
         this.timeline.viewerRequested();
         await this.createOfferForViewer(msg.from);
         break;
+      case 'room-joined':
+        for (const peer of msg.peers) this.noteDesktopPeer(peer.id, peer.isDesktop === true);
+        break;
+      case 'peer-joined':
+        this.noteDesktopPeer(msg.peer.id, msg.peer.isDesktop === true);
+        break;
       case 'offer':
+        if (msg.purpose === 'relay-fanout') {
+          if (isTauriDesktop()) await this.acceptRelayOffer(msg.from, msg.sdp);
+          break;
+        }
         await this.handleOffer(msg.from, msg.sdp);
         break;
       case 'answer':
+        if (msg.purpose === 'relay-fanout') {
+          if (isTauriDesktop()) await this.acceptRelayAnswer(msg.from, msg.sdp);
+          break;
+        }
         await this.handleAnswer(msg.from, msg.sdp);
         break;
       case 'ice-candidate':
+        if (msg.linkRole === 'relay') {
+          if (isTauriDesktop()) await this.addRelayIce(msg.from, msg.candidate);
+          break;
+        }
         await this.handleIceCandidate(msg.from, msg.candidate, msg.linkRole);
+        break;
+      case 'peer-telemetry':
+        if (!isTauriDesktop()) break;
+        this.noteDesktopPeer(msg.from, msg.isDesktop);
+        this.relayAnnouncements.set(msg.from, {
+          uploadKbps: msg.uploadKbps,
+          cpuPercent: msg.cpuPercent,
+          activeChildren: msg.activeChildren,
+          isDesktop: msg.isDesktop,
+        });
+        break;
+      case 'relay-plan':
+        if (!isTauriDesktop() || msg.from === this.myPeerId) break;
+        this.relayPlan = {
+          primaryRelayId: msg.primaryRelayId,
+          secondaryRelayId: msg.secondaryRelayId,
+          splitEvenOdd: msg.splitEvenOdd,
+          canLocalNodeRelay: msg.canLocalNodeRelay,
+          sharerId: msg.from,
+        };
+        if (msg.primaryRelayId === this.myPeerId || msg.secondaryRelayId === this.myPeerId) {
+          this.openFanouts(this.relayPlan);
+        }
+        setRelayTopology(this.relayPlan, !!msg.primaryRelayId);
         break;
       case 'sharing-stopped':
         // Aquele peer parou de enviar: fecha só o papel `receiver` dele.
@@ -742,6 +812,7 @@ export class WebRTCManager {
         this.onStreamEnd(msg.peerId);
         break;
       case 'peer-left':
+        this.forgetDesktopPeer(msg.peerId);
         // O peer saiu: fecha só a live que eu assistia (papel `receiver`).
         // O papel `sender` — a minha transmissão para ele — NÃO é derrubado
         // aqui: derrubá-lo derrubaria o meu compartilhamento. A própria
@@ -761,6 +832,7 @@ export class WebRTCManager {
 
     const pc = this.createPeerConnection(viewerId, 'sender');
     const key = linkKey('sender', viewerId);
+    if (isTauriDesktop()) this.openRelayChannel(pc, viewerId);
 
     // Clona a video track para cada PC para que cada encoder opere de forma
     // independente. Sem o clone, Chrome compartilha o encoder interno e quando
@@ -862,7 +934,7 @@ export class WebRTCManager {
         params.encodings = [{}];
       }
 
-      const maxBitrate = BITRATE_MAP[this.currentConfig.resolution] || 8_000_000;
+      const maxBitrate = this.uplinkCap(parseLinkKey(key)?.peerId ?? '');
       const scale = this.currentScaleDown();
       writeEncodingBitrate(params.encodings[0], maxBitrate);
       params.encodings[0].maxFramerate = this.currentConfig.frameRate;
@@ -967,6 +1039,7 @@ export class WebRTCManager {
     // Aplicar depois da resposta remota permite ler de volta os parâmetros negociados.
     await this.configureAudioSenders(pc);
     await this.configureVideoSender(pc, key);
+    if (isTauriDesktop()) void this.syncRelayPath();
   }
 
   /**
@@ -1165,6 +1238,10 @@ export class WebRTCManager {
       if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
         this.timeline.iceConnected(monitor.connectionId);
       }
+    };
+
+    pc.ondatachannel = (event) => {
+      if (event.channel.label === RELAY_CHANNEL_LABEL) this.bindRelayChannel(remotePeerId, event.channel);
     };
 
     return pc;
@@ -1470,7 +1547,6 @@ export class WebRTCManager {
     if (!target) return false;
 
     const previous = this.currentConfig.resolution;
-    const maxBitrate = BITRATE_MAP[resolution] || BITRATE_MAP[previous];
     const fps = this.currentConfig.frameRate;
     const constraints = captureVideoConstraints(target, fps);
 
@@ -1484,6 +1560,7 @@ export class WebRTCManager {
       const videoSender = pc.getSenders().find((sender) => sender.track?.kind === 'video');
       if (!videoSender) continue;
       attempted += 1;
+      const maxBitrate = this.uplinkCap(parsed.peerId);
       try {
         const params = videoSender.getParameters();
         if (!params.encodings || params.encodings.length === 0) {
@@ -1594,6 +1671,7 @@ export class WebRTCManager {
       pc.close();
     }
     // A notificação de live é por peer e vale para o papel receiver.
+    if (parsed?.role === 'sender') this.stopRelayPump(parsed.peerId);
     if (parsed?.role === 'receiver') this.notifiedPeers.delete(parsed.peerId);
     this.audioLink.delete(key);
     this.remoteAudioTracks.delete(key);
@@ -1829,6 +1907,329 @@ export class WebRTCManager {
         console.warn(`[WebRTC] Falha ao atualizar a escala em ${key}:`, error);
       }
     }
+  }
+
+  private noteDesktopPeer(peerId: string, isDesktop: boolean) {
+    if (isDesktop) this.desktopPeers.add(peerId);
+    else this.desktopPeers.delete(peerId);
+  }
+
+  private forgetDesktopPeer(peerId: string) {
+    this.desktopPeers.delete(peerId);
+    this.relayAnnouncements.delete(peerId);
+    this.relayChannels.delete(peerId);
+    this.uplinkCaps.delete(peerId);
+    this.closeFanout(peerId);
+  }
+
+  private senderPeerIds(): string[] {
+    const ids: string[] = [];
+    for (const key of this.connections.keys()) {
+      const parsed = parseLinkKey(key);
+      if (parsed?.role === 'sender') ids.push(parsed.peerId);
+    }
+    return ids;
+  }
+
+  private baseUplink(): number {
+    return BITRATE_MAP[this.currentConfig.resolution] || 8_000_000;
+  }
+
+  /** Desktop divide o teto entre as conexões diretas. Web e Safari ficam no teto da resolução. */
+  private uplinkCap(peerId: string): number {
+    const base = this.baseUplink();
+    if (!isTauriDesktop()) return base;
+    if (relayTargetIds(this.relayPlan).includes(peerId)) return base;
+    const directs = directSenderIds(this.senderPeerIds(), this.relayPlan);
+    return directBitrateCeiling(base, Math.max(1, directs.length));
+  }
+
+  private applyUplinkCaps() {
+    if (!isTauriDesktop()) return;
+    for (const peerId of this.senderPeerIds()) {
+      const cap = this.uplinkCap(peerId);
+      if (this.uplinkCaps.get(peerId) === cap) continue;
+      this.uplinkCaps.set(peerId, cap);
+      const key = linkKey('sender', peerId);
+      const pc = this.connections.get(key);
+      if (!pc) continue;
+      this.restartAbr(pc, key, cap);
+      this.applySenderBitrate(pc, cap);
+    }
+  }
+
+  private startRelayLoop() {
+    if (!isTauriDesktop() || this.relayTimer) return;
+    this.relayTimer = setInterval(() => {
+      void this.refreshRelayPlan();
+    }, 2000);
+  }
+
+  private stopRelayLoop() {
+    if (!this.relayTimer) return;
+    clearInterval(this.relayTimer);
+    this.relayTimer = null;
+  }
+
+  private async tauriInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T | null> {
+    try {
+      const mod = await import('@tauri-apps/api/core');
+      return await mod.invoke<T>(command, args);
+    } catch {
+      return null;
+    }
+  }
+
+  private readPath(peerId: string): { rttMs: number; jitterMs: number; loss: number } | null {
+    const sample = this.monitors.get(linkKey('sender', peerId))?.getSnapshot()?.sample;
+    const rttMs = sample?.network.rttMs;
+    const jitterMs = sample?.remoteInbound?.jitterMs;
+    const lossPct = sample?.remoteInbound?.lossPct;
+    if (rttMs == null || jitterMs == null || lossPct == null) return null;
+    return { rttMs, jitterMs, loss: lossPct / 100 };
+  }
+
+  private async refreshRelayPlan() {
+    if (!isTauriDesktop()) return;
+    const load = await this.tauriInvoke<{ cpuPercent: number; uploadKbps: number; isDesktop: boolean }>('get_local_system_load');
+    if (load) {
+      this.signal.send({
+        type: 'peer-telemetry',
+        rttMs: 0,
+        jitterMs: 0,
+        loss: 0,
+        uploadKbps: load.uploadKbps,
+        cpuPercent: load.cpuPercent,
+        activeChildren: Math.min(2, this.fanoutPcs.size),
+        isDesktop: true,
+      });
+    }
+    if (!this.localStream || !load) return;
+    for (const peerId of this.senderPeerIds()) {
+      const measured = this.readPath(peerId);
+      const announced = this.relayAnnouncements.get(peerId);
+      const desktop = announced?.isDesktop === true || this.desktopPeers.has(peerId);
+      if (!measured || !desktop) continue;
+      await this.tauriInvoke('update_peer_telemetry', {
+        telemetry: {
+          peerId,
+          rttMs: measured.rttMs,
+          jitterMs: measured.jitterMs,
+          loss: measured.loss,
+          uploadKbps: announced?.uploadKbps ?? 0,
+          cpuPercent: announced?.cpuPercent ?? 100,
+          isDesktop: true,
+          activeChildren: announced?.activeChildren ?? 0,
+          isDesktopRelayCapable: false,
+        },
+      });
+    }
+    const plan = await this.tauriInvoke<RelayPlan>('compute_routing_plan', {
+      gamingMode: gamingModeForFrameRate(this.currentConfig.frameRate),
+      localPeerId: this.myPeerId,
+      localChildren: Math.min(2, this.fanoutPcs.size),
+    });
+    if (!plan) return;
+    this.relayPlan = { ...plan, sharerId: this.myPeerId };
+    const state = await this.syncRelayPath();
+    if (state === 'waiting') return;
+    const published = state === 'active' ? plan : {
+      primaryRelayId: null,
+      secondaryRelayId: null,
+      splitEvenOdd: false,
+      canLocalNodeRelay: plan.canLocalNodeRelay,
+    };
+    if (state === 'fallback') this.relayPlan = { ...published, sharerId: this.myPeerId };
+    this.signal.send({
+      type: 'relay-plan',
+      primaryRelayId: published.primaryRelayId,
+      secondaryRelayId: published.secondaryRelayId,
+      splitEvenOdd: published.splitEvenOdd,
+      canLocalNodeRelay: published.canLocalNodeRelay,
+    });
+  }
+
+  private async syncRelayPath(): Promise<'active' | 'fallback' | 'waiting'> {
+    if (!isTauriDesktop()) return 'waiting';
+    const plan = this.relayPlan;
+    const targets = relayTargetIds(plan);
+    let active = false;
+    let apiMissing = false;
+    for (const peerId of targets) {
+      const pc = this.connections.get(linkKey('sender', peerId));
+      const sender = pc?.getSenders().find((item) => item.track?.kind === 'video');
+      if (!sender) continue;
+      if (!supportsEncodedStreams(sender)) {
+        apiMissing = true;
+        continue;
+      }
+      if (!this.relayPumps.has(peerId)) {
+        const pump = startEncodedPump(sender, (frame) => this.sendEncodedFrame(peerId, frame), true);
+        if (pump) this.relayPumps.set(peerId, pump);
+      }
+      if (this.relayPumps.has(peerId)) active = true;
+    }
+    if (active && plan?.primaryRelayId) {
+      setRelayTopology(plan, true);
+      this.applyUplinkCaps();
+      if (plan.primaryRelayId === this.myPeerId || plan.secondaryRelayId === this.myPeerId) {
+        this.openFanouts(plan);
+      }
+      return 'active';
+    }
+    this.applyUplinkCaps();
+    if (targets.length > 0 && apiMissing) {
+      setRelayTopology(null, false);
+      return 'fallback';
+    }
+    return 'waiting';
+  }
+
+  private sendEncodedFrame(peerId: string, frame: EncodedFrame) {
+    const channel = this.relayChannels.get(peerId);
+    if (!channel || channel.readyState !== 'open' || channel.bufferedAmount > 2_000_000) return;
+    const packets = packetizeEncodedFrame(frame, this.relaySeq, 1);
+    this.relaySeq = (this.relaySeq + 1) & 0xffff;
+    for (const packet of packets) {
+      const bytes = new ArrayBuffer(packet.byteLength);
+      new Uint8Array(bytes).set(packet);
+      channel.send(bytes);
+    }
+  }
+
+  private stopRelayPump(peerId: string) {
+    this.relayPumps.get(peerId)?.stop();
+    this.relayPumps.delete(peerId);
+  }
+
+  private openRelayChannel(pc: RTCPeerConnection, peerId: string) {
+    try {
+      const channel = pc.createDataChannel(RELAY_CHANNEL_LABEL, RELAY_CHANNEL_OPTIONS);
+      this.bindRelayChannel(peerId, channel);
+    } catch {
+      // Sem datachannel o vídeo continua no RTP direto.
+    }
+  }
+
+  private bindRelayChannel(peerId: string, channel: RTCDataChannel) {
+    channel.binaryType = 'arraybuffer';
+    channel.onmessage = (event) => this.onRelayPacket(peerId, event.data);
+    this.relayChannels.set(peerId, channel);
+  }
+
+  private onRelayPacket(fromPeerId: string, data: unknown) {
+    if (typeof data === 'string') {
+      this.onRelayControl(data);
+      return;
+    }
+    if (!(data instanceof ArrayBuffer)) return;
+    const plan = this.relayPlan;
+    if (!plan?.sharerId || plan.sharerId !== fromPeerId) return;
+    if (plan.primaryRelayId !== this.myPeerId && plan.secondaryRelayId !== this.myPeerId) return;
+    const children = viewersForRelay(this.myPeerId, plan, [...this.desktopPeers], plan.sharerId);
+    for (const childId of children) {
+      const channel = this.relayChannels.get(childId);
+      if (!channel || channel.readyState !== 'open' || channel.bufferedAmount > 2_000_000) continue;
+      channel.send(data);
+    }
+  }
+
+  private onRelayControl(data: string) {
+    let parsed: { type?: string } | null = null;
+    try {
+      parsed = JSON.parse(data) as { type?: string };
+    } catch {
+      return;
+    }
+    if (parsed?.type !== 'pli') return;
+    for (const peerId of relayTargetIds(this.relayPlan)) {
+      const sender = this.connections.get(linkKey('sender', peerId))?.getSenders().find((item) => item.track?.kind === 'video');
+      const keyframe = sender as (RTCRtpSender & { generateKeyFrame?: () => Promise<void> }) | undefined;
+      void keyframe?.generateKeyFrame?.();
+    }
+  }
+
+  private openFanouts(plan: RelayPlan) {
+    const sharerId = plan.sharerId ?? '';
+    const children = viewersForRelay(this.myPeerId, plan, [...this.desktopPeers], sharerId);
+    for (const childId of children) {
+      if (this.connections.has(linkKey('sender', childId))) continue;
+      if (this.fanoutPcs.has(childId)) continue;
+      this.openFanout(childId);
+    }
+  }
+
+  private openFanout(childId: string) {
+    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    this.fanoutPcs.set(childId, pc);
+    this.openRelayChannel(pc, childId);
+    pc.onicecandidate = (event) => {
+      if (!event.candidate) return;
+      this.signal.send({
+        type: 'ice-candidate',
+        to: childId,
+        candidate: event.candidate.toJSON(),
+        linkRole: 'relay',
+      });
+    };
+    void pc.createOffer().then(async (offer) => {
+      await pc.setLocalDescription(offer);
+      if (!pc.localDescription) return;
+      this.signal.send({ type: 'offer', to: childId, sdp: pc.localDescription, purpose: 'relay-fanout' });
+    }).catch(() => {
+      this.closeFanout(childId);
+    });
+  }
+
+  private async acceptRelayOffer(fromId: string, sdp: RTCSessionDescriptionInit) {
+    this.closeFanout(fromId);
+    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    this.fanoutPcs.set(fromId, pc);
+    pc.ondatachannel = (event) => {
+      if (event.channel.label === RELAY_CHANNEL_LABEL) this.bindRelayChannel(fromId, event.channel);
+    };
+    pc.onicecandidate = (event) => {
+      if (!event.candidate) return;
+      this.signal.send({
+        type: 'ice-candidate',
+        to: fromId,
+        candidate: event.candidate.toJSON(),
+        linkRole: 'relay',
+      });
+    };
+    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    if (!pc.localDescription) return;
+    this.signal.send({ type: 'answer', to: fromId, sdp: pc.localDescription, purpose: 'relay-fanout' });
+  }
+
+  private async acceptRelayAnswer(fromId: string, sdp: RTCSessionDescriptionInit) {
+    const pc = this.fanoutPcs.get(fromId);
+    if (!pc) return;
+    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+  }
+
+  private async addRelayIce(fromId: string, candidate: RTCIceCandidateInit) {
+    const pc = this.fanoutPcs.get(fromId);
+    if (!pc) return;
+    try {
+      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch {
+      // O fanout pode ter fechado. A mídia direta não depende deste candidato.
+    }
+  }
+
+  private closeFanout(peerId: string) {
+    const pc = this.fanoutPcs.get(peerId);
+    this.fanoutPcs.delete(peerId);
+    pc?.close();
+  }
+
+  private closeFanouts() {
+    for (const peerId of [...this.fanoutPcs.keys()]) this.closeFanout(peerId);
+    for (const peerId of [...this.relayPumps.keys()]) this.stopRelayPump(peerId);
+    setRelayTopology(null, false);
   }
 }
 
