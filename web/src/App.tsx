@@ -201,6 +201,7 @@ export default function App() {
   const desktopUpdate = useDesktopUpdate();
   // ── Estado da aplicação ──
   const [screen, setScreen] = useState<AppScreen>('home');
+  const [discordEntry, setDiscordEntry] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
 
@@ -1165,6 +1166,7 @@ export default function App() {
 
   const resetRoom = () => {
     setScreen('home');
+    setDiscordEntry(false);
     setRoomCode('');
     setRoomPrivate(false);
     pendingSecretRef.current = false;
@@ -1385,6 +1387,7 @@ export default function App() {
     if (isMockMode()) return;
 
     const params = new URLSearchParams(window.location.search);
+    setDiscordEntry(params.get('source') === 'discord');
     const oauthSession = params.get('discord_session');
     if (oauthSession && /^[A-Za-z0-9_-]{32,128}$/.test(oauthSession)) {
       discordSessionRef.current = oauthSession;
@@ -1608,6 +1611,7 @@ export default function App() {
       {screen === 'room' && (
         <Room
           code={roomCode}
+          hideRoomCode={discordEntry}
           myPeerId={myPeerId}
           nickname={nickname}
           peers={peers}
