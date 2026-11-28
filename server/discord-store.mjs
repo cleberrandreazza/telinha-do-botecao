@@ -74,6 +74,8 @@ export function createDiscordStore(databaseUrl) {
       await pool.query('CREATE INDEX IF NOT EXISTS discord_web_sessions_expiry_idx ON discord_web_sessions (expires_at)');
       await pool.query(`CREATE TABLE IF NOT EXISTS discord_oauth_states (state_hash TEXT PRIMARY KEY, room_code TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`);
       await pool.query('CREATE INDEX IF NOT EXISTS discord_oauth_states_expiry_idx ON discord_oauth_states (expires_at)');
+      await pool.query(`CREATE TABLE IF NOT EXISTS discord_login_codes (code_hash TEXT PRIMARY KEY, session_hash TEXT NOT NULL REFERENCES discord_web_sessions(session_hash) ON DELETE CASCADE, room_code TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`);
+      await pool.query('CREATE INDEX IF NOT EXISTS discord_login_codes_expiry_idx ON discord_login_codes (expires_at)');
     },
 
     async saveOAuthState(state, roomCode, expiresAt) {
@@ -90,6 +92,18 @@ export function createDiscordStore(databaseUrl) {
     async createWebSession(discordUserId, rawToken, expiresAt) {
       const hash = createHash('sha256').update(rawToken).digest('hex');
       await pool.query('INSERT INTO discord_web_sessions (session_hash, discord_user_id, expires_at) VALUES ($1, $2, $3)', [hash, discordUserId, new Date(expiresAt)]);
+    },
+
+    async createLoginCode(rawCode, sessionToken, roomCode, expiresAt) {
+      const codeHash = createHash('sha256').update(rawCode).digest('hex');
+      const sessionHash = createHash('sha256').update(sessionToken).digest('hex');
+      await pool.query('INSERT INTO discord_login_codes (code_hash, session_hash, room_code, expires_at) VALUES ($1, $2, $3, $4)', [codeHash, sessionHash, roomCode, new Date(expiresAt)]);
+    },
+
+    async consumeLoginCode(rawCode, roomCode) {
+      const codeHash = createHash('sha256').update(String(rawCode || '')).digest('hex');
+      const result = await pool.query('DELETE FROM discord_login_codes WHERE code_hash = $1 AND room_code = $2 AND expires_at > NOW() RETURNING session_hash', [codeHash, roomCode]);
+      return result.rows[0]?.session_hash ?? null;
     },
 
     async getWebSession(rawToken) {
