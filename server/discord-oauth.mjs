@@ -2,7 +2,8 @@ import { randomBytes } from 'node:crypto';
 import { normalizeWebOrigin } from './discord-rooms.mjs';
 
 const STATE_TTL_MS = 10 * 60_000;
-const SESSION_TTL_MS = 365 * 24 * 60 * 60_000;
+const SESSION_TTL_MS = 30 * 24 * 60 * 60_000;
+const LOGIN_CODE_TTL_MS = 2 * 60_000;
 const DISCORD_API = 'https://discord.com/api/v10';
 
 function redirect(res, location) {
@@ -32,6 +33,7 @@ export function createDiscordOAuth({ store, webOrigin, getVoiceMembership }) {
   const clientId = process.env.DISCORD_CLIENT_ID?.trim();
   const clientSecret = process.env.DISCORD_CLIENT_SECRET?.trim();
   const redirectUri = process.env.DISCORD_REDIRECT_URI?.trim();
+  const refreshLocks = new Map();
 
   function configured() {
     return Boolean(clientId && clientSecret && redirectUri);
@@ -83,9 +85,11 @@ export function createDiscordOAuth({ store, webOrigin, getVoiceMembership }) {
       });
       const session = randomBytes(32).toString('base64url');
       await store.createWebSession(user.id, session, Date.now() + SESSION_TTL_MS);
+      const loginCode = randomBytes(32).toString('base64url');
+      await store.createLoginCode(loginCode, session, roomCode, Date.now() + LOGIN_CODE_TTL_MS);
       const target = new URL(`/abrir/${encodeURIComponent(roomCode)}`, frontendOrigin);
       target.searchParams.set('source', 'discord');
-      target.searchParams.set('discord_session', session);
+      target.searchParams.set('discord_code', loginCode);
       redirect(res, target.toString());
     } catch (error) {
       console.error('[discord-oauth] callback falhou:', error.message);
@@ -98,6 +102,28 @@ export function createDiscordOAuth({ store, webOrigin, getVoiceMembership }) {
     const entry = /^\/discord\/entry\/([A-HJ-NP-Z2-9]{6})$/.exec(url.pathname);
     if (req.method === 'GET' && entry) return begin(entry[1], res);
     if (req.method === 'GET' && url.pathname === '/discord/callback') return callback(req, res);
+    if (url.pathname === '/discord/exchange') {
+      res.setHeader('Access-Control-Allow-Origin', frontendOrigin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return true; }
+      if (req.method !== 'POST' || req.headers.origin !== frontendOrigin) return sendText(res, 403, 'Origem não autorizada.');
+      let raw = '';
+      for await (const chunk of req) { raw += chunk; if (raw.length > 4096) return sendText(res, 413, 'Requisição muito grande.'); }
+      let payload;
+      try { payload = JSON.parse(raw); } catch { return sendText(res, 400, 'Requisição inválida.'); }
+      const roomCode = typeof payload.roomCode === 'string' ? payload.roomCode.toUpperCase() : '';
+      const loginCode = typeof payload.code === 'string' ? payload.code : '';
+      if (!/^[A-HJ-NP-Z2-9]{6}$/.test(roomCode) || !/^[A-Za-z0-9_-]{40,64}$/.test(loginCode)) return sendText(res, 400, 'Código de acesso inválido.');
+      const sessionHash = await store.consumeLoginCode(loginCode, roomCode);
+      if (!sessionHash) return sendText(res, 401, 'Este link expirou ou já foi utilizado.');
+      const session = await store.getSessionByHash(sessionHash);
+      if (!session) return sendText(res, 401, 'Sessão não encontrada. Autorize novamente.');
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Pragma': 'no-cache' });
+      res.end(JSON.stringify({ sessionToken: session.token }));
+      return true;
+    }
     return false;
   }
 
@@ -114,32 +140,42 @@ export function createDiscordOAuth({ store, webOrigin, getVoiceMembership }) {
         await store.deleteWebSession(token);
         return null;
       }
-      try {
-        const refreshed = await discordRequest('/oauth2/token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({
-            client_id: clientId,
-            client_secret: clientSecret,
-            grant_type: 'refresh_token',
-            refresh_token: authorization.refreshToken,
-          }),
-        });
-        if (!refreshed.refresh_token) throw new Error('Discord não retornou refresh token.');
-        await store.saveAuthorization({
-          discordUserId: session.discordUserId,
-          username: authorization.username,
-          refreshToken: refreshed.refresh_token,
-          scope: refreshed.scope || authorization.scope,
-        });
-      } catch (error) {
-        console.warn('[discord-oauth] falha ao renovar autorização:', error.message);
-        if (/invalid_grant|revoked|expired/i.test(error.message)) {
-          await store.deleteAuthorization(session.discordUserId);
-          await store.deleteWebSession(token);
+      const refresh = async () => {
+        const current = await store.getAuthorization(session.discordUserId);
+        if (!current) return false;
+        try {
+          const refreshed = await discordRequest('/oauth2/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              client_id: clientId,
+              client_secret: clientSecret,
+              grant_type: 'refresh_token',
+              refresh_token: current.refreshToken,
+            }),
+          });
+          if (!refreshed.refresh_token) throw new Error('Discord não retornou refresh token.');
+          await store.saveAuthorization({
+            discordUserId: session.discordUserId,
+            username: current.username,
+            refreshToken: refreshed.refresh_token,
+            scope: refreshed.scope || current.scope,
+          });
+          return true;
+        } catch (error) {
+          console.warn('[discord-oauth] falha ao renovar autorização:', error.message);
+          if (/invalid_grant|revoked|expired/i.test(error.message)) {
+            await store.deleteAuthorization(session.discordUserId);
+          }
+          return false;
         }
-        return null;
+      };
+      let refreshPromise = refreshLocks.get(session.discordUserId);
+      if (!refreshPromise) {
+        refreshPromise = refresh().finally(() => refreshLocks.delete(session.discordUserId));
+        refreshLocks.set(session.discordUserId, refreshPromise);
       }
+      if (!await refreshPromise) return null;
 
       const membership = await getVoiceMembership(session.discordUserId, roomCode);
       if (!membership?.allowed) return null;
