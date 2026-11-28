@@ -143,14 +143,10 @@ pub fn take_pending_join(state: tauri::State<'_, PendingJoin>) -> Option<Pending
     state.0.lock().ok().and_then(|mut slot| slot.take())
 }
 
-/// Registra `telinha://` no usuário atual e entrega o código da abertura.
+/// Entrega o código da abertura. O `setup` já registrou `telinha://`.
 #[cfg(windows)]
 pub fn install(app: &tauri::App) {
     use tauri_plugin_deep_link::DeepLinkExt;
-
-    if let Err(err) = app.deep_link().register_all() {
-        eprintln!("[telinha] telinha:// não registrado: {err}");
-    }
 
     let handle = app.handle().clone();
     app.deep_link().on_open_url(move |event| {

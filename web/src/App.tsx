@@ -36,7 +36,7 @@ import { describeSwitchError, type DisplaySource } from './lib/sourceSwitch';
 import type { StreamConfig } from './lib/webrtc';
 import { loadProfile } from './lib/profile';
 import { buildPresence, discordHideSwitchVisible, pushDiscordPresence, readDiscordRpcStatus } from './lib/discordPresence';
-import { desktopRoomUrl, roomCodeFromLocation } from './lib/roomLink';
+import { desktopRoomUrl, roomCodeFromLocation, roomTargetFromDesktopUrl } from './lib/roomLink';
 import { clampWebPreset, webShareNeedsDesktopPrompt, webViewerShouldSuggestDesktop } from './lib/desktopPrompt';
 import { DesktopSharePrompt } from './components/DesktopAppPrompt';
 import { describeCapture, readTrackSettings } from './lib/diagnostics/index';
@@ -1417,10 +1417,22 @@ export default function App() {
   }, []);
 
   const joinLinkRef = useRef<(code: string, ticket?: string | null) => void>(() => {});
+  const lastDesktopJoin = useRef<{ key: string; at: number }>({ key: '', at: 0 });
   joinLinkRef.current = (code: string, ticket?: string | null) => {
+    const key = `${code}:${ticket ?? ''}`;
+    const now = Date.now();
+    if (lastDesktopJoin.current.key === key && now - lastDesktopJoin.current.at < 2000) return;
+    lastDesktopJoin.current = { key, at: now };
     const nick = nickRef.current.trim() || loadProfile()?.nickname?.trim() || 'Anônimo';
     pendingSecretRef.current = false;
     void handleJoinRoom(code, nick, undefined, ticket);
+  };
+
+  const joinDesktopUrls = (urls: string[]) => {
+    for (const url of urls) {
+      const target = roomTargetFromDesktopUrl(url);
+      if (target) joinLinkRef.current(target.code, target.ticket);
+    }
   };
 
   useEffect(() => {
@@ -1439,25 +1451,47 @@ export default function App() {
 
   useEffect(() => {
     if (!isTauriDesktop()) return;
-    let unlisten: (() => void) | undefined;
     let cancelled = false;
+    const stops: Array<() => void> = [];
+    const stopAll = () => {
+      for (const stop of stops.splice(0)) stop();
+    };
     void (async () => {
       const { listen } = await import('@tauri-apps/api/event');
       const { invoke } = await import('@tauri-apps/api/core');
       if (cancelled) return;
-      unlisten = await listen<{ code: string; ticket?: string | null }>('telinha-join', (event) => {
+      stops.push(await listen<{ code: string; ticket?: string | null }>('telinha-join', (event) => {
         if (event.payload?.code) joinLinkRef.current(event.payload.code, event.payload.ticket);
-      });
+      }));
+      if (cancelled) {
+        stopAll();
+        return;
+      }
       try {
         const pending = await invoke<{ code: string; ticket?: string | null } | null>('take_pending_join');
         if (!cancelled && pending?.code) joinLinkRef.current(pending.code, pending.ticket);
       } catch {
         // O site não tem o comando.
       }
+      try {
+        const deepLink = await import('@tauri-apps/plugin-deep-link');
+        if (cancelled) {
+          stopAll();
+          return;
+        }
+        const current = await deepLink.getCurrent();
+        if (!cancelled && current?.length) joinDesktopUrls(current);
+        stops.push(await deepLink.onOpenUrl((urls) => {
+          if (!cancelled) joinDesktopUrls(urls);
+        }));
+        if (cancelled) stopAll();
+      } catch {
+        // Plugin ausente no site.
+      }
     })();
     return () => {
       cancelled = true;
-      unlisten?.();
+      stopAll();
     };
   }, []);
 

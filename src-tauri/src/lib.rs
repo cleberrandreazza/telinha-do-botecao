@@ -48,7 +48,13 @@ pub fn run() {
         .setup(|app| {
             updater::spawn_startup(app.handle().clone());
             #[cfg(windows)]
-            deep_link::install(app);
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                if let Err(err) = app.deep_link().register_all() {
+                    eprintln!("[telinha] telinha:// não registrado: {err}");
+                }
+                deep_link::install(app);
+            }
             #[cfg(all(not(debug_assertions), windows))]
             disable_release_webview_menus(app);
             Ok(())

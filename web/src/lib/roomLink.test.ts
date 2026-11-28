@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { browserRoomUrl, desktopRoomUrl, normalizeRoomCode, roomCodeFromLocation } from './roomLink.ts';
+import { browserRoomUrl, desktopRoomUrl, normalizeRoomCode, roomCodeFromLocation, roomTargetFromDesktopUrl } from './roomLink.ts';
 
 test('código da URL ignora traço e recusa letra ambígua', () => {
   assert.equal(normalizeRoomCode('ab2-34c'), 'AB234C');
@@ -20,6 +20,19 @@ test('caminho, atalho do app e query apontam para a sala', () => {
   assert.equal(roomCodeFromLocation('/', '?sala=AB234C&ticket=curto')?.ticket, null);
   assert.equal(roomCodeFromLocation('/', ''), null);
   assert.equal(roomCodeFromLocation('/abrir/IO0000', ''), null);
+});
+
+test('telinha:// traz o código e o ticket sem alterar a caixa do token', () => {
+  assert.deepEqual(roomTargetFromDesktopUrl('telinha://sala/AB234C?ticket=abcdefghij123456'), {
+    code: 'AB234C',
+    ticket: 'abcdefghij123456',
+  });
+  assert.deepEqual(roomTargetFromDesktopUrl('telinha://sala/ab2-34c/?ticket=AbCdEfGhIj123456'), {
+    code: 'AB234C',
+    ticket: 'AbCdEfGhIj123456',
+  });
+  assert.equal(roomTargetFromDesktopUrl('telinha://sala/AB234C?ticket=curto')?.ticket, null);
+  assert.equal(roomTargetFromDesktopUrl('https://exemplo/sala/AB234C'), null);
 });
 
 test('links de convite', () => {
