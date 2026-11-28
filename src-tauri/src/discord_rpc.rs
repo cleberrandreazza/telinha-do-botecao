@@ -71,12 +71,6 @@ pub fn normalize_room_code(raw: &str) -> Option<String> {
     }
 }
 
-fn party_numbers(viewer_count: u32, max_peers: u32) -> (i32, i32) {
-    let max = max_peers.clamp(1, 500) as i32;
-    let current = (viewer_count.max(1) as i32).min(max);
-    (current, max)
-}
-
 /// Publica Rich Presence apenas enquanto o usuário transmite a tela.
 /// Sala privada não expõe código, party ou convite.
 pub fn plan_activity(state: &PresenceState) -> ActivityPlan {
