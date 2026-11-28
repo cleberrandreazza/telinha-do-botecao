@@ -4,12 +4,6 @@ const STATE_TTL_MS = 10 * 60_000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60_000;
 const DISCORD_API = 'https://discord.com/api/v10';
 
-function requiredEnv(name) {
-  const value = process.env[name]?.trim();
-  if (!value) throw new Error(`${name} não configurada`);
-  return value;
-}
-
 function redirect(res, location) {
   res.writeHead(302, {
     Location: location,
