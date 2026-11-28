@@ -51,7 +51,7 @@ export async function startDiscordBot({ rooms, holdEmptyRoom, issueVoiceTicket }
     .setDescription('Abrir a Telinha do Botecão desta call')
     .addBooleanOption((option) => option
       .setName('privada')
-      .setDescription('Não mostrar o botão no chat público')
+      .setDescription('Manter esta sala marcada como privada')
       .setRequired(false));
 
   try {
@@ -84,46 +84,12 @@ export async function startDiscordBot({ rooms, holdEmptyRoom, issueVoiceTicket }
 
     const { room, created } = ensureVoiceRoom(rooms, voiceChannelId, requestedPrivate);
     if (created) holdEmptyRoom?.(room);
-
-    const post = discordSlashPost(voiceChannelId, requestedPrivate, room);
-    const embed = new EmbedBuilder()
-      .setColor(0x10b981)
-      .setTitle(post.title)
-      .setDescription(post.description);
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(post.customId)
-        .setLabel(post.label)
-        .setStyle(ButtonStyle.Primary),
-    );
-
-    await interaction.reply({
-      embeds: [embed],
-      components: [row],
-      ephemeral: post.ephemeral,
-    });
-  }
-
-  async function onJoinButton(interaction) {
-    const voiceChannelId = parseJoinButtonId(interaction.customId);
-    if (!voiceChannelId) {
-      await replyEphemeral(interaction, { content: 'Este botão não abre mais uma sala.' });
-      return;
-    }
-
-    const memberChannelId = interaction.member?.voice?.channelId ?? null;
-    if (!sameVoiceChannel(memberChannelId, voiceChannelId)) {
-      await replyEphemeral(interaction, { content: blockedVoiceMessage(voiceChannelId) });
-      return;
-    }
-
-    const { room, created } = ensureVoiceRoom(rooms, voiceChannelId, false);
-    if (created) holdEmptyRoom?.(room);
     if (!room.discordRestricted || typeof issueVoiceTicket !== 'function') {
       await replyEphemeral(interaction, { content: 'Não foi possível abrir a Telinha agora.' });
       return;
     }
 
+    // Cada execução do slash gera um ticket próprio, sem botão intermediário.
     const ticket = issueVoiceTicket(room);
     const links = entryLinks({
       origin: normalizeWebOrigin(process.env.PUBLIC_WEB_URL),
@@ -133,21 +99,28 @@ export async function startDiscordBot({ rooms, holdEmptyRoom, issueVoiceTicket }
     });
     const embed = new EmbedBuilder()
       .setColor(0x10b981)
-      .setTitle('Sua entrada na Telinha')
-      .setDescription(
-        `O convite vale 45 segundos e só uma vez.\n[Assistir no navegador](${links.web})\nApp: ${links.app}`,
-      );
+      .setTitle('Sua sala do Telinha está pronta!')
+      .setDescription('Escolha como deseja entrar. Este convite vale 45 segundos e só pode ser usado uma vez.');
 
-    const response = { embeds: [embed] };
+    const buttons = [
+      new ButtonBuilder()
+        .setLabel('Entrar pelo navegador')
+        .setStyle(ButtonStyle.Link)
+        .setURL(links.web),
+    ];
     if (links.appWeb) {
-      response.components = [new ActionRowBuilder().addComponents(
+      buttons.unshift(
         new ButtonBuilder()
           .setLabel('Abrir no aplicativo')
           .setStyle(ButtonStyle.Link)
           .setURL(links.appWeb),
-      )];
+      );
     }
-    await replyEphemeral(interaction, response);
+
+    await replyEphemeral(interaction, {
+      embeds: [embed],
+      components: [new ActionRowBuilder().addComponents(...buttons)],
+    });
   }
 
   client.on('error', () => {});
