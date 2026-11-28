@@ -280,6 +280,7 @@ export default function App() {
 
   // ── Refs para manter instâncias estáveis ──
   const signalRef = useRef<SignalingClient | null>(null);
+  const discordSessionRef = useRef<string>('');
   const rtcRef = useRef<WebRTCManager | null>(null);
   /**
    * Conexão em andamento. Duas chamadas concorrentes (o StrictMode monta o
@@ -697,6 +698,7 @@ export default function App() {
         password,
         isDesktop: isTauriDesktop(),
         ...(ticket ? { ticket } : {}),
+        ...(discordSessionRef.current ? { discordSession: discordSessionRef.current } : {}),
       });
     } catch (err) {
       setError('Não foi possível conectar ao servidor. Verifique se o servidor está rodando.');
@@ -1382,6 +1384,16 @@ export default function App() {
   useEffect(() => {
     if (isMockMode()) return;
 
+    const params = new URLSearchParams(window.location.search);
+    const oauthSession = params.get('discord_session');
+    if (oauthSession && /^[A-Za-z0-9_-]{32,128}$/.test(oauthSession)) {
+      discordSessionRef.current = oauthSession;
+      try { window.localStorage.setItem('telinha.discord.session', oauthSession); } catch { /* storage indisponível */ }
+      params.delete('discord_session');
+      window.history.replaceState(null, '', `${window.location.pathname}${params.toString() ? `?${params}` : ''}${window.location.hash}`);
+    } else {
+      try { discordSessionRef.current = window.localStorage.getItem('telinha.discord.session') || ''; } catch { /* storage indisponível */ }
+    }
     const link = roomCodeFromLocation(window.location.pathname, window.location.search);
     if (link) {
       setLinkedCode(link.code);
