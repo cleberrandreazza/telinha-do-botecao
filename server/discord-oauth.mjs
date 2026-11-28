@@ -24,7 +24,7 @@ function sendText(res, status, message) {
 async function discordRequest(path, options) {
   const response = await fetch(`${DISCORD_API}${path}`, options);
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error_description || body.message || `Discord API HTTP ${response.status}`);
+  if (!response.ok) throw new Error(`Discord ${path} HTTP ${response.status}: ${body.error_description || body.error || body.message || 'resposta sem descrição'}`);
   return body;
 }
 
