@@ -15,7 +15,7 @@ pub struct PendingRoom {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ticket: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub discord_session: Option<String>,
+    pub discord_code: Option<String>,
 }
 
 pub struct PendingJoin(pub Mutex<Option<PendingRoom>>);
@@ -69,9 +69,9 @@ pub fn room_code_from_url(raw: &str) -> Option<String> {
     normalize_room_code(code)
 }
 
-pub fn normalize_discord_session(raw: &str) -> Option<String> {
+pub fn normalize_discord_code(raw: &str) -> Option<String> {
     let token = raw.trim();
-    if (32..=128).contains(&token.len()) && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+    if (40..=64).contains(&token.len()) && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         Some(token.to_string())
     } else {
         None
@@ -205,8 +205,8 @@ mod tests {
     }
 
     #[test]
-    fn preserves_discord_session_in_deep_link() {
-        let target = room_target_from_url("telinha://sala/AB234C?discord_session=abcdefghijklmnopqrstuvwxyz123456").unwrap();
+    fn preserves_one_time_discord_code_in_deep_link() {
+        let target = room_target_from_url("telinha://sala/AB234C?discord_code=abcdefghijklmnopqrstuvwxyz12345678901234567890").unwrap();
         assert_eq!(target.discord_session.as_deref(), Some("abcdefghijklmnopqrstuvwxyz123456"));
     }
 
