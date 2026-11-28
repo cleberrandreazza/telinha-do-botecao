@@ -29,7 +29,7 @@ export interface PresenceInput {
  * O estado de ocultação desativa toda a presença, inclusive fora da sala.
  */
 export function presenceIsPrivate(input: Pick<PresenceInput, 'inRoom' | 'roomPrivate' | 'hideActivity'>): boolean {
-  return input.inRoom && input.roomPrivate;
+  return input.inRoom && (input.roomPrivate || input.hideActivity);
 }
 
 /**
