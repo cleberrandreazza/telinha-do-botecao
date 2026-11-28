@@ -173,7 +173,6 @@ fn apply(client: &mut Option<DiscordIpcClient>, plan: &ActivityPlan) -> Result<(
                 connected.set_activity(act).map_err(|_| ())
             }
         }
-        }
     };
     if result.is_err() {
         *client = None;
