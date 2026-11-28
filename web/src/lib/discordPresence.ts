@@ -2,6 +2,8 @@
 export const DISCORD_MAX_PEERS = 50;
 
 export interface DiscordPresenceState {
+  /** Publicação desativada pelo usuário: limpa a atividade do Discord. */
+  enabled: boolean;
   inRoom: boolean;
   roomCode: string;
   isPrivate: boolean;
@@ -24,10 +26,10 @@ export interface PresenceInput {
 
 /**
  * Senha, sala marcada como privada ou o interruptor local.
- * Fora da sala não há atividade para esconder.
+ * O estado de ocultação desativa toda a presença, inclusive fora da sala.
  */
 export function presenceIsPrivate(input: Pick<PresenceInput, 'inRoom' | 'roomPrivate' | 'hideActivity'>): boolean {
-  return input.inRoom && (input.roomPrivate || input.hideActivity);
+  return input.inRoom && input.roomPrivate;
 }
 
 /**
@@ -37,6 +39,7 @@ export function presenceIsPrivate(input: Pick<PresenceInput, 'inRoom' | 'roomPri
 export function buildPresence(input: PresenceInput): DiscordPresenceState {
   const isPrivate = presenceIsPrivate(input);
   return {
+    enabled: !input.hideActivity,
     inRoom: input.inRoom,
     roomCode: input.inRoom && !isPrivate ? input.roomCode : '',
     isPrivate,
