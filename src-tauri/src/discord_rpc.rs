@@ -9,12 +9,15 @@ use serde::Deserialize;
 
 const DEFAULT_WEB_ORIGIN: &str = "https://telinha-do-botecao.vercel.app";
 const PRIVATE_LABEL: &str = "Em uma sala privada";
+const IDLE_DETAILS: &str = "Disponível para assistir e compartilhar";
+const IDLE_STATE: &str = "Abra o Telinha para entrar com seus amigos";
 const JOIN_LABEL: &str = "Entrar na Sala";
 const CODE_ALPHABET: &str = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PresenceState {
+    pub enabled: bool,
     pub in_room: bool,
     pub room_code: String,
     pub is_private: bool,
@@ -26,15 +29,9 @@ pub struct PresenceState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActivityPlan {
     Clear,
-    /// Sem código, sem party e sem botão.
+    /// Sem atividade quando não há transmissão ativa.
     Private,
-    Public {
-        details: String,
-        state: String,
-        party_id: Option<String>,
-        party_size: Option<[i32; 2]>,
-        join_url: Option<String>,
-    },
+    Public { join_url: Option<String> },
 }
 
 fn web_origin() -> String {
@@ -74,52 +71,29 @@ pub fn normalize_room_code(raw: &str) -> Option<String> {
     }
 }
 
-fn party_numbers(viewer_count: u32, max_peers: u32) -> (i32, i32) {
-    let max = max_peers.clamp(1, 500) as i32;
-    let current = (viewer_count.max(1) as i32).min(max);
-    (current, max)
-}
-
-/// O que pode ir ao Discord. `is_private` zera código, party e convite.
+/// Publica Rich Presence apenas enquanto o usuário transmite a tela.
+/// Sala privada não expõe código, party ou convite.
 pub fn plan_activity(state: &PresenceState) -> ActivityPlan {
-    if !state.in_room {
+    if !state.enabled || !state.in_room || !state.is_streaming {
         return ActivityPlan::Clear;
     }
     if state.is_private {
         return ActivityPlan::Private;
     }
-    let (current, max) = party_numbers(state.viewer_count, state.max_peers);
     let code = normalize_room_code(&state.room_code);
     let join_url = code
         .as_ref()
         .map(|room| format!("{}/{}", web_origin(), room));
-    ActivityPlan::Public {
-        details: if state.is_streaming {
-            "Transmitindo tela".to_string()
-        } else {
-            "Assistindo na sala".to_string()
-        },
-        state: format!("{current} / {max}"),
-        party_id: code,
-        party_size: Some([current, max]),
-        join_url,
-    }
+    ActivityPlan::Public { join_url }
 }
 
 #[cfg(test)]
 fn plan_text(plan: &ActivityPlan) -> String {
     match plan {
         ActivityPlan::Clear => String::new(),
-        ActivityPlan::Private => PRIVATE_LABEL.to_string(),
-        ActivityPlan::Public {
-            details,
-            state,
-            party_id,
-            join_url,
-            ..
-        } => format!(
-            "{details}|{state}|{}|{}",
-            party_id.as_deref().unwrap_or(""),
+        ActivityPlan::Private => "🔴 LIVE — Transmitindo tela em sala privada".to_string(),
+        ActivityPlan::Public { join_url } => format!(
+            "🔴 LIVE — Transmitindo tela|{}",
             join_url.as_deref().unwrap_or("")
         ),
     }
@@ -173,26 +147,25 @@ fn apply(client: &mut Option<DiscordIpcClient>, plan: &ActivityPlan) -> Result<(
     let result = {
         let connected = client.as_mut().ok_or(())?;
         match plan {
-        ActivityPlan::Clear => connected.clear_activity().map_err(|_| ()),
-        ActivityPlan::Private => connected
-            .set_activity(activity::Activity::new().details(PRIVATE_LABEL))
-            .map_err(|_| ()),
-        ActivityPlan::Public {
-            details,
-            state,
-            party_id,
-            party_size,
-            join_url,
-        } => {
-            let mut act = activity::Activity::new().details(details.as_str()).state(state.as_str());
-            if let (Some(party), Some(size)) = (party_id.as_ref(), party_size.as_ref()) {
-                act = act.party(activity::Party::new().id(party.as_str()).size(*size));
+            ActivityPlan::Clear => connected.clear_activity().map_err(|_| ()),
+            ActivityPlan::Private => connected
+                .set_activity(
+                    activity::Activity::new()
+                        .activity_type(activity::ActivityType::Watching)
+                        .name("Telinha do Botecão")
+                        .details("🔴 LIVE — Transmitindo tela em sala privada"),
+                )
+                .map_err(|_| ()),
+            ActivityPlan::Public { join_url } => {
+                let mut act = activity::Activity::new()
+                    .activity_type(activity::ActivityType::Watching)
+                    .name("Telinha do Botecão")
+                    .details("🔴 LIVE — Transmitindo tela");
+                if let Some(url) = join_url.as_ref() {
+                    act = act.buttons(vec![activity::Button::new(JOIN_LABEL, url.as_str())]);
+                }
+                connected.set_activity(act).map_err(|_| ())
             }
-            if let Some(url) = join_url.as_ref() {
-                act = act.buttons(vec![activity::Button::new(JOIN_LABEL, url.as_str())]);
-            }
-            connected.set_activity(act).map_err(|_| ())
-        }
         }
     };
     if result.is_err() {
@@ -267,6 +240,7 @@ mod tests {
 
     fn sample(private: bool) -> PresenceState {
         PresenceState {
+            enabled: true,
             in_room: true,
             room_code: "AB234C".into(),
             is_private: private,
@@ -277,72 +251,54 @@ mod tests {
     }
 
     #[test]
-    fn private_room_drops_code_party_and_button() {
+    fn private_room_shows_live_without_room_details() {
         let plan = plan_activity(&sample(true));
         assert_eq!(plan, ActivityPlan::Private);
         let text = plan_text(&plan);
         assert!(!text.contains("AB234C"));
-        assert!(!text.contains("Entrar na Sala"));
         assert!(!text.contains("https://"));
-        assert_eq!(text, PRIVATE_LABEL);
+        assert_eq!(text, "🔴 LIVE — Transmitindo tela em sala privada");
     }
 
     #[test]
-    fn public_room_shows_status_count_and_join_button() {
+    fn public_room_shows_live_without_viewer_count() {
         let plan = plan_activity(&sample(false));
-        match plan {
+        assert_eq!(
+            plan,
             ActivityPlan::Public {
-                details,
-                state,
-                party_id,
-                party_size,
-                join_url,
-            } => {
-                assert_eq!(details, "Transmitindo tela");
-                assert_eq!(state, "4 / 50");
-                assert_eq!(party_id.as_deref(), Some("AB234C"));
-                assert_eq!(party_size, Some([4, 50]));
-                assert_eq!(
-                    join_url.as_deref(),
-                    Some("https://telinha-do-botecao.vercel.app/AB234C")
-                );
+                join_url: Some("https://telinha-do-botecao.vercel.app/AB234C".to_string())
             }
-            other => panic!("plano público esperado, veio {other:?}"),
-        }
+        );
+        let text = plan_text(&plan);
+        assert!(text.starts_with("🔴 LIVE — Transmitindo tela"));
+        assert!(!text.contains("4 / 50"));
     }
 
     #[test]
-    fn watching_uses_the_viewer_label() {
+    fn stopping_stream_clears_activity() {
         let mut state = sample(false);
         state.is_streaming = false;
-        match plan_activity(&state) {
-            ActivityPlan::Public { details, .. } => assert_eq!(details, "Assistindo na sala"),
-            other => panic!("{other:?}"),
-        }
+        assert_eq!(plan_activity(&state), ActivityPlan::Clear);
     }
 
     #[test]
-    fn leaving_the_room_clears_even_if_a_code_is_still_set() {
+    fn leaving_room_clears_activity() {
         let mut state = sample(false);
         state.in_room = false;
         assert_eq!(plan_activity(&state), ActivityPlan::Clear);
-        assert!(!plan_text(&plan_activity(&state)).contains("AB234C"));
     }
 
     #[test]
-    fn invalid_code_does_not_become_a_party_or_a_link() {
+    fn disabled_presence_clears_activity() {
+        let mut state = sample(false);
+        state.enabled = false;
+        assert_eq!(plan_activity(&state), ActivityPlan::Clear);
+    }
+
+    #[test]
+    fn invalid_code_does_not_create_join_button() {
         let mut state = sample(false);
         state.room_code = "IO0000".into();
-        match plan_activity(&state) {
-            ActivityPlan::Public {
-                party_id,
-                join_url,
-                ..
-            } => {
-                assert_eq!(party_id, None);
-                assert_eq!(join_url, None);
-            }
-            other => panic!("{other:?}"),
-        }
+        assert_eq!(plan_activity(&state), ActivityPlan::Public { join_url: None });
     }
 }

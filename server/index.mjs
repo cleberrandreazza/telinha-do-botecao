@@ -170,6 +170,25 @@ function removeFromRoom(peer) {
 
 // ── HTTP server ─────────────────────────────────────────
 const httpServer = createServer((req, res) => {
+  // Ponte HTTPS para abrir o aplicativo desktop a partir de um botão do Discord.
+  const appBridge = /^\/abrir\/([A-HJ-NP-Z2-9]{6})\?ticket=([A-Za-z0-9_-]{16,128})$/.exec(req.url || '');
+  if (req.method === 'GET' && appBridge) {
+    const [, code, ticket] = appBridge;
+    const deepLink = `telinha://sala/${code}?ticket=${encodeURIComponent(ticket)}`;
+    // Redireciona diretamente para o protocolo do app. O clique inicial no
+    // botão do Discord já abriu esta URL HTTPS; não exigimos um segundo clique
+    // numa página intermediária. Se o navegador bloquear o protocolo, ele
+    // exibirá o comportamento padrão de segurança do próprio navegador.
+    res.writeHead(302, {
+      Location: deepLink,
+      'Cache-Control': 'no-store',
+      'Referrer-Policy': 'no-referrer',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.end();
+    return;
+  }
+
   // health check
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
