@@ -133,8 +133,11 @@ export function createDiscordOAuth({ store, webOrigin, getVoiceMembership }) {
           scope: refreshed.scope || authorization.scope,
         });
       } catch (error) {
-        console.warn('[discord-oauth] autorização expirada ou revogada:', error.message);
-        await store.deleteAuthorization(session.discordUserId);
+        console.warn('[discord-oauth] falha ao renovar autorização:', error.message);
+        if (/invalid_grant|revoked|expired/i.test(error.message)) {
+          await store.deleteAuthorization(session.discordUserId);
+          await store.deleteWebSession(token);
+        }
         return null;
       }
 
