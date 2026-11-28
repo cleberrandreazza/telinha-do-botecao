@@ -121,8 +121,8 @@ export function blockedVoiceMessage(voiceChannelId) {
 
 /** Links efêmeros, já com o ticket. O chat público não recebe isto. */
 export function normalizeAppBridgeOrigin(value) {
-  const raw = String(value || '').trim().replace(/\\/+$/, '');
-  if (!raw.startsWith('https://') || /\\s/.test(raw)) return null;
+  const raw = String(value || '').trim().replace(/\/+$/, '');
+  if (!raw.startsWith('https://') || /\s/.test(raw)) return null;
   try {
     const url = new URL(raw);
     return url.origin;
