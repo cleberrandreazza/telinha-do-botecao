@@ -46,7 +46,7 @@ export function roomCodeFromLocation(pathname: string, search: string): RoomLink
   }
   if (parts.length === 1) {
     const code = normalizeRoomCode(parts[0]);
-    if (code) return { code, openApp: false, ticket };
+    if (code) return { code, openApp: false, ticket, discordSession: normalizeDiscordSession(params.get('discord_session')) };
   }
   return null;
 }
