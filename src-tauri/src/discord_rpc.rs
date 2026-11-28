@@ -9,12 +9,15 @@ use serde::Deserialize;
 
 const DEFAULT_WEB_ORIGIN: &str = "https://telinha-do-botecao.vercel.app";
 const PRIVATE_LABEL: &str = "Em uma sala privada";
+const IDLE_DETAILS: &str = "Disponível para assistir e compartilhar";
+const IDLE_STATE: &str = "Abra o Telinha para entrar com seus amigos";
 const JOIN_LABEL: &str = "Entrar na Sala";
 const CODE_ALPHABET: &str = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PresenceState {
+    pub enabled: bool,
     pub in_room: bool,
     pub room_code: String,
     pub is_private: bool,
@@ -26,6 +29,8 @@ pub struct PresenceState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActivityPlan {
     Clear,
+    /// Presença permanente enquanto o app estiver aberto, fora de uma sala.
+    Idle,
     /// Sem código, sem party e sem botão.
     Private,
     Public {
@@ -82,8 +87,11 @@ fn party_numbers(viewer_count: u32, max_peers: u32) -> (i32, i32) {
 
 /// O que pode ir ao Discord. `is_private` zera código, party e convite.
 pub fn plan_activity(state: &PresenceState) -> ActivityPlan {
-    if !state.in_room {
+    if !state.enabled {
         return ActivityPlan::Clear;
+    }
+    if !state.in_room {
+        return ActivityPlan::Idle;
     }
     if state.is_private {
         return ActivityPlan::Private;
@@ -95,7 +103,7 @@ pub fn plan_activity(state: &PresenceState) -> ActivityPlan {
         .map(|room| format!("{}/{}", web_origin(), room));
     ActivityPlan::Public {
         details: if state.is_streaming {
-            "Transmitindo tela".to_string()
+            "🔴 LIVE — Transmitindo tela".to_string()
         } else {
             "Assistindo na sala".to_string()
         },
@@ -110,6 +118,7 @@ pub fn plan_activity(state: &PresenceState) -> ActivityPlan {
 fn plan_text(plan: &ActivityPlan) -> String {
     match plan {
         ActivityPlan::Clear => String::new(),
+        ActivityPlan::Idle => format!("{IDLE_DETAILS}|{IDLE_STATE}"),
         ActivityPlan::Private => PRIVATE_LABEL.to_string(),
         ActivityPlan::Public {
             details,
@@ -174,6 +183,9 @@ fn apply(client: &mut Option<DiscordIpcClient>, plan: &ActivityPlan) -> Result<(
         let connected = client.as_mut().ok_or(())?;
         match plan {
         ActivityPlan::Clear => connected.clear_activity().map_err(|_| ()),
+        ActivityPlan::Idle => connected
+            .set_activity(activity::Activity::new().details(IDLE_DETAILS).state(IDLE_STATE))
+            .map_err(|_| ()),
         ActivityPlan::Private => connected
             .set_activity(activity::Activity::new().details(PRIVATE_LABEL))
             .map_err(|_| ()),
@@ -267,6 +279,7 @@ mod tests {
 
     fn sample(private: bool) -> PresenceState {
         PresenceState {
+            enabled: true,
             in_room: true,
             room_code: "AB234C".into(),
             is_private: private,
@@ -298,7 +311,7 @@ mod tests {
                 party_size,
                 join_url,
             } => {
-                assert_eq!(details, "Transmitindo tela");
+                assert_eq!(details, "🔴 LIVE — Transmitindo tela");
                 assert_eq!(state, "4 / 50");
                 assert_eq!(party_id.as_deref(), Some("AB234C"));
                 assert_eq!(party_size, Some([4, 50]));
@@ -322,11 +335,21 @@ mod tests {
     }
 
     #[test]
-    fn leaving_the_room_clears_even_if_a_code_is_still_set() {
+    fn leaving_the_room_keeps_permanent_presence_without_room_data() {
         let mut state = sample(false);
         state.in_room = false;
+        assert_eq!(plan_activity(&state), ActivityPlan::Idle);
+        let text = plan_text(&plan_activity(&state));
+        assert!(!text.contains("AB234C"));
+        assert!(text.contains(IDLE_DETAILS));
+    }
+
+    #[test]
+    fn disabled_presence_clears_activity_even_outside_a_room() {
+        let mut state = sample(false);
+        state.enabled = false;
+        state.in_room = false;
         assert_eq!(plan_activity(&state), ActivityPlan::Clear);
-        assert!(!plan_text(&plan_activity(&state)).contains("AB234C"));
     }
 
     #[test]
