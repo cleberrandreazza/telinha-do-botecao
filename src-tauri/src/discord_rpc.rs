@@ -32,7 +32,7 @@ pub enum ActivityPlan {
     /// Presença permanente enquanto o app estiver aberto, fora de uma sala.
     Idle,
     /// Sem código, sem party e sem botão.
-    Private,
+    Private { is_streaming: bool },
     Public {
         details: String,
         state: String,
@@ -94,7 +94,7 @@ pub fn plan_activity(state: &PresenceState) -> ActivityPlan {
         return ActivityPlan::Idle;
     }
     if state.is_private {
-        return ActivityPlan::Private;
+        return ActivityPlan::Private { is_streaming: state.is_streaming };
     }
     let (current, max) = party_numbers(state.viewer_count, state.max_peers);
     let code = normalize_room_code(&state.room_code);
@@ -119,7 +119,11 @@ fn plan_text(plan: &ActivityPlan) -> String {
     match plan {
         ActivityPlan::Clear => String::new(),
         ActivityPlan::Idle => format!("{IDLE_DETAILS}|{IDLE_STATE}"),
-        ActivityPlan::Private => PRIVATE_LABEL.to_string(),
+        ActivityPlan::Private { is_streaming } => if *is_streaming {
+            format!("🔴 LIVE — {PRIVATE_LABEL}")
+        } else {
+            PRIVATE_LABEL.to_string()
+        },
         ActivityPlan::Public {
             details,
             state,
@@ -186,8 +190,12 @@ fn apply(client: &mut Option<DiscordIpcClient>, plan: &ActivityPlan) -> Result<(
         ActivityPlan::Idle => connected
             .set_activity(activity::Activity::new().details(IDLE_DETAILS).state(IDLE_STATE))
             .map_err(|_| ()),
-        ActivityPlan::Private => connected
-            .set_activity(activity::Activity::new().details(PRIVATE_LABEL))
+        ActivityPlan::Private { is_streaming } => connected
+            .set_activity(activity::Activity::new().details(if *is_streaming {
+                "🔴 LIVE — Transmitindo tela em sala privada"
+            } else {
+                PRIVATE_LABEL
+            }))
             .map_err(|_| ()),
         ActivityPlan::Public {
             details,
@@ -292,12 +300,13 @@ mod tests {
     #[test]
     fn private_room_drops_code_party_and_button() {
         let plan = plan_activity(&sample(true));
-        assert_eq!(plan, ActivityPlan::Private);
+        assert_eq!(plan, ActivityPlan::Private { is_streaming: true });
         let text = plan_text(&plan);
         assert!(!text.contains("AB234C"));
         assert!(!text.contains("Entrar na Sala"));
         assert!(!text.contains("https://"));
-        assert_eq!(text, PRIVATE_LABEL);
+        assert!(text.contains("LIVE"));
+        assert!(!text.contains("Transmitindo tela em sala privada"));
     }
 
     #[test]
