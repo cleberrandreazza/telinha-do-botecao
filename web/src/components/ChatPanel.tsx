@@ -29,6 +29,7 @@ interface ChatPanelProps {
   onRetry?: (message: ChatMessage) => void;
   /** Código da sala, copiável no topo do chat. */
   roomCode: string;
+  hideRoomCode?: boolean;
   onLeaveRoom: () => void;
   /** Participantes, para a contagem acima da caixa de texto. */
   peers: PeerInfo[];
@@ -68,6 +69,7 @@ export default function ChatPanel({
   onClose,
   onRetry,
   roomCode,
+  hideRoomCode = false,
   onLeaveRoom,
   peers,
   isSharing = false,
@@ -193,19 +195,21 @@ export default function ChatPanel({
         </button>
       </div>
       <div className="flex items-center gap-2 px-3.5 py-2 border-b border-[#1f222e] shrink-0">
-        <button
-          type="button"
-          onClick={handleCopyCode}
-          className="flex-1 flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-surface-container/60 hover:bg-surface-container-high/60 border border-outline-variant/20 transition-colors group/code min-w-0"
-          title="Copiar código da sala"
-        >
-          <span className="material-symbols-outlined text-[14px] text-outline group-hover/code:text-primary transition-colors shrink-0">
-            {copied ? 'check' : 'content_copy'}
-          </span>
-          <span className="font-body text-[11px] text-on-surface-variant font-semibold tracking-wider truncate">
-            {roomCode}
-          </span>
-        </button>
+        {!hideRoomCode && (
+          <button
+            type="button"
+            onClick={handleCopyCode}
+            className="flex-1 flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-surface-container/60 hover:bg-surface-container-high/60 border border-outline-variant/20 transition-colors group/code min-w-0"
+            title="Copiar código da sala"
+          >
+            <span className="material-symbols-outlined text-[14px] text-outline group-hover/code:text-primary transition-colors shrink-0">
+              {copied ? 'check' : 'content_copy'}
+            </span>
+            <span className="font-body text-[11px] text-on-surface-variant font-semibold tracking-wider truncate">
+              {roomCode}
+            </span>
+          </button>
+        )}
         <button
           type="button"
           onClick={onLeaveRoom}

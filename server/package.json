@@ -7,11 +7,12 @@
   "scripts": {
     "start": "node index.mjs",
     "dev": "node index.mjs",
-    "test": "node --test relay-protocol.test.mjs discord-rooms.test.mjs discord-tickets.test.mjs",
-    "build": "node --check index.mjs && node --check relay-protocol.mjs"
+    "test": "node --test relay-protocol.test.mjs discord-rooms.test.mjs discord-store.test.mjs",
+    "build": "node --check index.mjs && node --check discord-bot.mjs && node --check discord-oauth.mjs && node --check discord-rooms.mjs && node --check discord-store.mjs && node --check relay-protocol.mjs"
   },
   "dependencies": {
     "discord.js": "^14.28.1",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "pg": "^8.16.3"
   }
 }

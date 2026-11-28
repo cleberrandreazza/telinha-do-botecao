@@ -11,7 +11,9 @@ import {
   summarizeTelemetry,
 } from './relay-protocol.mjs';
 import { startDiscordBot } from './discord-bot.mjs';
-import { createTicketStore } from './discord-tickets.mjs';
+import { createDiscordStore } from './discord-store.mjs';
+import { createDiscordOAuth } from './discord-oauth.mjs';
+import { restoreVoiceRoom } from './discord-rooms.mjs';
 
 // ── Config ──────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT || '4000', 10);
@@ -38,8 +40,9 @@ let nextChatId = 1;
 /** @type {Map<string, Room>} code → Room */
 const rooms = new Map();
 
-/** Convites de uso único das salas presas a um canal de voz. */
-const voiceTickets = createTicketStore();
+let discordStore = null;
+let discordOAuth = null;
+let discordBot = null;
 
 /** @type {Map<WebSocket, PeerInfo>} */
 const peers = new Map();
@@ -169,26 +172,8 @@ function removeFromRoom(peer) {
 }
 
 // ── HTTP server ─────────────────────────────────────────
-const httpServer = createServer((req, res) => {
-  // Ponte HTTPS para abrir o aplicativo desktop a partir de um botão do Discord.
-  const appBridge = /^\/abrir\/([A-HJ-NP-Z2-9]{6})\?ticket=([A-Za-z0-9_-]{16,128})$/.exec(req.url || '');
-  if (req.method === 'GET' && appBridge) {
-    const [, code, ticket] = appBridge;
-    const deepLink = `telinha://sala/${code}?ticket=${encodeURIComponent(ticket)}`;
-    // Redireciona diretamente para o protocolo do app. O clique inicial no
-    // botão do Discord já abriu esta URL HTTPS; não exigimos um segundo clique
-    // numa página intermediária. Se o navegador bloquear o protocolo, ele
-    // exibirá o comportamento padrão de segurança do próprio navegador.
-    res.writeHead(302, {
-      Location: deepLink,
-      'Cache-Control': 'no-store',
-      'Referrer-Policy': 'no-referrer',
-      'X-Content-Type-Options': 'nosniff',
-    });
-    res.end();
-    return;
-  }
-
+const httpServer = createServer(async (req, res) => {
+  if (discordOAuth && await discordOAuth.handle(req, res)) return;
   // health check
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -226,11 +211,13 @@ wss.on('connection', (ws) => {
     isDesktop: false,
     lastSeen: Date.now(),
     lastChatAt: 0,
+    discordUserId: null,
+    discordVoiceChannelId: null,
   };
   peers.set(ws, peer);
   console.log(`[peer] conectado: ${peerId}`);
 
-  ws.on('message', (data) => {
+  ws.on('message', async (data) => {
     let msg;
     try {
       msg = JSON.parse(data.toString());
@@ -285,7 +272,11 @@ wss.on('connection', (ws) => {
       // ── Entrar na sala ──
       case 'join-room': {
         const code = (msg.code || '').toUpperCase().trim();
-        const room = rooms.get(code);
+        let room = rooms.get(code);
+        if (!room && discordStore) {
+          const mapping = await discordStore.getVoiceRoomByCode(code);
+          if (mapping) room = restoreVoiceRoom(rooms, code, mapping.voiceChannelId, mapping.guildId);
+        }
         if (!room) {
           send(ws, { type: 'error', message: 'Sala não encontrada.' });
           return;
@@ -294,9 +285,16 @@ wss.on('connection', (ws) => {
           send(ws, { type: 'error', message: 'Senha incorreta.' });
           return;
         }
-        if (room.discordRestricted && !voiceTickets.consume(room, msg.ticket)) {
-          send(ws, { type: 'error', message: 'Convite inválido ou expirado. Volte ao Discord e clique em Entrar na Sala de novo.' });
-          return;
+        if (room.discordRestricted) {
+          const sessionToken = typeof msg.discordSession === 'string' ? msg.discordSession : '';
+          const authorization = discordOAuth ? await discordOAuth.validateSession(sessionToken, code) : null;
+          if (!authorization) {
+            send(ws, { type: 'error', message: 'Você precisa autorizar o Discord e estar no canal de voz associado a esta sala.' });
+            return;
+          }
+          await discordOAuth.consumeSession(sessionToken);
+          peer.discordUserId = authorization.discordUserId;
+          peer.discordVoiceChannelId = authorization.voiceChannelId;
         }
         // sai de sala anterior
         removeFromRoom(peer);
@@ -521,10 +519,39 @@ httpServer.listen(PORT, () => {
   console.log(`  ➜ Health check: http://localhost:${PORT}/health\n`);
 });
 
-void startDiscordBot({
-  rooms,
-  holdEmptyRoom: holdEmptyDiscordRoom,
-  issueVoiceTicket: (room) => voiceTickets.issue(room),
-}).catch(() => {
-  console.error('[discord] bot não iniciou; sinalização segue');
-});
+async function initializeDiscordIntegration() {
+  if (!process.env.DATABASE_URL) {
+    console.warn('[discord] integração OAuth desativada: DATABASE_URL não configurada');
+    return;
+  }
+  try {
+    discordStore = createDiscordStore(process.env.DATABASE_URL);
+    await discordStore.initialize();
+    const { startDiscordBot } = await import('./discord-bot.mjs');
+    discordBot = await startDiscordBot({
+      rooms,
+      store: discordStore,
+      holdEmptyRoom: holdEmptyDiscordRoom,
+      onVoiceMembership: (discordUserId, membership) => {
+        for (const peer of peers.values()) {
+          if (peer.discordUserId !== discordUserId || !peer.roomCode) continue;
+          const room = rooms.get(peer.roomCode);
+          if (!membership || !room || membership.guildId !== room.guildId || membership.channelId !== room.voiceChannelId) {
+            removeFromRoom(peer);
+            send(peer.ws, { type: 'error', message: 'Você saiu ou mudou de canal de voz. A conexão com esta sala foi encerrada.' });
+          }
+        }
+      },
+    });
+    if (discordBot) {
+      discordOAuth = createDiscordOAuth({
+        store: discordStore,
+        webOrigin: process.env.PUBLIC_WEB_URL,
+        getVoiceMembership: (userId, roomCode) => discordBot.getVoiceMembership(userId, roomCode),
+      });
+    }
+  } catch (error) {
+    console.error('[discord] integração não iniciou:', error.message);
+  }
+}
+void initializeDiscordIntegration();

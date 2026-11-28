@@ -64,7 +64,7 @@ export interface ChatMessage {
 // ── Signaling messages (client → server) ───────────────
 export type ClientMessage =
   | { type: 'create-room'; nickname: string; password?: string; isDesktop?: boolean }
-  | { type: 'join-room'; code: string; nickname: string; password?: string; isDesktop?: boolean; ticket?: string }
+  | { type: 'join-room'; code: string; nickname: string; password?: string; isDesktop?: boolean; ticket?: string; discordSession?: string }
   | { type: 'leave-room' }
   | { type: 'start-sharing' }
   | { type: 'stop-sharing' }

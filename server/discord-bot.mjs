@@ -1,144 +1,94 @@
-import {
-  ensureVoiceRoom,
-  entryLinks,
-  normalizeWebOrigin,
-} from './discord-rooms.mjs';
+import { ensureVoiceRoom, normalizeWebOrigin, restoreVoiceRoom } from './discord-rooms.mjs';
 
-/**
- * Bot opcional. Sem `DISCORD_BOT_TOKEN` e `DISCORD_CLIENT_ID` o servidor
- * de sinalização segue igual.
- *
- * @param {{
- *   rooms: Map<string, object>,
- *   holdEmptyRoom?: (room: object) => void,
- *   issueVoiceTicket?: (room: object) => string,
- * }} options
- */
-export async function startDiscordBot({ rooms, holdEmptyRoom, issueVoiceTicket }) {
+export async function startDiscordBot({ rooms, holdEmptyRoom, store, onVoiceMembership }) {
   const token = process.env.DISCORD_BOT_TOKEN?.trim();
   const clientId = process.env.DISCORD_CLIENT_ID?.trim();
   if (!token || !clientId) {
     console.log('[discord] bot desligado (sem DISCORD_BOT_TOKEN ou DISCORD_CLIENT_ID)');
-    return;
+    return null;
   }
 
-  let discord;
-  try {
-    discord = await import('discord.js');
-  } catch {
-    console.error('[discord] discord.js indisponível; sinalização segue sem o bot');
-    return;
-  }
-
-  const {
-    Client,
-    GatewayIntentBits,
-    REST,
-    Routes,
-    SlashCommandBuilder,
-    EmbedBuilder,
-    ActionRowBuilder,
-    ButtonBuilder,
-    ButtonStyle,
-  } = discord;
-
+  const discord = await import('discord.js');
+  const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = discord;
   const command = new SlashCommandBuilder()
     .setName('telinha')
-    .setDescription('Abrir a Telinha do Botecão desta call')
-    .addBooleanOption((option) => option
-      .setName('privada')
-      .setDescription('Manter esta sala marcada como privada')
-      .setRequired(false));
+    .setDescription('Criar ou abrir a Telinha vinculada a este canal de voz');
 
-  try {
-    const rest = new REST({ version: '10' }).setToken(token);
-    await rest.put(Routes.applicationCommands(clientId), { body: [command.toJSON()] });
-  } catch {
-    console.error('[discord] não foi possível registrar /telinha; o resto do servidor segue');
-  }
+  const rest = new REST({ version: '10' }).setToken(token);
+  await rest.put(Routes.applicationCommands(clientId), { body: [command.toJSON()] });
 
   const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
   });
 
-  async function replyEphemeral(interaction, payload) {
-    await interaction.reply({ ...payload, ephemeral: true });
+  const voiceMembers = new Map();
+  function updateMember(memberId, guildId, channelId) {
+    if (channelId) voiceMembers.set(memberId, { guildId, channelId });
+    else voiceMembers.delete(memberId);
+    onVoiceMembership?.(memberId, channelId ? { guildId, channelId } : null);
   }
 
-  async function onSlash(interaction) {
-    const requestedPrivate = interaction.options.getBoolean('privada') === true;
-    const voiceChannelId = interaction.guild?.voiceStates?.cache?.get(interaction.user.id)?.channelId
-      || interaction.member?.voice?.channelId
-      || null;
+  client.on('voiceStateUpdate', (oldState, newState) => {
+    const memberId = newState.id || oldState.id;
+    const guildId = newState.guild.id;
+    updateMember(memberId, guildId, newState.channelId);
+  });
 
-    if (!voiceChannelId) {
-      await replyEphemeral(interaction, {
-        content: 'Entre em um canal de voz e use /telinha de novo. A sala fica ligada a essa call.',
-      });
-      return;
-    }
-
-    const { room, created } = ensureVoiceRoom(rooms, voiceChannelId, requestedPrivate);
-    if (created) holdEmptyRoom?.(room);
-    if (!room.discordRestricted || typeof issueVoiceTicket !== 'function') {
-      await replyEphemeral(interaction, { content: 'Não foi possível abrir a Telinha agora.' });
-      return;
-    }
-
-    // Cada execução do slash gera um ticket próprio, sem botão intermediário.
-    const ticket = issueVoiceTicket(room);
-    const links = entryLinks({
-      origin: normalizeWebOrigin(process.env.PUBLIC_WEB_URL),
-      redirectOrigin: process.env.PUBLIC_APP_REDIRECT_URL || process.env.RENDER_EXTERNAL_URL,
-      code: room.code,
-      ticket,
-    });
-    const embed = new EmbedBuilder()
-      .setColor(0x10b981)
-      .setTitle('Sua sala do Telinha está pronta!')
-      .setDescription('Escolha como deseja entrar. Este convite vale 45 segundos e só pode ser usado uma vez.');
-
-    const buttons = [
-      new ButtonBuilder()
-        .setLabel('Entrar pelo navegador')
-        .setStyle(ButtonStyle.Link)
-        .setURL(links.web),
-    ];
-    if (links.appWeb) {
-      buttons.unshift(
-        new ButtonBuilder()
-          .setLabel('Abrir no aplicativo')
-          .setStyle(ButtonStyle.Link)
-          .setURL(links.appWeb),
-      );
-    }
-
-    await replyEphemeral(interaction, {
-      embeds: [embed],
-      components: [new ActionRowBuilder().addComponents(...buttons)],
-    });
-  }
-
-  client.on('error', () => {});
   client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== 'telinha') return;
     try {
-      if (interaction.isChatInputCommand() && interaction.commandName === 'telinha') {
-        await onSlash(interaction);
+      const voiceChannelId = interaction.guild?.voiceStates?.cache?.get(interaction.user.id)?.channelId
+        || interaction.member?.voice?.channelId;
+      if (!voiceChannelId || !interaction.guildId) {
+        await interaction.reply({ content: 'Entre em um canal de voz e use /telinha novamente.', ephemeral: true });
+        return;
       }
-    } catch {
-      if (interaction.isRepliable?.() && !interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          content: 'Não foi possível abrir a Telinha agora.',
-          ephemeral: true,
-        }).catch(() => {});
+
+      updateMember(interaction.user.id, interaction.guildId, voiceChannelId);
+      const persistedCode = await store.getVoiceRoom(interaction.guildId, voiceChannelId);
+      const restored = persistedCode ? restoreVoiceRoom(rooms, persistedCode, voiceChannelId, interaction.guildId) : null;
+      const ensured = restored ? { room: restored, created: false } : ensureVoiceRoom(rooms, voiceChannelId, interaction.guildId);
+      const { room, created } = ensured;
+      if (created) holdEmptyRoom?.(room);
+      await store.saveVoiceRoom(interaction.guildId, voiceChannelId, room.code);
+
+      const origin = normalizeWebOrigin(process.env.PUBLIC_WEB_URL);
+      const browserUrl = `${origin}/?sala=${room.code}&source=discord`;
+      const desktopUrl = `${origin}/abrir/${room.code}?source=discord`;
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setLabel('Entrar pelo navegador').setStyle(ButtonStyle.Link).setURL(browserUrl),
+        new ButtonBuilder().setLabel('Abrir aplicativo').setStyle(ButtonStyle.Link).setURL(desktopUrl),
+      );
+      await interaction.reply({
+        content: `Sala vinculada ao canal **${interaction.guild.channels.cache.get(voiceChannelId)?.name || 'voz'}**. Compartilhe este link com quem está na call. Cada pessoa autoriza o Discord uma vez; a entrada só funciona enquanto estiver neste canal. ${created ? '' : 'Reutilizando a sala existente.'}`,
+        components: [row],
+        ephemeral: true,
+      });
+    } catch (error) {
+      console.error('[discord] comando /telinha falhou:', error.message);
+      if (interaction.isRepliable() && !interaction.replied) {
+        await interaction.reply({ content: 'Não foi possível abrir a Telinha agora.', ephemeral: true }).catch(() => {});
       }
     }
   });
 
-  try {
-    await client.login(token);
-    console.log('[discord] /telinha no ar');
-  } catch {
-    console.error('[discord] login falhou; sinalização segue sem o bot');
+  client.on('error', (error) => console.error('[discord] client error:', error.message));
+  await client.login(token);
+  for (const guild of client.guilds.cache.values()) {
+    await guild.voiceStates.fetch().catch(() => {});
+    for (const state of guild.voiceStates.cache.values()) {
+      if (state.channelId && state.member?.user?.id) updateMember(state.member.user.id, guild.id, state.channelId);
+    }
   }
+
+  return {
+    getVoiceMembership(discordUserId, roomCode) {
+      const room = rooms.get(roomCode);
+      const membership = voiceMembers.get(discordUserId);
+      if (!room || !membership || membership.guildId !== room.guildId || membership.channelId !== room.voiceChannelId) {
+        return { allowed: false };
+      }
+      return { allowed: true, guildId: room.guildId, voiceChannelId: room.voiceChannelId };
+    },
+  };
 }

@@ -9,10 +9,13 @@ const SCHEME: &str = "telinha://";
 const ALPHABET: &str = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PendingRoom {
     pub code: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ticket: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discord_code: Option<String>,
 }
 
 pub struct PendingJoin(pub Mutex<Option<PendingRoom>>);
@@ -24,10 +27,13 @@ impl Default for PendingJoin {
 }
 
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct JoinPayload {
     code: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     ticket: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discord_code: Option<String>,
 }
 
 /// Código de sala de 6 caracteres, no mesmo alfabeto do servidor.
@@ -63,6 +69,15 @@ pub fn room_code_from_url(raw: &str) -> Option<String> {
     normalize_room_code(code)
 }
 
+pub fn normalize_discord_code(raw: &str) -> Option<String> {
+    let token = raw.trim();
+    if (40..=64).contains(&token.len()) && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        Some(token.to_string())
+    } else {
+        None
+    }
+}
+
 pub fn normalize_ticket(raw: &str) -> Option<String> {
     let ticket = raw.trim();
     if (16..=128).contains(&ticket.len())
@@ -76,15 +91,15 @@ pub fn normalize_ticket(raw: &str) -> Option<String> {
     }
 }
 
-fn ticket_from_url(raw: &str) -> Option<String> {
+fn query_value(raw: &str, name: &str) -> Option<String> {
     let query = raw.split_once('?')?.1;
     let query = query.split('#').next().unwrap_or(query);
     for pair in query.split('&') {
         let mut parts = pair.splitn(2, '=');
         let key = parts.next().unwrap_or("");
         let value = parts.next().unwrap_or("");
-        if key == "ticket" {
-            return normalize_ticket(value);
+        if key == name {
+            return Some(value.to_string());
         }
     }
     None
@@ -93,6 +108,7 @@ fn ticket_from_url(raw: &str) -> Option<String> {
 pub struct RoomTarget {
     pub code: String,
     pub ticket: Option<String>,
+    pub discord_code: Option<String>,
 }
 
 /// `telinha://sala/ABC234?ticket=...`. O ticket curto é descartado.
@@ -100,31 +116,34 @@ pub fn room_target_from_url(raw: &str) -> Option<RoomTarget> {
     let code = room_code_from_url(raw)?;
     Some(RoomTarget {
         code,
-        ticket: ticket_from_url(raw),
+        ticket: query_value(raw, "ticket").and_then(|value| normalize_ticket(&value)),
+        discord_code: query_value(raw, "discord_code").and_then(|value| normalize_discord_code(&value)),
     })
 }
 
-pub fn publish(app: &AppHandle, code: &str, ticket: Option<String>) {
+pub fn publish(app: &AppHandle, code: &str, ticket: Option<String>, discord_code: Option<String>) {
     let Some(code) = normalize_room_code(code) else {
         return;
     };
     let ticket = ticket.and_then(|value| normalize_ticket(&value));
+    let discord_code = discord_code.and_then(|value| normalize_discord_code(&value));
     let pending = PendingRoom {
         code: code.clone(),
         ticket: ticket.clone(),
+        discord_code: discord_code.clone(),
     };
     if let Some(state) = app.try_state::<PendingJoin>() {
         if let Ok(mut slot) = state.0.lock() {
             *slot = Some(pending);
         }
     }
-    let _ = app.emit("telinha-join", JoinPayload { code, ticket });
+    let _ = app.emit("telinha-join", JoinPayload { code, ticket, discord_code });
 }
 
 pub fn accept_args(app: &AppHandle, argv: &[String]) {
     for arg in argv {
         if let Some(target) = room_target_from_url(arg) {
-            publish(app, &target.code, target.ticket);
+            publish(app, &target.code, target.ticket, target.discord_code);
         }
     }
 }
@@ -152,7 +171,7 @@ pub fn install(app: &tauri::App) {
     app.deep_link().on_open_url(move |event| {
         for url in event.urls() {
             if let Some(target) = room_target_from_url(url.as_str()) {
-                publish(&handle, &target.code, target.ticket);
+                publish(&handle, &target.code, target.ticket, target.discord_code);
             }
         }
     });
@@ -160,7 +179,7 @@ pub fn install(app: &tauri::App) {
     if let Ok(Some(urls)) = app.deep_link().get_current() {
         for url in urls {
             if let Some(target) = room_target_from_url(url.as_str()) {
-                publish(app.handle(), &target.code, target.ticket);
+                publish(app.handle(), &target.code, target.ticket, target.discord_code);
             }
         }
     }
@@ -183,6 +202,12 @@ mod tests {
         assert_eq!(target.ticket.as_deref(), Some("abcdefghij123456"));
         let short = room_target_from_url("telinha://sala/AB234C?ticket=curto").unwrap();
         assert_eq!(short.ticket, None);
+    }
+
+    #[test]
+    fn preserves_one_time_discord_code_in_deep_link() {
+        let target = room_target_from_url("telinha://sala/AB234C?discord_code=abcdefghijklmnopqrstuvwxyz12345678901234567890").unwrap();
+        assert_eq!(target.discord_code.as_deref(), Some("abcdefghijklmnopqrstuvwxyz12345678901234567890"));
     }
 
     #[test]

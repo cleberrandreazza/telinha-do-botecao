@@ -201,6 +201,7 @@ export default function App() {
   const desktopUpdate = useDesktopUpdate();
   // ── Estado da aplicação ──
   const [screen, setScreen] = useState<AppScreen>('home');
+  const [discordEntry, setDiscordEntry] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
 
@@ -280,6 +281,8 @@ export default function App() {
 
   // ── Refs para manter instâncias estáveis ──
   const signalRef = useRef<SignalingClient | null>(null);
+  const discordSessionRef = useRef<string>('');
+  const discordExchangeRef = useRef<Map<string, Promise<string>>>(new Map());
   const rtcRef = useRef<WebRTCManager | null>(null);
   /**
    * Conexão em andamento. Duas chamadas concorrentes (o StrictMode monta o
@@ -697,6 +700,7 @@ export default function App() {
         password,
         isDesktop: isTauriDesktop(),
         ...(ticket ? { ticket } : {}),
+        ...(discordSessionRef.current ? { discordSession: discordSessionRef.current } : {}),
       });
     } catch (err) {
       setError('Não foi possível conectar ao servidor. Verifique se o servidor está rodando.');
@@ -1163,6 +1167,7 @@ export default function App() {
 
   const resetRoom = () => {
     setScreen('home');
+    setDiscordEntry(false);
     setRoomCode('');
     setRoomPrivate(false);
     pendingSecretRef.current = false;
@@ -1363,7 +1368,7 @@ export default function App() {
       // (o servidor remove e reinsere o mesmo peer).
       if (joinedCodeRef.current !== session.code) {
         joinedCodeRef.current = session.code;
-        signal.send({ type: 'join-room', code: session.code, nickname: session.nickname, isDesktop: isTauriDesktop() });
+        signal.send({ type: 'join-room', code: session.code, nickname: session.nickname, isDesktop: isTauriDesktop(), ...(discordSessionRef.current ? { discordSession: discordSessionRef.current } : {}) });
       }
     } catch {
       if (reconnectCancelledRef.current) return;
@@ -1382,7 +1387,21 @@ export default function App() {
   useEffect(() => {
     if (isMockMode()) return;
 
+    const params = new URLSearchParams(window.location.search);
+    try { discordSessionRef.current = window.sessionStorage.getItem('telinha.discord.session') || ''; } catch { /* storage indisponível */ }
+    setDiscordEntry(params.get('source') === 'discord');
     const link = roomCodeFromLocation(window.location.pathname, window.location.search);
+    if (params.has('discord_code')) {
+      params.delete('discord_code');
+      window.history.replaceState(null, '', `${window.location.pathname}${params.toString() ? `?${params}` : ''}${window.location.hash}`);
+    }
+    if (link && params.get('source') === 'discord' && !link.discordCode && !discordSessionRef.current) {
+      const authUrl = new URL(getSignalingUrl());
+      authUrl.protocol = authUrl.protocol === 'wss:' ? 'https:' : 'http:';
+      const authOrigin = authUrl.origin;
+      window.location.assign(`${authOrigin}/discord/entry/${link.code}`);
+      return;
+    }
     if (link) {
       setLinkedCode(link.code);
       if (link.ticket) {
@@ -1391,12 +1410,13 @@ export default function App() {
         window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
       }
       if (link.openApp && !isTauriDesktop()) {
-        window.location.assign(desktopRoomUrl(link.code, link.ticket));
+        window.location.assign(desktopRoomUrl(link.code, link.ticket, link.discordCode));
+        return;
       }
       const nick = loadProfile()?.nickname?.trim();
       if (nick) {
         pendingSecretRef.current = false;
-        void handleJoinRoom(link.code, nick, undefined, link.ticket);
+        joinLinkRef.current(link.code, link.ticket, link.discordCode);
       }
       return;
     }
@@ -1416,22 +1436,51 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const joinLinkRef = useRef<(code: string, ticket?: string | null) => void>(() => {});
+  const joinLinkRef = useRef<(code: string, ticket?: string | null, discordCode?: string | null) => void>(() => {});
   const lastDesktopJoin = useRef<{ key: string; at: number }>({ key: '', at: 0 });
-  joinLinkRef.current = (code: string, ticket?: string | null) => {
-    const key = `${code}:${ticket ?? ''}`;
+  joinLinkRef.current = (code: string, ticket?: string | null, discordCode?: string | null) => {
+    const key = `${code}:${ticket ?? ''}:${discordCode ?? ''}`;
     const now = Date.now();
     if (lastDesktopJoin.current.key === key && now - lastDesktopJoin.current.at < 2000) return;
     lastDesktopJoin.current = { key, at: now };
     const nick = nickRef.current.trim() || loadProfile()?.nickname?.trim() || 'Anônimo';
     pendingSecretRef.current = false;
-    void handleJoinRoom(code, nick, undefined, ticket);
+    const join = async () => {
+      if (discordCode) {
+        let pending = discordExchangeRef.current.get(discordCode);
+        if (!pending) {
+          const api = new URL(getSignalingUrl());
+          api.protocol = api.protocol === 'wss:' ? 'https:' : 'http:';
+          pending = fetch(new URL('/discord/exchange', api.origin), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: discordCode, roomCode: code }),
+          }).then(async (response) => {
+            if (!response.ok) throw new Error(await response.text());
+            const data = await response.json() as { sessionToken: string };
+            if (!data.sessionToken || !/^[A-Za-z0-9_-]{40,64}$/.test(data.sessionToken)) throw new Error('Sessão Discord inválida.');
+            return data.sessionToken;
+          });
+          discordExchangeRef.current.set(discordCode, pending);
+        }
+        try {
+          discordSessionRef.current = await pending;
+          try { window.sessionStorage.setItem('telinha.discord.session', discordSessionRef.current); } catch { /* storage indisponível */ }
+        } catch (error) {
+          discordExchangeRef.current.delete(discordCode);
+          setError(error instanceof Error ? error.message : 'Não foi possível validar o acesso Discord.');
+          return;
+        }
+      }
+      void handleJoinRoom(code, nick, undefined, ticket);
+    };
+    void join();
   };
 
   const joinDesktopUrls = (urls: string[]) => {
     for (const url of urls) {
       const target = roomTargetFromDesktopUrl(url);
-      if (target) joinLinkRef.current(target.code, target.ticket);
+      if (target) joinLinkRef.current(target.code, target.ticket, target.discordCode);
     }
   };
 
@@ -1460,16 +1509,16 @@ export default function App() {
       const { listen } = await import('@tauri-apps/api/event');
       const { invoke } = await import('@tauri-apps/api/core');
       if (cancelled) return;
-      stops.push(await listen<{ code: string; ticket?: string | null }>('telinha-join', (event) => {
-        if (event.payload?.code) joinLinkRef.current(event.payload.code, event.payload.ticket);
+      stops.push(await listen<{ code: string; ticket?: string | null; discordCode?: string | null }>('telinha-join', (event) => {
+        if (event.payload?.code) joinLinkRef.current(event.payload.code, event.payload.ticket, event.payload.discordCode);
       }));
       if (cancelled) {
         stopAll();
         return;
       }
       try {
-        const pending = await invoke<{ code: string; ticket?: string | null } | null>('take_pending_join');
-        if (!cancelled && pending?.code) joinLinkRef.current(pending.code, pending.ticket);
+        const pending = await invoke<{ code: string; ticket?: string | null; discordCode?: string | null } | null>('take_pending_join');
+        if (!cancelled && pending?.code) joinLinkRef.current(pending.code, pending.ticket, pending.discordCode);
       } catch {
         // O site não tem o comando.
       }
@@ -1589,6 +1638,7 @@ export default function App() {
       {screen === 'room' && (
         <Room
           code={roomCode}
+          hideRoomCode={discordEntry}
           myPeerId={myPeerId}
           nickname={nickname}
           peers={peers}
