@@ -9,8 +9,6 @@ use serde::Deserialize;
 
 const DEFAULT_WEB_ORIGIN: &str = "https://telinha-do-botecao.vercel.app";
 const PRIVATE_LABEL: &str = "Em uma sala privada";
-const IDLE_DETAILS: &str = "Disponível para assistir e compartilhar";
-const IDLE_STATE: &str = "Abra o Telinha para entrar com seus amigos";
 const JOIN_LABEL: &str = "Entrar na Sala";
 const CODE_ALPHABET: &str = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -29,8 +27,6 @@ pub struct PresenceState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActivityPlan {
     Clear,
-    /// Presença permanente enquanto o app estiver aberto, fora de uma sala.
-    Idle,
     /// Sem código, party e botão em sala privada.
     Private,
     Public {
@@ -86,11 +82,8 @@ fn party_numbers(viewer_count: u32, max_peers: u32) -> (i32, i32) {
 /// Publica Rich Presence apenas enquanto o usuário transmite a tela.
 /// Sala privada não expõe código, party ou convite.
 pub fn plan_activity(state: &PresenceState) -> ActivityPlan {
-    if !state.enabled {
+    if !state.enabled || !state.in_room || !state.is_streaming {
         return ActivityPlan::Clear;
-    }
-    if !state.in_room {
-        return ActivityPlan::Idle;
     }
     if state.is_private {
         return ActivityPlan::Private;
@@ -111,7 +104,6 @@ pub fn plan_activity(state: &PresenceState) -> ActivityPlan {
 fn plan_text(plan: &ActivityPlan) -> String {
     match plan {
         ActivityPlan::Clear => String::new(),
-        ActivityPlan::Idle => format!("{IDLE_DETAILS}|{IDLE_STATE}"),
         ActivityPlan::Private => "🔴 LIVE — Transmitindo tela em sala privada".to_string(),
         ActivityPlan::Public { party_id, party_size, join_url } => format!(
             "🔴 LIVE — Transmitindo tela|{}|{}|{}",
@@ -171,9 +163,6 @@ fn apply(client: &mut Option<DiscordIpcClient>, plan: &ActivityPlan) -> Result<(
         let connected = client.as_mut().ok_or(())?;
         match plan {
             ActivityPlan::Clear => connected.clear_activity().map_err(|_| ()),
-            ActivityPlan::Idle => connected
-                .set_activity(activity::Activity::new().details(IDLE_DETAILS).state(IDLE_STATE))
-                .map_err(|_| ()),
             ActivityPlan::Private => connected
                 .set_activity(
                     activity::Activity::new()
@@ -313,15 +302,11 @@ mod tests {
     }
 
     #[test]
-    fn app_open_outside_room_keeps_idle_presence() {
+    fn app_open_outside_room_clears_activity() {
         let mut state = sample(false);
         state.in_room = false;
         state.is_streaming = false;
-        assert_eq!(plan_activity(&state), ActivityPlan::Idle);
-        let text = plan_text(&plan_activity(&state));
-        assert!(text.contains(IDLE_DETAILS));
-        assert!(text.contains(IDLE_STATE));
-        assert!(!text.contains("AB234C"));
+        assert_eq!(plan_activity(&state), ActivityPlan::Clear);
     }
 
     #[test]
