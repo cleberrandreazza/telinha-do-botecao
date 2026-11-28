@@ -1394,7 +1394,7 @@ export default function App() {
       params.delete('discord_code');
       window.history.replaceState(null, '', `${window.location.pathname}${params.toString() ? `?${params}` : ''}${window.location.hash}`);
     }
-    if (link && params.get('source') === 'discord' && !discordSessionRef.current) {
+    if (link && params.get('source') === 'discord' && !link.discordCode && !discordSessionRef.current) {
       const authUrl = new URL(getSignalingUrl());
       authUrl.protocol = authUrl.protocol === 'wss:' ? 'https:' : 'http:';
       const authOrigin = authUrl.origin;
