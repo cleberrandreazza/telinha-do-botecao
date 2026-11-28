@@ -85,8 +85,8 @@ function readMeasuredResolution(stream: MediaStream | null): string | null {
  * Aviso de "a captura é menor que a resolução pedida" (M10).
  *
  * O aviso usa só o que foi medido na faixa enviada. Sem medição não há o
- * que afirmar (docs/diagnostics.md). Janela e aba abaixo do alvo saem pelo
- * canvas; quando a faixa medida já alcança o alvo, este aviso fica vazio.
+ * que afirmar (docs/diagnostics.md). Janela e aba com altura abaixo do alvo
+ * saem pelo canvas; quando a faixa medida já alcança essa altura, o aviso fica vazio.
  */
 function readCaptureLimitNotice(
   stream: MediaStream | null,

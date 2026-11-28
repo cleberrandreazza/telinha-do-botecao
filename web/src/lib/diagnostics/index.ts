@@ -25,7 +25,7 @@ export { selectNetwork, classifyRoute } from './ice.ts';
 export { buildSample, emptyCounters, reportsFrom } from './parse.ts';
 export { classifyDiagnosis, diagnosisSummary } from './classify.ts';
 export { detectEvents } from './events.ts';
-export { AdaptiveBitrateController, evaluateAbr, initialAbrState, outboundFpsForAbr } from './abr.ts';
+export { AdaptiveBitrateController, evaluateAbr, initialAbrState, outboundFpsForAbr, senderMinBitrate } from './abr.ts';
 export type { AbrChange, AbrDecision, AbrState } from './abr.ts';
 export { PlaybackMonitor } from './playback.ts';
 export type { PlaybackVideo } from './playback.ts';

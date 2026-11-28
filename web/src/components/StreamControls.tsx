@@ -36,6 +36,8 @@ interface StreamControlsProps {
   onZoomChange?: (zoom: number) => void;
   /** Entra/sai da tela cheia do player. Sem ele, o botão não aparece. */
   onToggleFullscreen?: () => void;
+  /** O player deste botão já está em tela cheia. */
+  fullscreen?: boolean;
   /** Abre o diagnóstico (só quando o player tem subscribeStats). */
   onShowStats?: () => void;
   /** O painel de diagnóstico está aberto? */
@@ -74,6 +76,7 @@ export default function StreamControls({
   zoom = 1,
   onZoomChange,
   onToggleFullscreen,
+  fullscreen = false,
   onShowStats,
   statsActive,
   onShowSettings,
@@ -246,10 +249,11 @@ export default function StreamControls({
         {/* 4. Tela cheia */}
         {onToggleFullscreen && (
         <ControlButton
-          icon="fullscreen"
-          title="Tela cheia"
-          ariaLabel="Tela cheia da transmissão"
+          icon={fullscreen ? 'fullscreen_exit' : 'fullscreen'}
+          title={fullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
+          ariaLabel={fullscreen ? 'Sair da tela cheia' : 'Tela cheia da transmissão'}
           onClick={onToggleFullscreen}
+          active={fullscreen}
         />
         )}
 

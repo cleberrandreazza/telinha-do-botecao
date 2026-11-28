@@ -59,20 +59,16 @@ body {
    Auto-hide UI on Mouse Inactivity
    ═══════════════════════════════════════════ */
 .autohide-ui {
-  transition: opacity 0.4s ease, transform 0.4s ease, pointer-events 0.4s ease;
+  transition: opacity 0.4s ease, transform 0.4s ease;
 }
-body.mouse-inactive .autohide-ui {
+body.fullscreen-ui.mouse-inactive .autohide-ui {
   opacity: 0 !important;
   pointer-events: none !important;
 }
-body.mouse-inactive {
-  cursor: none;
-}
-
-/* Hide cursor everywhere when inactive — including fullscreen containers */
-body.mouse-inactive *,
-body.mouse-inactive *::before,
-body.mouse-inactive *::after {
+body.fullscreen-ui.mouse-inactive,
+body.fullscreen-ui.mouse-inactive *,
+body.fullscreen-ui.mouse-inactive *::before,
+body.fullscreen-ui.mouse-inactive *::after {
   cursor: none !important;
 }
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { equal, ok } from 'node:assert/strict';
-import { AdaptiveBitrateController, evaluateAbr, initialAbrState, outboundFpsForAbr } from './abr.ts';
+import { AdaptiveBitrateController, evaluateAbr, initialAbrState, outboundFpsForAbr, senderMinBitrate } from './abr.ts';
 import { classifyDiagnosis, diagnosisSummary } from './classify.ts';
 import { detectEvents } from './events.ts';
 import { buildReport, parseBrowser, sanitize } from './export.ts';
@@ -431,6 +431,12 @@ test('seleção do par ICE não usa um succeeded arbitrário', () => {
   equal(nominated.selection, 'nominated');
   equal(nominated.route, 'relay');
   equal(nominated.rttMs, 110);
+});
+
+test('piso do sender é 25% do teto da resolução', () => {
+  equal(senderMinBitrate(8_000_000), 2_000_000);
+  equal(senderMinBitrate(2_000_000), 500_000);
+  equal(initialAbrState(30, 8_000_000).minBitrate, 2_000_000);
 });
 
 test('ABR corta bitrate sob limitação de banda e não corta por CPU', () => {

@@ -524,7 +524,7 @@ export default function StreamViewer({
       {/* ── Floating Control Island (mesmo menu dos tiles da grade) ── */}
       <div
         className={`absolute bottom-6 left-1/2 -translate-x-1/2 z-30 autohide-ui transition-all duration-300 flex flex-col items-center ${
-          mouseInactive ? 'opacity-0 translate-y-6 pointer-events-none' : 'opacity-100 translate-y-0'
+          isFullscreen && mouseInactive ? 'opacity-0 translate-y-6 pointer-events-none' : 'opacity-100 translate-y-0'
         }`}
       >
         <StreamControls
@@ -537,6 +537,7 @@ export default function StreamViewer({
           onTogglePause={togglePause}
           zoom={zoom}
           onZoomChange={(next) => setZoomIndex(Math.max(0, ZOOM_LEVELS.findIndex((level) => level === next)))}
+          fullscreen={isFullscreen}
           onToggleFullscreen={toggleFullscreen}
           onShowStats={subscribeStats ? () => setShowStats((open) => !open) : undefined}
           statsActive={showStats}

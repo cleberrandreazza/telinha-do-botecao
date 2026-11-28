@@ -24,7 +24,8 @@ export interface AbrDecision {
 // Thresholds antigos (60%/85%) causavam espiral de morte: um FPS já baixo
 // fazia o ABR cortar bitrate, o Chrome entregava ainda menos FPS, e a cascata
 // ia até 0.5 Mbps. O corte só acontece abaixo de 25% do alvo (~7 fps em 30).
-// Isso continua valendo com maintain-framerate: um mergulho curto não reduz o teto.
+// Isso continua valendo com maintain-resolution: um mergulho curto não reduz o teto.
+// O piso do controlador é 25% do teto, o mesmo `minBitrate` do sender.
 const LOW_FPS_THRESHOLD = 0.25;
 const HIGH_FPS_THRESHOLD = 0.90;
 const DECREASE_STEP = 0.7;
@@ -32,7 +33,12 @@ const INCREASE_STEP = 1.15;
 const MIN_LOW_POLLS = 5;
 const MIN_HIGH_POLLS = 15;
 
-export function initialAbrState(targetFps: number, maxBitrate: number, minBitrate = 500_000): AbrState {
+/** Piso do sender e do ABR: um quarto do teto da resolução escolhida. */
+export function senderMinBitrate(maxBitrate: number): number {
+  return Math.round(maxBitrate * 0.25);
+}
+
+export function initialAbrState(targetFps: number, maxBitrate: number, minBitrate = senderMinBitrate(maxBitrate)): AbrState {
   return {
     currentMaxBitrate: maxBitrate,
     initialBitrate: maxBitrate,
@@ -153,7 +159,7 @@ export class AdaptiveBitrateController {
   ) {
     this.applier = applier;
     this.onChange = onChange;
-    this.state = initialAbrState(targetFps, maxBitrate);
+    this.state = initialAbrState(targetFps, maxBitrate, senderMinBitrate(maxBitrate));
   }
 
   onSample(sample: MetricSample) {

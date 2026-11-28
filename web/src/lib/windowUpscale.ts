@@ -1,10 +1,10 @@
 /**
- * Escala proporcional de janela ou aba, só quando a captura é menor que o alvo.
+ * Escala proporcional de janela ou aba, só quando a captura é mais baixa que o alvo.
  *
  * A captura não leva `width`/`height`: o navegador entrega o tamanho real e
- * acompanha o resize sem cortar. Se os dois lados já alcançam o alvo, a track
- * nativa segue direto. Abaixo disso, um `<video>` oculto desenha num canvas
- * par, cabendo no alvo, e a track desse canvas é que sai.
+ * acompanha o resize sem cortar. Se a altura já alcança o alvo, a track
+ * nativa segue direto — a largura não decide. Abaixo disso, um `<video>`
+ * oculto desenha num canvas par, na altura do alvo e na proporção da fonte.
  */
 
 export interface FrameSize {
@@ -24,58 +24,59 @@ export function evenDimension(value: number): number {
 }
 
 /**
- * A captura precisa de upscale quando os dois lados estão abaixo do alvo.
+ * A captura precisa de canvas quando a altura está abaixo do alvo.
  *
- * 1920×1080 ou maior, em 1080p, já cobre o alvo: não há o que ampliar.
- * Um lado no teto e o outro menor também fica nativo, senão o quadro estica.
- * Medida inválida não liga o canvas.
+ * 1080 de altura em 1080p já cobre, mesmo em ultrawide (2560×1080, 3440×1440):
+ * a track nativa segue. Uma janela mais baixa liga o canvas. Medida inválida não liga.
  */
 export function sourceNeedsUpscale(
   sourceWidth: number,
   sourceHeight: number,
-  targetWidth: number,
   targetHeight: number,
 ): boolean {
   if (
     !Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) ||
-    !Number.isFinite(targetWidth) || !Number.isFinite(targetHeight) ||
-    sourceWidth < 2 || sourceHeight < 2 || targetWidth < 2 || targetHeight < 2
+    !Number.isFinite(targetHeight) ||
+    sourceWidth < 2 || sourceHeight < 2 || targetHeight < 2
   ) {
     return false;
   }
-  return sourceWidth < targetWidth && sourceHeight < targetHeight;
+  return sourceHeight < targetHeight;
 }
 
 /**
- * Tamanho de saída dentro do alvo, sem esticar.
+ * Tamanho de saída pela altura do alvo, sem teto de largura.
  *
- * O lado que bater primeiro no teto (largura ou altura do alvo) trava a escala.
- * Os dois lados saem pares. Sem medida válida, null — nada é inventado.
+ * A proporção da fonte fica intacta: 3000×1000 em 1080p sai 3240×1080, não
+ * 1920×640. Os dois lados saem pares. Sem medida válida, null — nada é inventado.
  */
 export function windowOutputSize(
   sourceWidth: number,
   sourceHeight: number,
-  targetWidth: number,
   targetHeight: number,
 ): FrameSize | null {
   if (
     !Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) ||
-    !Number.isFinite(targetWidth) || !Number.isFinite(targetHeight) ||
-    sourceWidth < 2 || sourceHeight < 2 || targetWidth < 2 || targetHeight < 2
+    !Number.isFinite(targetHeight) ||
+    sourceWidth < 2 || sourceHeight < 2 || targetHeight < 2
   ) {
     return null;
   }
-  const aspect = sourceWidth / sourceHeight;
-  const scaleByWidth = targetWidth / sourceWidth;
-  const scaleByHeight = targetHeight / sourceHeight;
-  const width = scaleByHeight <= scaleByWidth
-    ? evenDimension(targetHeight * aspect)
-    : evenDimension(targetWidth);
-  const height = scaleByHeight <= scaleByWidth
-    ? evenDimension(targetHeight)
-    : evenDimension(targetWidth / aspect);
+  const height = evenDimension(targetHeight);
+  const width = evenDimension(targetHeight * (sourceWidth / sourceHeight));
   if (width < 2 || height < 2) return null;
   return { width, height };
+}
+
+/**
+ * `scaleResolutionDownBy` só pela altura.
+ *
+ * Fonte mais alta que o preset reduz pela razão das alturas. Altura igual ou
+ * menor não reduz: a largura, mesmo ultrawide, não entra na conta.
+ */
+export function resolutionScaleDownBy(sourceHeight: number, targetHeight: number): number {
+  if (!Number.isFinite(sourceHeight) || !Number.isFinite(targetHeight) || targetHeight <= 0) return 1;
+  return sourceHeight > targetHeight ? sourceHeight / targetHeight : 1;
 }
 
 /** Intervalo do relógio de desenho, em ms. 30 fps vira 33. */
@@ -223,7 +224,6 @@ export class SurfaceFramePump {
     return sourceNeedsUpscale(
       this.video.videoWidth,
       this.video.videoHeight,
-      this.target.width,
       this.target.height,
     );
   }
@@ -310,6 +310,7 @@ export class SurfaceFramePump {
     if (this.stopped) return;
     this.stopped = true;
     this.drawing = false;
+    this.onSize = null;
     this.stopClock();
     this.video.removeEventListener('resize', this.onResize);
     this.video.removeEventListener('loadedmetadata', this.onResize);
@@ -318,9 +319,13 @@ export class SurfaceFramePump {
     this.video.remove();
     this.sourceTrack.onended = null;
     this.sourceTrack.stop();
-    this.outputTrack?.stop();
+    if (this.outputTrack) {
+      this.outputTrack.onended = null;
+      this.outputTrack.stop();
+    }
     this.outputTrack = null;
-    this.onSize = null;
+    this.canvas.width = 0;
+    this.canvas.height = 0;
   }
 
   private openStream(fps: number): MediaStreamTrack {
@@ -349,7 +354,6 @@ export class SurfaceFramePump {
     const next = windowOutputSize(
       this.video.videoWidth,
       this.video.videoHeight,
-      this.target.width,
       this.target.height,
     );
     if (!next) return;

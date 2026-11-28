@@ -128,10 +128,6 @@ export default function Room({
   onRequestStream,
   onStreamRemoved,
 }: RoomProps) {
-  // Menu aberto ao entrar numa sala sem nenhuma transmissão em andamento.
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  /** Aberto por padrão: tirar o mouse não fecha, só um clique. Depois de fechado, volta ao normal. */
-  const sidebarPinned = useRef(sidebarOpen);
   const [mouseInactive, setMouseInactive] = useState(false);
   // A live começa muda: o som só liga quando a pessoa pede.
   const [volume, setVolume] = useState(0);
@@ -192,12 +188,7 @@ export default function Room({
     if (!isSharing) setShowSenderStats(false);
   }, [isSharing]);
 
-  const sidebarRef = useRef<HTMLElement>(null);
-  const mouseOverSidebar = useRef(false);
-  const sidebarLeaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mouseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** Espelho do estado do menu lateral para o timer de auto-ocultar (evita closure velha). */
-  const sidebarOpenRef = useRef(false);
 
   // Build remote streams list (exclude local)
   const remoteStreams = streams.filter(s => s.peerId !== myPeerId);
@@ -386,39 +377,28 @@ export default function Room({
 
   // ── Track fullscreen state ──
   useEffect(() => {
-    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    const onFsChange = () => {
+      const active = document.fullscreenElement !== null;
+      setIsFullscreen(active);
+      document.body.classList.toggle('fullscreen-ui', active);
+    };
     document.addEventListener('fullscreenchange', onFsChange);
-    return () => document.removeEventListener('fullscreenchange', onFsChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', onFsChange);
+      document.body.classList.remove('fullscreen-ui');
+    };
   }, []);
 
-  // ── Mouse inactivity auto-hide (3s) — skip if mouse is over sidebar ──
+  // ── Mouse inactivity auto-hide (3s) em tela cheia ──
   const resetMouseTimer = useCallback(() => {
     setMouseInactive(false);
     document.body.classList.remove('mouse-inactive');
     if (mouseTimer.current) clearTimeout(mouseTimer.current);
-
-    const schedule = () => {
-      mouseTimer.current = setTimeout(() => {
-        // Não oculta a UI enquanto o mouse estiver sobre o menu lateral ou o
-        // menu estiver aberto: sem isso o menu some em 3s e os botões dele
-        // ficam inalcançáveis (o clique "Abrir menu lateral" não levava ao
-        // "Compartilhar Tela").
-        if (mouseOverSidebar.current || sidebarOpenRef.current) {
-          schedule();
-          return;
-        }
-        setMouseInactive(true);
-        document.body.classList.add('mouse-inactive');
-      }, 3000);
-    };
-    schedule();
+    mouseTimer.current = setTimeout(() => {
+      setMouseInactive(true);
+      document.body.classList.add('mouse-inactive');
+    }, 3000);
   }, []);
-
-  // Mantém o espelho do estado do menu em dia (timer não guarda closure velha).
-  useEffect(() => {
-    sidebarOpenRef.current = sidebarOpen;
-    if (!sidebarOpen) sidebarPinned.current = false;
-  }, [sidebarOpen]);
 
   useEffect(() => {
     const handler = () => resetMouseTimer();
@@ -442,19 +422,6 @@ export default function Room({
     }
     return () => { document.documentElement.style.cursor = ''; };
   }, [isFullscreen, mouseInactive]);
-
-  // ── Sidebar: never close while mouse is over it ──
-  const handleSidebarMouseEnter = () => {
-    mouseOverSidebar.current = true;
-    if (sidebarLeaveTimer.current) {
-      clearTimeout(sidebarLeaveTimer.current);
-      sidebarLeaveTimer.current = null;
-    }
-  };
-
-  const handleSidebarMouseLeave = () => {
-    mouseOverSidebar.current = false;
-  };
 
   // Only show peers who are sharing
   const listPeers = peers.filter(p => p.isSharing);

@@ -127,14 +127,13 @@ test('janela pequena nos dois lados gera aviso', () => {
   assert.ok(/A janela está sendo transmitida na resolução nativa \(1280×720\), sem esticar/.test(String(notice)));
 });
 
-test('limite de tamanho fica na captura como max, sem ideal', () => {
+test('tela inteira limita só a altura, sem teto de largura', () => {
   const constraints = captureVideoConstraints({ width: 1920, height: 1080 }, 30);
   assert.deepEqual(constraints, {
-    width: { max: 1920 },
     height: { max: 1080 },
     frameRate: { ideal: 30, max: 30 },
   });
-  assert.ok(!('ideal' in constraints.width));
+  assert.equal('width' in constraints, false);
   assert.ok(!('ideal' in constraints.height));
 });
 

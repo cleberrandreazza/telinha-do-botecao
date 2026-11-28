@@ -80,6 +80,7 @@ export default function StreamTile({
   const videoRef = useRef<HTMLVideoElement>(null);
   const [internalZoom, setInternalZoom] = useState(1);
   const [showStats, setShowStats] = useState(false);
+  const [tileFullscreen, setTileFullscreen] = useState(false);
   const [snapshot, setSnapshot] = useState<DiagnosticsSnapshot | null>(null);
   const [livePlayback, setLivePlayback] = useState<PlaybackSample | null>(null);
   const [liveAudio, setLiveAudio] = useState<AudioPlaybackReport | null>(null);
@@ -97,6 +98,19 @@ export default function StreamTile({
 
   // O zoom pode vir controlado pelo Room (por peerId) ou ficar no tile.
   const currentZoom = zoom ?? internalZoom;
+
+  useEffect(() => {
+    const onChange = () => setTileFullscreen(document.fullscreenElement === containerRef.current);
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    const node = containerRef.current;
+    if (!node) return;
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void node.requestFullscreen();
+  };
 
   // Zoom + arrasto: o pan é local do tile e nunca deixa a imagem sair do quadro.
   const { pan, dragging, onPointerDown, onPointerMove, onPointerUp, onPointerCancel } = useZoomPan(containerRef, currentZoom);
@@ -235,7 +249,7 @@ export default function StreamTile({
 
       {/* Overlay de pausa: quadro congelado + aviso no centro do tile */}
       {paused && (
-        <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px] flex items-center justify-center z-10 pointer-events-none">
+        <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px] flex items-center justify-center z-10 pointer-events-none autohide-ui">
           <div className="flex flex-col items-center gap-2">
             <span className="w-14 h-14 rounded-full bg-black/70 flex items-center justify-center">
               <span className="material-symbols-outlined text-[28px] text-on-surface">play_circle</span>
@@ -248,7 +262,7 @@ export default function StreamTile({
       )}
 
       {/* Badge do transmissor (topo-esquerdo) */}
-      <div className="absolute top-2 left-2 h-6 px-2 rounded-lg bg-black/70 backdrop-blur-md border border-white/10 flex items-center gap-1.5 z-10 pointer-events-none">
+      <div className="absolute top-2 left-2 h-6 px-2 rounded-lg bg-black/70 backdrop-blur-md border border-white/10 flex items-center gap-1.5 z-10 pointer-events-none autohide-ui">
         <span className="w-1.5 h-1.5 rounded-full bg-primary motion-safe:animate-pulse shrink-0" />
         <span className="text-[12px] font-body text-on-surface font-medium leading-none truncate max-w-[110px]">{nickname}</span>
       </div>
@@ -259,7 +273,7 @@ export default function StreamTile({
           onClick={onTheater}
           aria-pressed={theater}
           aria-label={theater ? 'Voltar à grade' : 'Modo teatro'}
-          className={`absolute top-2 right-2 z-20 w-9 h-9 sm:w-8 sm:h-8 rounded-lg bg-black/70 backdrop-blur-md border flex items-center justify-center transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-primary/60 ${
+          className={`absolute top-2 right-2 z-20 w-9 h-9 sm:w-8 sm:h-8 rounded-lg bg-black/70 backdrop-blur-md border flex items-center justify-center transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-primary/60 autohide-ui ${
             theater
               ? 'text-primary border-primary/40 hover:border-primary/60'
               : 'text-on-surface border-white/10 hover:text-primary hover:border-primary/40'
@@ -270,7 +284,7 @@ export default function StreamTile({
       )}
 
       {/* Controles do rodapé — mesmo menu do player de 1 tela, no hover/foco */}
-      <div className="absolute bottom-2 inset-x-2 flex items-center justify-center opacity-0 group-hover:opacity-100 focus-within:opacity-100 pointer-events-none group-hover:pointer-events-auto focus-within:pointer-events-auto transition-opacity z-10">
+      <div className="absolute bottom-2 inset-x-2 flex items-center justify-center opacity-0 group-hover:opacity-100 focus-within:opacity-100 pointer-events-none group-hover:pointer-events-auto focus-within:pointer-events-auto transition-opacity z-10 autohide-ui">
         <StreamControls
           nickname={nickname}
           muted={muted}
@@ -281,7 +295,8 @@ export default function StreamTile({
           onTogglePause={onTogglePause}
           zoom={currentZoom}
           onZoomChange={applyZoom}
-          onToggleFullscreen={() => { void containerRef.current?.requestFullscreen(); }}
+          fullscreen={tileFullscreen}
+          onToggleFullscreen={toggleFullscreen}
           onShowStats={subscribeStats ? () => setShowStats((open) => !open) : undefined}
           statsActive={showStats}
           onStopWatching={onStopWatching}

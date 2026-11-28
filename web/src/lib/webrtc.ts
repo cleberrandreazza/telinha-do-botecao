@@ -3,10 +3,11 @@ import { configureAudioSenderParameters, configureOpusReceiverSdp, configureOpus
 import { assertScreenShareSupported, captureFrameRateConstraints, captureVideoConstraints, contentHintForSurface } from './screenShare';
 import { asLinkRole, linkKey, oppositeRole, parseLinkKey, type LinkRole } from './links';
 import { describeSwitchError, errorNameOf, replaceTrackOnSenders, type DisplaySource, type TrackSenderLike } from './sourceSwitch';
-import { scalesWithCanvas, SurfaceFramePump } from './windowUpscale';
+import { resolutionScaleDownBy, scalesWithCanvas, SurfaceFramePump } from './windowUpscale';
 import type { ServerMessage, StreamInfo } from './types';
 import {
   AdaptiveBitrateController,
+  senderMinBitrate,
   ConnectionMonitor,
   audioModeFromConfig,
   captureUnavailableMessage,
@@ -140,9 +141,11 @@ export class WebRTCManager {
   /** Conexões indexadas por `papel:peerId` — os dois sentidos coexistem (ver lib/links.ts). */
   private connections = new Map<string, RTCPeerConnection>();
   private localStream: MediaStream | null = null;
-  /** Canvas de janela ou aba, ligado só enquanto os dois lados estão abaixo do alvo. */
+  /** Canvas de janela ou aba, ligado só enquanto a altura nativa está abaixo do alvo. */
   private surfacePump: SurfaceFramePump | null = null;
   private scaleChain: Promise<void> = Promise.resolve();
+  /** Descarta um ajuste de escala que ainda estava na fila da fonte anterior. */
+  private scaleEpoch = 0;
   private stoppingShare = false;
   private currentConfig: StreamConfig = { resolution: '1080', frameRate: 30, audio: true, audioMode: 'source' };
   private myPeerId = '';
@@ -330,6 +333,10 @@ export class WebRTCManager {
    *
    * Quando nada pode ser trocado, a fonte atual continua valendo e o motivo
    * real volta no `reason`.
+   *
+   * Uma troca que dá certo apaga o canvas e o Worker da fonte anterior, mede
+   * a altura da fonte nova do zero e reaplica vídeo e áudio em cada conexão
+   * que está transmitindo. Aba e janela voltam com `contentHint` `detail`.
    */
   async switchSource(source: DisplaySource): Promise<SwitchSourceResult> {
     try {
@@ -413,6 +420,8 @@ export class WebRTCManager {
     const outboundVideo = newPump?.engaged ? newPump.track : videoTrack;
     const outbound = new MediaStream([outboundVideo, ...stream.getAudioTracks()]);
     const sendVideo = outbound.getVideoTracks()[0] ?? videoTrack;
+    const hint = contentHintForSurface(surface === 'unknown' ? null : surface);
+    sendVideo.contentHint = hint;
 
     // Vídeo: cada sender recebe o seu próprio clone (encoder independente).
     // Áudio: uma track só, compartilhada — e `null` quando o escopo não
@@ -431,7 +440,11 @@ export class WebRTCManager {
 
     const previousStream = this.localStream;
     const oldVideoTrack = previousStream?.getVideoTracks()[0] ?? null;
-    const videoReport = await replaceTrackOnSenders(videoSenders, () => sendVideo.clone());
+    const videoReport = await replaceTrackOnSenders(videoSenders, () => {
+      const clone = sendVideo.clone();
+      clone.contentHint = hint;
+      return clone;
+    });
     if (videoReport.attempted > 0 && videoReport.replaced === 0) {
       // Nenhuma conexão aceitou: a fonte atual continua valendo.
       if (newPump) {
@@ -470,9 +483,11 @@ export class WebRTCManager {
     }
 
     const previousPump = this.surfacePump;
+    this.scaleEpoch += 1;
+    this.surfacePump = null;
+    previousPump?.stop();
     this.surfacePump = newPump;
     this.localStream = outbound;
-    previousPump?.stop();
     this.hasAudioTrack = outbound.getAudioTracks().length > 0;
     this.audioCapture.requested = mode !== 'off';
     this.audioCapture.audioMode = mode;
@@ -483,9 +498,12 @@ export class WebRTCManager {
     this.audioCapture.message = audioMessage;
     this.audioCapture.discardReason = this.hasAudioTrack ? null : audioMessage;
     this.bindCaptureTrack(sendVideo, surface);
+    this.applyHintToSenders(hint);
     newPump?.watch(() => this.queueSurfaceScale());
     if (newPump) this.queueSurfaceScale();
-    console.info('[WebRTC] Fonte trocada', { surface, decisão: decision.policy });
+    await this.scaleChain;
+    await this.reconfigureActiveSenders();
+    console.info('[WebRTC] Fonte trocada', { surface, decisão: decision.policy, hint, canvas: newPump?.engaged ?? false });
 
     return { ok: true, reason: decision.message, stream: outbound, surface };
   }
@@ -524,9 +542,10 @@ export class WebRTCManager {
           params.encodings = [{}];
         }
         params.encodings[0].maxFramerate = frameRate;
-        // Com o canvas ligado, a resolução ampliada não pode cair. No resto, a taxa vem primeiro.
+        params.encodings[0].scaleResolutionDownBy = this.currentScaleDown();
+        // A resolução não pode cair para ganhar taxa, em nenhuma superfície.
         // @ts-ignore - degradationPreference exists but TypeScript doesn't know about it
-        params.degradationPreference = this.senderDegradation();
+        params.degradationPreference = 'maintain-resolution';
         await videoSender.setParameters(params);
         applied += 1;
         console.info(`[WebRTC] ${frameRate} fps aplicado em ${key}`);
@@ -745,19 +764,18 @@ export class WebRTCManager {
       }
 
       const maxBitrate = BITRATE_MAP[this.currentConfig.resolution] || 8_000_000;
-      params.encodings[0].maxBitrate = maxBitrate;
+      const scale = this.currentScaleDown();
+      writeEncodingBitrate(params.encodings[0], maxBitrate);
       params.encodings[0].maxFramerate = this.currentConfig.frameRate;
-      // A redução para o alvo já acontece na captura ou no canvas.
-      params.encodings[0].scaleResolutionDownBy = 1;
+      // Só a altura acima do preset reduz. Ultrawide na altura do alvo fica em 1.
+      params.encodings[0].scaleResolutionDownBy = scale;
 
-      // Canvas ativo: manter a resolução ampliada. Captura direta: manter a taxa.
-      const degradation = this.senderDegradation();
       // @ts-ignore - degradationPreference exists but TypeScript doesn't know about it
-      params.degradationPreference = degradation;
+      params.degradationPreference = 'maintain-resolution';
 
       await videoSender.setParameters(params);
 
-      console.log(`[WebRTC] ✅ Sender configurado: maxBitrate=${(maxBitrate / 1_000_000).toFixed(1)}Mbps, maxFps=${this.currentConfig.frameRate}, degradation=${degradation}`);
+      console.log(`[WebRTC] ✅ Sender configurado: maxBitrate=${(maxBitrate / 1_000_000).toFixed(1)}Mbps, minBitrate=${(senderMinBitrate(maxBitrate) / 1_000_000).toFixed(1)}Mbps, maxFps=${this.currentConfig.frameRate}, scale=${scale}, degradation=maintain-resolution`);
 
       // Verify params were applied
       const check = videoSender.getParameters();
@@ -1279,8 +1297,8 @@ export class WebRTCManager {
    * uma falha não derruba as demais nem a transmissão. O ABR é recriado com o
    * novo teto, no mesmo padrão de configureVideoSender.
    *
-   * O tamanho muda na captura: cada clone de vídeo tem constraints próprias,
-   * então todas as tracks dos senders e a local recebem o novo `max`.
+   * Na tela inteira o teto é só de altura: cada clone e a track local recebem
+   * o novo `height.max`, sem teto de largura. Janela e aba mudam o alvo do canvas.
    *
    * Devolve false só quando nenhuma conexão aceitou a mudança — nesse caso o
    * valor anterior continua valendo e a UI avisa.
@@ -1309,25 +1327,44 @@ export class WebRTCManager {
         if (!params.encodings || params.encodings.length === 0) {
           params.encodings = [{}];
         }
-        params.encodings[0].scaleResolutionDownBy = 1;
-        params.encodings[0].maxBitrate = maxBitrate;
+        const height = videoSender.track?.getSettings().height;
+        params.encodings[0].scaleResolutionDownBy = resolutionScaleDownBy(
+          typeof height === 'number' ? height : Number.NaN,
+          target.height,
+        );
+        writeEncodingBitrate(params.encodings[0], maxBitrate);
         params.encodings[0].maxFramerate = fps;
         // @ts-ignore - degradationPreference exists but TypeScript doesn't know about it
-        params.degradationPreference = this.senderDegradation();
+        params.degradationPreference = 'maintain-resolution';
         await videoSender.setParameters(params);
         applied += 1;
+        if (!this.surfacePump) {
+          try {
+            await videoSender.track?.applyConstraints(constraints);
+            const nextHeight = videoSender.track?.getSettings().height;
+            const nextScale = resolutionScaleDownBy(
+              typeof nextHeight === 'number' ? nextHeight : Number.NaN,
+              target.height,
+            );
+            if (nextScale !== params.encodings[0].scaleResolutionDownBy) {
+              const refreshed = videoSender.getParameters();
+              if (!refreshed.encodings || refreshed.encodings.length === 0) refreshed.encodings = [{}];
+              refreshed.encodings[0].scaleResolutionDownBy = nextScale;
+              writeEncodingBitrate(refreshed.encodings[0], maxBitrate);
+              refreshed.encodings[0].maxFramerate = fps;
+              // @ts-ignore - degradationPreference exists but TypeScript doesn't know about it
+              refreshed.degradationPreference = 'maintain-resolution';
+              await videoSender.setParameters(refreshed);
+            }
+          } catch (error) {
+            console.warn(`[WebRTC] Captura de ${key} recusou ${resolution}p (best effort):`, error);
+          }
+        }
         // O ABR nasce com um teto fixo: recria com o teto da nova resolução.
         this.restartAbr(pc, key, maxBitrate);
         console.info(`[WebRTC] Resolução ${resolution}p aplicada em ${key} (teto ${(maxBitrate / 1_000_000).toFixed(1)} Mbps)`);
       } catch (error) {
         console.warn(`[WebRTC] Falha ao aplicar ${resolution}p em ${key}:`, error);
-        continue;
-      }
-      if (this.surfacePump) continue;
-      try {
-        await videoSender.track?.applyConstraints(constraints);
-      } catch (error) {
-        console.warn(`[WebRTC] Captura de ${key} recusou ${resolution}p (best effort):`, error);
       }
     }
 
@@ -1340,6 +1377,8 @@ export class WebRTCManager {
     if (this.surfacePump) {
       this.surfacePump.setTarget(target);
       this.queueSurfaceScale();
+      await this.scaleChain;
+      await this.refreshSenderScale();
       return true;
     }
 
@@ -1403,12 +1442,18 @@ export class WebRTCManager {
     }
   }
 
-  /** Canvas ativo preserva os pixels ampliados. Captura direta preserva a taxa. */
-  private senderDegradation(): 'maintain-resolution' | 'maintain-framerate' {
-    return this.surfacePump?.engaged ? 'maintain-resolution' : 'maintain-framerate';
+  /**
+   * Escala do encoder pela altura da faixa que está saindo.
+   * Canvas na altura do alvo e captura que já cabe devolvem 1.
+   */
+  private currentScaleDown(): number {
+    const target = RESOLUTION_MAP[this.currentConfig.resolution];
+    const height = this.localStream?.getVideoTracks()[0]?.getSettings().height;
+    if (!target || typeof height !== 'number') return 1;
+    return resolutionScaleDownBy(height, target.height);
   }
 
-  /** Janela e aba: só frameRate. Tela inteira: teto de tamanho mais frameRate. */
+  /** Janela e aba: só frameRate. Tela inteira: teto de altura, sem teto de largura. */
   private async applySurfaceConstraints(track: MediaStreamTrack, surface: string): Promise<void> {
     const fps = this.currentConfig.frameRate;
     const target = RESOLUTION_MAP[this.currentConfig.resolution];
@@ -1480,11 +1525,38 @@ export class WebRTCManager {
 
   /** Liga ou desliga o canvas quando o resize cruza o alvo, sem derrubar a sala. */
   private queueSurfaceScale() {
+    const epoch = this.scaleEpoch;
     this.scaleChain = this.scaleChain
-      .then(() => this.applySurfaceScale())
+      .then(() => {
+        if (epoch !== this.scaleEpoch) return;
+        return this.applySurfaceScale();
+      })
       .catch((error) => {
         console.warn('[WebRTC] Falha ao ajustar a escala da captura:', error);
       });
+  }
+
+  /** `detail` em aba e janela, `motion` na tela inteira, inclusive nos clones enviados. */
+  private applyHintToSenders(hint: 'detail' | 'motion') {
+    const outbound = this.localStream?.getVideoTracks()[0];
+    if (outbound) outbound.contentHint = hint;
+    for (const [key, pc] of this.connections) {
+      const parsed = parseLinkKey(key);
+      if (!parsed || parsed.role !== 'sender') continue;
+      for (const sender of pc.getSenders()) {
+        if (sender.track?.kind === 'video') sender.track.contentHint = hint;
+      }
+    }
+  }
+
+  /** Reaplica teto, piso, escala e áudio depois que a fonte enviada mudou. */
+  private async reconfigureActiveSenders() {
+    for (const [key, pc] of [...this.connections.entries()]) {
+      const parsed = parseLinkKey(key);
+      if (!parsed || parsed.role !== 'sender') continue;
+      await this.configureAudioSenders(pc);
+      await this.configureVideoSender(pc, key);
+    }
   }
 
   private async applySurfaceScale() {
@@ -1495,7 +1567,10 @@ export class WebRTCManager {
     const want = pump.needsUpscale;
     const sendingCanvas = wasEngaged && local.getVideoTracks()[0] === pump.track;
     if (want && sendingCanvas) return;
-    if (!want && !wasEngaged) return;
+    if (!want && !wasEngaged) {
+      await this.refreshSenderScale();
+      return;
+    }
 
     if (want) {
       const track = pump.engage();
@@ -1505,7 +1580,7 @@ export class WebRTCManager {
       const ok = await this.swapOutboundVideo(pump.source);
       if (ok) pump.disengage();
     }
-    if (wasEngaged !== pump.engaged) await this.refreshDegradation();
+    await this.refreshSenderScale();
   }
 
   /**
@@ -1557,8 +1632,9 @@ export class WebRTCManager {
     return true;
   }
 
-  private async refreshDegradation() {
-    const degradation = this.senderDegradation();
+  /** Atualiza a escala pela altura atual e segura a resolução. Não mexe no teto do ABR. */
+  private async refreshSenderScale() {
+    const scale = this.currentScaleDown();
     for (const [key, pc] of [...this.connections.entries()]) {
       const parsed = parseLinkKey(key);
       if (!parsed || parsed.role !== 'sender') continue;
@@ -1567,14 +1643,21 @@ export class WebRTCManager {
       try {
         const params = videoSender.getParameters();
         if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+        params.encodings[0].scaleResolutionDownBy = scale;
         // @ts-ignore - degradationPreference exists but TypeScript doesn't know about it
-        params.degradationPreference = degradation;
+        params.degradationPreference = 'maintain-resolution';
         await videoSender.setParameters(params);
       } catch (error) {
-        console.warn(`[WebRTC] Falha ao atualizar degradation em ${key}:`, error);
+        console.warn(`[WebRTC] Falha ao atualizar a escala em ${key}:`, error);
       }
     }
   }
+}
+
+/** O lib DOM daqui não declara `minBitrate`; o Chromium aplica o campo. */
+function writeEncodingBitrate(encoding: RTCRtpEncodingParameters, maxBitrate: number) {
+  encoding.maxBitrate = maxBitrate;
+  (encoding as RTCRtpEncodingParameters & { minBitrate: number }).minBitrate = senderMinBitrate(maxBitrate);
 }
 
 function snapshotToConnectionStats(snapshot: DiagnosticsSnapshot): ConnectionStats {

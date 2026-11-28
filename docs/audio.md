@@ -32,7 +32,7 @@ Se o navegador rejeitar uma opção com `TypeError`, `NotSupportedError` ou `Ove
 2. O mesmo pedido com `windowAudio: "exclude"`, o escopo de antes. O `systemAudio` não muda. `requestDisplayMedia` devolve `windowAudioFallback: true`.
 3. Só vídeo (`audioScopeFallback: true`).
 
-`windowAudio` nunca é omitido quando há áudio. Sem o campo vale o padrão do navegador, que no Chrome para Windows pode incluir o áudio global. Com `windowAudioFallback`, uma janela não tem o escopo pedido garantido: qualquer track devolvida é descartada (política `window-unsupported`). Na troca de fonte (`fallbackToVideoOnly: false`), o degrau 2 acontece dentro de `requestDisplayMedia`, e só o erro do degrau 3 volta para quem chamou. Cancelamento (`NotAllowedError`) não é repetido. Uma falha só de áudio não cancela o vídeo.
+`windowAudio` nunca é omitido quando há áudio. Sem o campo vale o padrão do navegador, que no Chrome para Windows pode incluir o áudio global. Com `windowAudioFallback`, uma janela não tem o escopo pedido garantido: qualquer track devolvida é descartada (política `window-unsupported`). Na troca de fonte (`fallbackToVideoOnly: false`), o degrau 2 acontece dentro de `requestDisplayMedia`, e só o erro do degrau 3 volta para quem chamou. Cancelamento (`NotAllowedError`) não é repetido. Uma falha só de áudio não cancela o vídeo. A troca que dá certo reaplica o teto do sender de áudio em cada conexão que está transmitindo.
 
 Depois que a pessoa confirma o seletor, e antes de `localStream` e de `start-sharing`, o código lê `videoTrack.getSettings().displaySurface` e aplica a política. Track descartada é interrompida com `stop()` e removida da stream. Não se usa `track.label`.
 
