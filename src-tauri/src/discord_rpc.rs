@@ -31,7 +31,11 @@ pub enum ActivityPlan {
     Clear,
     /// Sem atividade quando não há transmissão ativa.
     Private,
-    Public { join_url: Option<String> },
+    Public {
+        party_id: Option<String>,
+        party_size: Option<[i32; 2]>,
+        join_url: Option<String>,
+    },
 }
 
 fn web_origin() -> String {
@@ -71,6 +75,12 @@ pub fn normalize_room_code(raw: &str) -> Option<String> {
     }
 }
 
+fn party_numbers(viewer_count: u32, max_peers: u32) -> (i32, i32) {
+    let max = max_peers.clamp(1, 500) as i32;
+    let current = (viewer_count.max(1) as i32).min(max);
+    (current, max)
+}
+
 /// Publica Rich Presence apenas enquanto o usuário transmite a tela.
 /// Sala privada não expõe código, party ou convite.
 pub fn plan_activity(state: &PresenceState) -> ActivityPlan {
@@ -80,11 +90,16 @@ pub fn plan_activity(state: &PresenceState) -> ActivityPlan {
     if state.is_private {
         return ActivityPlan::Private;
     }
+    let (current, max) = party_numbers(state.viewer_count, state.max_peers);
     let code = normalize_room_code(&state.room_code);
     let join_url = code
         .as_ref()
         .map(|room| format!("{}/{}", web_origin(), room));
-    ActivityPlan::Public { join_url }
+    ActivityPlan::Public {
+        party_id: code,
+        party_size: Some([current, max]),
+        join_url,
+    }
 }
 
 #[cfg(test)]
@@ -92,8 +107,10 @@ fn plan_text(plan: &ActivityPlan) -> String {
     match plan {
         ActivityPlan::Clear => String::new(),
         ActivityPlan::Private => "🔴 LIVE — Transmitindo tela em sala privada".to_string(),
-        ActivityPlan::Public { join_url } => format!(
-            "🔴 LIVE — Transmitindo tela|{}",
+        ActivityPlan::Public { party_id, party_size, join_url } => format!(
+            "🔴 LIVE — Transmitindo tela|{}|{}|{}",
+            party_id.as_deref().unwrap_or(""),
+            party_size.map(|size| format!("{}/{}", size[0], size[1])).unwrap_or_default(),
             join_url.as_deref().unwrap_or("")
         ),
     }
@@ -156,11 +173,14 @@ fn apply(client: &mut Option<DiscordIpcClient>, plan: &ActivityPlan) -> Result<(
                         .details("🔴 LIVE — Transmitindo tela em sala privada"),
                 )
                 .map_err(|_| ()),
-            ActivityPlan::Public { join_url } => {
+            ActivityPlan::Public { party_id, party_size, join_url } => {
                 let mut act = activity::Activity::new()
                     .activity_type(activity::ActivityType::Watching)
                     .name("Telinha do Botecão")
                     .details("🔴 LIVE — Transmitindo tela");
+                if let (Some(party), Some(size)) = (party_id.as_ref(), party_size.as_ref()) {
+                    act = act.party(activity::Party::new().id(party.as_str()).size(*size));
+                }
                 if let Some(url) = join_url.as_ref() {
                     act = act.buttons(vec![activity::Button::new(JOIN_LABEL, url.as_str())]);
                 }
@@ -266,12 +286,14 @@ mod tests {
         assert_eq!(
             plan,
             ActivityPlan::Public {
+                party_id: Some("AB234C".to_string()),
+                party_size: Some([4, 50]),
                 join_url: Some("https://telinha-do-botecao.vercel.app/AB234C".to_string())
             }
         );
         let text = plan_text(&plan);
         assert!(text.starts_with("🔴 LIVE — Transmitindo tela"));
-        assert!(!text.contains("4 / 50"));
+        assert!(text.contains("4/50"));
     }
 
     #[test]
@@ -299,6 +321,10 @@ mod tests {
     fn invalid_code_does_not_create_join_button() {
         let mut state = sample(false);
         state.room_code = "IO0000".into();
-        assert_eq!(plan_activity(&state), ActivityPlan::Public { join_url: None });
+        assert_eq!(plan_activity(&state), ActivityPlan::Public {
+            party_id: None,
+            party_size: Some([4, 50]),
+            join_url: None,
+        });
     }
 }
