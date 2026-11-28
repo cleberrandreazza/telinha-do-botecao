@@ -4,8 +4,8 @@ const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 export const DEFAULT_WEB_ORIGIN = 'https://telinha-do-botecao.vercel.app';
 
 export function normalizeWebOrigin(value) {
-  const raw = String(value || DEFAULT_WEB_ORIGIN).trim().replace(/\\/+$/, '');
-  if (!raw.startsWith('https://') || /\\s/.test(raw)) return DEFAULT_WEB_ORIGIN;
+  const raw = String(value || DEFAULT_WEB_ORIGIN).trim().replace(/\/+$/, '');
+  if (!raw.startsWith('https://') || /\s/.test(raw)) return DEFAULT_WEB_ORIGIN;
   return raw;
 }
 
