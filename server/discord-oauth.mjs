@@ -99,7 +99,7 @@ export function createDiscordOAuth({ store, webOrigin, getVoiceMembership }) {
 
   async function handle(req, res) {
     const url = new URL(req.url, 'http://localhost');
-    const entry = /^\\/discord\\/entry\\/([A-HJ-NP-Z2-9]{6})$/.exec(url.pathname);
+    const entry = /^\/discord\/entry\/([A-HJ-NP-Z2-9]{6})$/.exec(url.pathname);
     if (req.method === 'GET' && entry) return begin(entry[1], res);
     if (req.method === 'GET' && url.pathname === '/discord/callback') return callback(req, res);
     return false;
