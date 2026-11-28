@@ -40,7 +40,18 @@ test('telemetria resumida aceita o resumo e recusa lixo', () => {
     cpuPercent: 20,
     activeChildren: 2,
     isDesktop: true,
+    isCurrentlyBroadcasting: false,
+    activeRelayedStreams: 0,
   });
+  assert.equal(summarizeTelemetry({
+    rttMs: 1,
+    jitterMs: 1,
+    loss: 0,
+    uploadKbps: 1,
+    cpuPercent: 1,
+    isCurrentlyBroadcasting: true,
+    activeRelayedStreams: 2,
+  }).activeRelayedStreams, 2);
 });
 
 test('plano de rota só liga a divisão par/ímpar com dois nós', () => {
@@ -50,6 +61,7 @@ test('plano de rota só liga a divisão par/ímpar com dois nós', () => {
     splitEvenOdd: true,
     canLocalNodeRelay: false,
   }), {
+    streamId: 0,
     primaryRelayId: 'p2',
     secondaryRelayId: 'p3',
     splitEvenOdd: true,

@@ -39,7 +39,7 @@ export {
   effectiveResolution,
   buildChart,
 } from './format.ts';
-export { buildReport, triggerJsonDownload, reportFilename, sanitize, parseBrowser } from './export.ts';
+export { buildReport, triggerJsonDownload, reportFilename, statsExportFilename, sanitize, parseBrowser } from './export.ts';
 export type { DiagnosticReport } from './export.ts';
 export {
   readCaptureProbe,

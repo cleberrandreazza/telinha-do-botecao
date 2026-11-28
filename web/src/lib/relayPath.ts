@@ -20,6 +20,7 @@ export interface RelayHopView {
 }
 
 export interface RelayPlan {
+  streamId?: number;
   primaryRelayId: string | null;
   secondaryRelayId: string | null;
   splitEvenOdd: boolean;

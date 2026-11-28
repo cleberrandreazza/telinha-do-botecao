@@ -3,7 +3,7 @@ import { equal, ok } from 'node:assert/strict';
 import { AdaptiveBitrateController, evaluateAbr, initialAbrState, outboundFpsForAbr, senderMinBitrate } from './abr.ts';
 import { classifyDiagnosis, diagnosisSummary } from './classify.ts';
 import { detectEvents } from './events.ts';
-import { buildReport, parseBrowser, sanitize } from './export.ts';
+import { buildReport, parseBrowser, sanitize, statsExportFilename } from './export.ts';
 import { formatMeasuredFps, pipelineFps } from './format.ts';
 import { selectNetwork } from './ice.ts';
 import { avgMsPerFrame, bitrateFromBytes, diffCounter, lossPercent, perSecond, rmsFromEnergy } from './math.ts';
@@ -870,3 +870,9 @@ function fakeVideo(): PlaybackVideo & {
   };
   return video;
 }
+
+test('o app sugere telinha-stats com horário seguro para o nome do arquivo', () => {
+  const name = statsExportFilename(new Date('2026-11-28T11:50:00.123Z'));
+  equal(name, 'telinha-stats-2026-11-28T11-50-00-123Z.json');
+  ok(!name.includes(':'));
+});

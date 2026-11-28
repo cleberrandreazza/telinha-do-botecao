@@ -90,6 +90,8 @@ export default function StreamTile({
   const pushPlaybackRef = useRef(pushPlayback);
   const pushAudioRef = useRef(pushAudioPlayback);
   const exportRef = useRef(onExportDiagnostics);
+  const clickTimer = useRef<number | null>(null);
+  const gestureRef = useRef({ x: 0, y: 0, moved: false });
   showStatsRef.current = showStats;
   subscribeRef.current = subscribeStats;
   pushPlaybackRef.current = pushPlayback;
@@ -221,6 +223,26 @@ export default function StreamTile({
     <div
       ref={containerRef}
       aria-label={`Transmissão de ${nickname}`}
+      onClick={(event) => {
+        const target = event.target as HTMLElement | null;
+        if (target?.closest('button, input, a, select, textarea, [data-player-controls], .player-chrome')) return;
+        if (gestureRef.current.moved || event.detail > 1) return;
+        if (clickTimer.current !== null) window.clearTimeout(clickTimer.current);
+        clickTimer.current = window.setTimeout(() => {
+          clickTimer.current = null;
+          onTogglePause();
+        }, 250);
+      }}
+      onDoubleClick={(event) => {
+        const target = event.target as HTMLElement | null;
+        if (target?.closest('button, input, a, select, textarea, [data-player-controls], .player-chrome')) return;
+        if (gestureRef.current.moved) return;
+        if (clickTimer.current !== null) {
+          window.clearTimeout(clickTimer.current);
+          clickTimer.current = null;
+        }
+        toggleFullscreen();
+      }}
       className={`relative rounded-2xl overflow-hidden bg-black border border-[#272a37] shadow-2xl group ${
         fill ? 'h-full w-full min-h-0' : 'aspect-video'
       }`}
@@ -232,8 +254,15 @@ export default function StreamTile({
         autoPlay
         playsInline
         muted={muted}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
+        onPointerDown={(event) => {
+          gestureRef.current = { x: event.clientX, y: event.clientY, moved: false };
+          onPointerDown(event);
+        }}
+        onPointerMove={(event) => {
+          const gesture = gestureRef.current;
+          if (Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) > 6) gesture.moved = true;
+          onPointerMove(event);
+        }}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerCancel}
         style={{
@@ -283,8 +312,8 @@ export default function StreamTile({
         </button>
       )}
 
-      {/* Controles do rodapé — mesmo menu do player de 1 tela, no hover/foco */}
-      <div className="absolute bottom-2 inset-x-2 flex items-center justify-center opacity-0 group-hover:opacity-100 focus-within:opacity-100 pointer-events-none group-hover:pointer-events-auto focus-within:pointer-events-auto transition-opacity z-10 autohide-ui">
+      {/* Barra inferior — aparece no hover/foco, com o volume ao lado do alto-falante */}
+      <div className="player-chrome absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/80 via-black/40 to-transparent pt-8 opacity-0 pointer-events-none transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100">
         <StreamControls
           nickname={nickname}
           muted={muted}

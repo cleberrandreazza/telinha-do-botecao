@@ -7,10 +7,11 @@
   "scripts": {
     "start": "node index.mjs",
     "dev": "node index.mjs",
-    "test": "node --test relay-protocol.test.mjs",
+    "test": "node --test relay-protocol.test.mjs discord-rooms.test.mjs discord-tickets.test.mjs",
     "build": "node --check index.mjs && node --check relay-protocol.mjs"
   },
   "dependencies": {
+    "discord.js": "^14.28.1",
     "ws": "^8.18.0"
   }
 }

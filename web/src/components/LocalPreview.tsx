@@ -134,9 +134,8 @@ export default function LocalPreview({ stream, nickname, onStopSharing, settings
           )}
         </div>
 
-        {/* Menu do preview: sempre visível, sem zoom nem tela cheia */}
-        <div className="absolute top-2 bottom-2 inset-x-2 flex flex-col items-center justify-end z-20 pointer-events-none">
-          <div ref={controlsRef} className="min-h-0 max-h-full flex flex-col pointer-events-auto">
+        <div className="absolute inset-x-0 bottom-0 z-20 flex flex-col justify-end bg-gradient-to-t from-black/80 via-black/40 to-transparent pt-8 pointer-events-none">
+          <div ref={controlsRef} className="pointer-events-auto min-h-0 max-h-full">
             <StreamControls
               nickname={nickname}
               paused={paused}

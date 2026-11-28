@@ -17,6 +17,12 @@ pub const MAX_RELAY_CPU: f64 = 85.0;
 pub const MIN_RELAY_UPLOAD_KBPS: f64 = 2_500.0;
 /// Cada relay carrega no máximo dois espectadores desktop.
 pub const MAX_RELAY_CHILDREN: u8 = 2;
+/// Upload reservado por stream que o nó já envia (a própria live ou um relay).
+pub const STREAM_UPLOAD_BUDGET_KBPS: f64 = 5_000.0;
+/// Quem já é host de uma live desce na eleição do UCB1.
+pub const BROADCAST_LOAD_PENALTY: f64 = 0.45;
+/// Cada stream diferente já retransmitida desce mais um pouco.
+pub const RELAYED_STREAM_PENALTY: f64 = 0.30;
 /// Com relay saudável, o host só envia um fluxo para um desktop.
 pub const HOST_DESKTOP_CHILD_LIMIT: u8 = 1;
 /// RTT de referência da recompensa do modo jogo, em ms.
@@ -64,6 +70,14 @@ pub fn ucb1_score(total_reward: f64, pulls: u64, total_pulls: u64, exploration: 
     mean + bonus
 }
 
+/// Tira a carga do escore finito. Um braço ainda não puxado continua infinito.
+pub fn apply_load_penalty(score: f64, penalty: f64) -> f64 {
+    if !score.is_finite() || !penalty.is_finite() || penalty <= 0.0 {
+        return score;
+    }
+    score - penalty
+}
+
 /// Modo jogo olha RTT e perda. Cinema olha jitter e perda.
 pub fn mode_reward(gaming_mode: bool, rtt_ms: f64, jitter_ms: f64, loss: f64) -> f64 {
     let loss_score = 1.0 - finite_or(loss, 1.0).clamp(0.0, 1.0);
@@ -99,9 +113,37 @@ pub struct PeerTelemetry {
     pub is_desktop: bool,
     pub active_children: u8,
     pub is_desktop_relay_capable: bool,
+    /// Já é a raiz de uma das lives da sala.
+    #[serde(default)]
+    pub is_currently_broadcasting: bool,
+    /// Quantas streams diferentes este peer já retransmite.
+    #[serde(default)]
+    pub active_relayed_streams: u8,
 }
 
 impl PeerTelemetry {
+    /// A live própria conta como uma stream enviada, mais cada relay.
+    pub fn streams_already_sent(&self) -> u8 {
+        let own: u8 = if self.is_currently_broadcasting { 1 } else { 0 };
+        own.saturating_add(self.active_relayed_streams)
+    }
+
+    /// Upload que ainda sobra para adotar um filho.
+    pub fn available_upload_kbps(&self) -> f64 {
+        let reserved = f64::from(self.streams_already_sent()) * STREAM_UPLOAD_BUDGET_KBPS;
+        (self.upload_kbps - reserved).max(0.0)
+    }
+
+    /// `(broadcast ? 0.45 : 0) + 0.30 * relays`.
+    pub fn load_penalty(&self) -> f64 {
+        let broadcasting = if self.is_currently_broadcasting {
+            BROADCAST_LOAD_PENALTY
+        } else {
+            0.0
+        };
+        broadcasting + f64::from(self.active_relayed_streams) * RELAYED_STREAM_PENALTY
+    }
+
     pub fn refresh_capability(&mut self) {
         self.active_children = self.active_children.min(MAX_RELAY_CHILDREN);
         let cpu = if self.cpu_percent.is_finite() { self.cpu_percent } else { 100.0 };
@@ -113,7 +155,7 @@ impl PeerTelemetry {
         self.loss = finite_or(self.loss, 1.0).clamp(0.0, 1.0);
         self.is_desktop_relay_capable = self.is_desktop
             && cpu < MAX_RELAY_CPU
-            && upload >= MIN_RELAY_UPLOAD_KBPS
+            && self.available_upload_kbps() >= MIN_RELAY_UPLOAD_KBPS
             && self.active_children < MAX_RELAY_CHILDREN;
     }
 }
@@ -129,6 +171,8 @@ pub struct RelayHop {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoutingPlan {
+    /// Transmissão desta árvore. Cada live da sala tem a sua.
+    pub stream_id: u32,
     pub primary_relay_id: Option<String>,
     pub secondary_relay_id: Option<String>,
     pub split_even_odd: bool,
@@ -218,6 +262,8 @@ impl SystemProbe {
 
 pub struct AiTopologyEngine {
     peers: HashMap<String, Arm>,
+    /// Uma árvore por transmissão ativa.
+    trees: HashMap<u32, RoutingPlan>,
     total_pulls: u64,
     local_peer_id: String,
     local_cpu: f64,
@@ -237,6 +283,7 @@ impl AiTopologyEngine {
     pub fn new() -> Self {
         Self {
             peers: HashMap::new(),
+            trees: HashMap::new(),
             total_pulls: 0,
             local_peer_id: String::new(),
             local_cpu: 0.0,
@@ -302,7 +349,14 @@ impl AiTopologyEngine {
         }
     }
 
-    pub fn compute_plan(&mut self, gaming_mode: bool, local_peer_id: &str) -> RoutingPlan {
+    pub fn compute_plan(
+        &mut self,
+        stream_id: u32,
+        gaming_mode: bool,
+        local_peer_id: &str,
+        local_broadcasting: bool,
+        local_relayed_streams: u8,
+    ) -> RoutingPlan {
         if !local_peer_id.is_empty() {
             self.local_peer_id = local_peer_id.to_string();
             self.peers.remove(local_peer_id);
@@ -313,7 +367,8 @@ impl AiTopologyEngine {
             .filter(|(_, arm)| arm.telemetry.is_desktop_relay_capable)
             .map(|(id, arm)| {
                 let accumulated = if gaming_mode { arm.gaming_reward } else { arm.cinema_reward };
-                let score = ucb1_score(accumulated, arm.pulls, self.total_pulls.max(1), self.exploration);
+                let raw = ucb1_score(accumulated, arm.pulls, self.total_pulls.max(1), self.exploration);
+                let score = apply_load_penalty(raw, arm.telemetry.load_penalty());
                 (id.clone(), score)
             })
             .collect();
@@ -398,14 +453,17 @@ impl AiTopologyEngine {
         };
         let primary_relay_id = if use_tree { ranked.first().map(|(id, _)| id.clone()) } else { None };
         let secondary_relay_id = if use_tree { ranked.get(1).map(|(id, _)| id.clone()) } else { None };
-        RoutingPlan {
+        let sent = u8::from(local_broadcasting).saturating_add(local_relayed_streams);
+        let local_available = (self.local_upload_kbps - f64::from(sent) * STREAM_UPLOAD_BUDGET_KBPS).max(0.0);
+        let plan = RoutingPlan {
+            stream_id,
             primary_relay_id,
             secondary_relay_id,
             // O host não reparte o upload: o segundo relay fica na árvore, não como segundo envio.
             split_even_odd: false,
             can_local_node_relay: self.local_cpu.is_finite()
                 && self.local_cpu < MAX_RELAY_CPU
-                && self.local_upload_kbps >= MIN_RELAY_UPLOAD_KBPS
+                && local_available >= MIN_RELAY_UPLOAD_KBPS
                 && self.local_children < MAX_RELAY_CHILDREN,
             viewer_count,
             total_peers,
@@ -413,7 +471,9 @@ impl AiTopologyEngine {
             host_max_children,
             host_desktop_streams,
             hops,
-        }
+        };
+        self.trees.insert(stream_id, plan.clone());
+        plan
     }
 }
 
@@ -447,10 +507,19 @@ pub fn compute_routing_plan(
     gaming_mode: bool,
     local_peer_id: String,
     local_children: u8,
+    stream_id: u32,
+    is_currently_broadcasting: bool,
+    active_relayed_streams: u8,
 ) -> Result<RoutingPlan, String> {
     let mut engine = state.0.lock().map_err(|err| err.to_string())?;
     engine.set_local_children(local_children);
-    Ok(engine.compute_plan(gaming_mode, &local_peer_id))
+    Ok(engine.compute_plan(
+        stream_id,
+        gaming_mode,
+        &local_peer_id,
+        is_currently_broadcasting,
+        active_relayed_streams,
+    ))
 }
 
 #[tauri::command]
@@ -477,6 +546,8 @@ mod tests {
             is_desktop: desktop,
             active_children: children,
             is_desktop_relay_capable: false,
+            is_currently_broadcasting: false,
+            active_relayed_streams: 0,
         };
         telemetry.refresh_capability();
         telemetry
@@ -519,7 +590,7 @@ mod tests {
             engine.update_peer(peer("estavel", 300.0, 5.0, 20.0, 8_000.0, 0, true));
             engine.update_peer(peer("celular", 15.0, 2.0, 10.0, 9_000.0, 0, false));
         }
-        let gaming = engine.compute_plan(true, "eu");
+        let gaming = engine.compute_plan(1, true, "eu", false, 0);
         assert_eq!(gaming.primary_relay_id.as_deref(), Some("baixa-latencia"));
         assert_eq!(gaming.secondary_relay_id.as_deref(), Some("estavel"));
         assert!(!gaming.split_even_odd);
@@ -527,7 +598,7 @@ mod tests {
         assert_eq!(gaming.host_desktop_streams, 1);
         assert_eq!(parent_of(&gaming, "celular"), Some("eu"));
         assert!(gaming.can_local_node_relay);
-        let cinema = engine.compute_plan(false, "eu");
+        let cinema = engine.compute_plan(1, false, "eu", false, 0);
         assert_eq!(cinema.primary_relay_id.as_deref(), Some("estavel"));
         assert_eq!(cinema.secondary_relay_id.as_deref(), Some("baixa-latencia"));
         assert_eq!(parent_of(&cinema, "baixa-latencia"), Some("estavel"));
@@ -538,7 +609,7 @@ mod tests {
         let mut engine = AiTopologyEngine::new();
         engine.local_cpu = 90.0;
         engine.local_upload_kbps = 8_000.0;
-        let plan = engine.compute_plan(false, "eu");
+        let plan = engine.compute_plan(1, false, "eu", false, 0);
         assert!(!plan.can_local_node_relay);
         assert!(plan.primary_relay_id.is_none());
         assert!(!plan.split_even_odd);
@@ -564,7 +635,7 @@ mod tests {
                 engine.update_peer(capable_desktop(&format!("d{index:02}"), 20.0 + f64::from(index)));
             }
         }
-        engine.compute_plan(true, "host")
+        engine.compute_plan(1, true, "host", false, 0)
     }
 
     fn assert_one_desktop_upload(plan: &RoutingPlan) {
@@ -591,7 +662,7 @@ mod tests {
         engine.local_cpu = 10.0;
         engine.local_upload_kbps = 8_000.0;
         engine.update_peer(capable_desktop("solo", 30.0));
-        let plan = engine.compute_plan(false, "host");
+        let plan = engine.compute_plan(1, false, "host", false, 0);
         assert_eq!(plan.viewer_count, 1);
         assert_eq!(plan.total_peers, 2);
         assert_eq!(plan.max_hops, 1);
@@ -610,7 +681,7 @@ mod tests {
             engine.update_peer(capable_desktop("relay-1", 20.0));
             engine.update_peer(capable_desktop("espectador-2", 180.0));
         }
-        let plan = engine.compute_plan(true, "host");
+        let plan = engine.compute_plan(1, true, "host", false, 0);
         assert_eq!(plan.viewer_count, 2);
         assert_eq!(plan.total_peers, 3);
         assert_eq!(plan.max_hops, max_hops_for(2, 3));
@@ -652,15 +723,74 @@ mod tests {
             engine.update_peer(capable_desktop("relay-2", 28.0));
             engine.update_peer(capable_desktop("folha", 40.0));
         }
-        let before = engine.compute_plan(true, "host");
+        let before = engine.compute_plan(1, true, "host", false, 0);
         assert_eq!(before.primary_relay_id.as_deref(), Some("relay-1"));
         assert!(before.hops.iter().any(|hop| hop.parent_id == "relay-1"));
         assert!(engine.remove_peer("relay-1"));
         assert!(!engine.remove_peer("relay-1"));
-        let after = engine.compute_plan(true, "host");
+        let after = engine.compute_plan(1, true, "host", false, 0);
         assert_eq!(after.viewer_count, 2);
         assert_eq!(after.primary_relay_id.as_deref(), Some("relay-2"));
         assert!(after.hops.iter().all(|hop| hop.peer_id != "relay-1" && hop.parent_id != "relay-1"));
         assert_one_desktop_upload(&after);
+    }
+
+    fn loaded(id: &str, rtt: f64, broadcasting: bool, relayed: u8) -> PeerTelemetry {
+        let mut telemetry = peer(id, rtt, 6.0, 20.0, 30_000.0, 0, true);
+        telemetry.is_currently_broadcasting = broadcasting;
+        telemetry.active_relayed_streams = relayed;
+        telemetry.refresh_capability();
+        telemetry
+    }
+
+    /// Três lives na mesma sala. Cada plano guarda a própria árvore, e o
+    /// relay seguinte sai de um espectador que ainda não carrega stream.
+    #[test]
+    fn three_streams_spread_relays_across_pure_viewers() {
+        let hosts = ["tela-1", "tela-2", "tela-3"];
+        let viewers = ["puro-1", "puro-2", "puro-3"];
+        let mut relayed = HashMap::new();
+        let mut chosen = Vec::new();
+
+        for (index, host) in hosts.iter().enumerate() {
+            let mut engine = AiTopologyEngine::new();
+            engine.local_cpu = 10.0;
+            engine.local_upload_kbps = 30_000.0;
+            for _ in 0..16 {
+                for (other, _) in hosts.iter().enumerate() {
+                    if hosts[other] == *host {
+                        continue;
+                    }
+                    engine.update_peer(loaded(hosts[other], 8.0, true, 0));
+                }
+                for (viewer_index, viewer) in viewers.iter().enumerate() {
+                    let already = relayed.get(*viewer).copied().unwrap_or(0);
+                    engine.update_peer(loaded(
+                        viewer,
+                        40.0 + (viewer_index as f64) * 8.0,
+                        false,
+                        already,
+                    ));
+                }
+            }
+            let stream_id = (index as u32) + 1;
+            let plan = engine.compute_plan(stream_id, true, host, true, 0);
+            let primary = plan.primary_relay_id.clone().expect("relay");
+            assert!(viewers.contains(&primary.as_str()), "{primary} não é espectador puro");
+            assert!(!chosen.contains(&primary), "{primary} já era relay de outra live");
+            assert!(plan.hops.iter().all(|hop| {
+                hop.parent_id == *host || viewers.contains(&hop.parent_id.as_str())
+            }));
+            let stored = engine.trees.get(&stream_id).expect("árvore da live");
+            assert_eq!(stored.stream_id, stream_id);
+            assert_eq!(stored.primary_relay_id.as_deref(), Some(primary.as_str()));
+            *relayed.entry(primary.clone()).or_insert(0) += 1;
+            chosen.push(primary);
+        }
+
+        assert_eq!(chosen.len(), 3);
+        for viewer in &chosen {
+            assert_eq!(relayed.get(viewer.as_str()), Some(&1));
+        }
     }
 }

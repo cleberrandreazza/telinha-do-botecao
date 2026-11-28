@@ -45,6 +45,9 @@ interface ChatPanelProps {
   /** Aviso para quem assiste uma sala cheia só de navegadores. */
   showDesktopStabilityHint?: boolean;
   onDismissDesktopHint?: () => void;
+  /** Oculta código e botão no Rich Presence. */
+  hideDiscordActivity?: boolean;
+  onHideDiscordActivity?: (hidden: boolean) => void;
 }
 
 /** Acima de 80% do limite o contador de caracteres aparece. */
@@ -75,6 +78,8 @@ export default function ChatPanel({
   showDesktopCta = false,
   showDesktopStabilityHint = false,
   onDismissDesktopHint,
+  hideDiscordActivity = false,
+  onHideDiscordActivity,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState('');
   const [copied, setCopied] = useState(false);
@@ -211,6 +216,27 @@ export default function ChatPanel({
           <span className="font-body text-[11px] font-medium">Sair</span>
         </button>
       </div>
+      {onHideDiscordActivity && (
+        <div className="flex items-center justify-between gap-3 px-3.5 py-2 border-b border-[#1f222e] shrink-0">
+          <span className="text-[11px] leading-snug text-on-surface-variant">Ocultar atividade no Discord</span>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={hideDiscordActivity}
+            aria-label="Ocultar atividade no Discord"
+            onClick={() => onHideDiscordActivity(!hideDiscordActivity)}
+            className={`shrink-0 w-9 h-5 rounded-full transition-colors relative cursor-pointer ${
+              hideDiscordActivity ? 'bg-primary' : 'bg-surface-container-high border border-outline-variant/40'
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 w-4 h-4 rounded-full transition-all ${
+                hideDiscordActivity ? 'left-[18px] bg-on-primary' : 'left-0.5 bg-outline'
+              }`}
+            />
+          </button>
+        </div>
+      )}
       {showDesktopCta && (
         <div className="px-3.5 py-2 border-b border-[#1f222e] shrink-0">
           <DesktopDownloadCapsule />

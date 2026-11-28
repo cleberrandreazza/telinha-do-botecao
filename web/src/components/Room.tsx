@@ -90,6 +90,11 @@ interface RoomProps {
   showDesktopStabilityHint?: boolean;
   /** Preset da live travado em 720p / 30 fps. */
   qualityLimited?: boolean;
+  /** Oculta o código no Rich Presence do Discord. */
+  hideDiscordActivity?: boolean;
+  /** Handshake do pipe local já concluído. Sem isto o interruptor fica fora da barra. */
+  discordConnected?: boolean;
+  onHideDiscordActivity?: (hidden: boolean) => void;
 }
 
 export default function Room({
@@ -137,6 +142,9 @@ export default function Room({
   showDesktopCta = false,
   showDesktopStabilityHint = false,
   qualityLimited = false,
+  hideDiscordActivity = false,
+  discordConnected = false,
+  onHideDiscordActivity,
 }: RoomProps) {
   const [mouseInactive, setMouseInactive] = useState(false);
   // A live começa muda: o som só liga quando a pessoa pede.
@@ -460,7 +468,8 @@ export default function Room({
         <SettingsModal
           nickname={nickname}
           onClose={() => setShowSettings(false)}
-          onSave={(s) => { /* settings saved to localStorage by the modal */ }}
+          showDiscordHide={discordConnected}
+          onSave={(settings) => onHideDiscordActivity?.(settings.hideDiscordActivity)}
         />
       )}
 
@@ -690,6 +699,8 @@ export default function Room({
           showDesktopCta={showDesktopCta}
           showDesktopStabilityHint={showDesktopStabilityHint && !desktopHintDismissed}
           onDismissDesktopHint={() => setDesktopHintDismissed(true)}
+          hideDiscordActivity={hideDiscordActivity}
+          onHideDiscordActivity={discordConnected ? onHideDiscordActivity : undefined}
         />
       </div>
 

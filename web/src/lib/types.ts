@@ -15,9 +15,14 @@ export interface PeerTelemetryReport {
   cpuPercent: number;
   activeChildren: number;
   isDesktop: boolean;
+  /** Já é a raiz de uma das lives da sala. */
+  isCurrentlyBroadcasting?: boolean;
+  /** Streams diferentes que este peer já retransmite. */
+  activeRelayedStreams?: number;
 }
 
 export interface RelayPlanReport {
+  streamId?: number;
   primaryRelayId: string | null;
   secondaryRelayId: string | null;
   splitEvenOdd: boolean;
@@ -59,7 +64,7 @@ export interface ChatMessage {
 // ── Signaling messages (client → server) ───────────────
 export type ClientMessage =
   | { type: 'create-room'; nickname: string; password?: string; isDesktop?: boolean }
-  | { type: 'join-room'; code: string; nickname: string; password?: string; isDesktop?: boolean }
+  | { type: 'join-room'; code: string; nickname: string; password?: string; isDesktop?: boolean; ticket?: string }
   | { type: 'leave-room' }
   | { type: 'start-sharing' }
   | { type: 'stop-sharing' }
@@ -75,8 +80,8 @@ export type ClientMessage =
 
 // ── Signaling messages (server → client) ───────────────
 export type ServerMessage =
-  | { type: 'room-created'; code: string; peerId: string; hasPassword: boolean }
-  | { type: 'room-joined'; code: string; peerId: string; peers: PeerInfo[] }
+  | { type: 'room-created'; code: string; peerId: string; hasPassword: boolean; isPrivate?: boolean }
+  | { type: 'room-joined'; code: string; peerId: string; peers: PeerInfo[]; isPrivate?: boolean }
   | { type: 'left-room' }
   | { type: 'peer-joined'; peer: PeerInfo }
   | { type: 'peer-left'; peerId: string }

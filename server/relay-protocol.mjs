@@ -50,6 +50,8 @@ export function summarizeTelemetry(msg) {
     cpuPercent,
     activeChildren: Math.max(0, Math.min(2, Math.floor(children ?? 0))),
     isDesktop: msg.isDesktop === true,
+    isCurrentlyBroadcasting: msg.isCurrentlyBroadcasting === true,
+    activeRelayedStreams: Math.max(0, Math.min(255, Math.floor(finite(msg.activeRelayedStreams) ?? 0))),
   };
 }
 
@@ -64,7 +66,10 @@ export function summarizePlan(msg) {
   if (!msg || typeof msg !== 'object') return null;
   const primaryRelayId = peerIdOrNull(msg.primaryRelayId);
   const secondaryRelayId = peerIdOrNull(msg.secondaryRelayId);
+  const rawStream = finite(msg.streamId);
+  const streamId = rawStream === null ? 0 : Math.max(0, Math.min(0xffffffff, Math.floor(rawStream)));
   return {
+    streamId,
     primaryRelayId,
     secondaryRelayId: secondaryRelayId && secondaryRelayId !== primaryRelayId ? secondaryRelayId : null,
     splitEvenOdd: msg.splitEvenOdd === true && !!primaryRelayId && !!secondaryRelayId,

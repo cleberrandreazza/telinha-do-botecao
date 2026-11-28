@@ -122,7 +122,7 @@ O mesmo painel de antes, no botão de informações do player:
 
 - **Resumo:** diagnóstico, FPS solicitado, de origem, codificado, recebido, decodificado e callbacks do compositor, resolução, bitrate da direção local, codec, RTT, jitter, perda, tipo de conexão, estado do áudio e o teto do ABR quando existe. O estado do áudio não usa só a existência de um relatório RTP. A camada técnica também mostra o modo pedido (`off`, `source` ou `system`), a superfície, a política, as tracks devolvidas, as autorizadas e o motivo de descarte. O detalhe está em [`audio.md`](audio.md).
 - **Técnico:** as quatro camadas, um gráfico SVG dos últimos 60 segundos (codificado, recebido, decodificado, callbacks do compositor) e os eventos recentes. A camada de reprodução também mostra visibilidade, foco, total considerado, estimativa sem descarte e a situação (`stall`).
-- **Exportar JSON:** baixa o relatório no navegador, sem backend.
+- **Exportar JSON:** no navegador, baixa o relatório sem backend. No app desktop, o WebView2 não aceita esse download, então o botão abre o seletor nativo de salvar (`save_json_file`) com o nome `telinha-stats-<horário>.json`.
 
 Quem compartilha abre o mesmo painel pelo botão **Diagnóstico** na sala. Sem espectador conectado ainda não existe `PeerConnection`, então não há FPS codificado para medir — a captura pedida ao sistema não é o FPS real.
 

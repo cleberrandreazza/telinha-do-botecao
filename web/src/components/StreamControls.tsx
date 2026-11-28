@@ -1,18 +1,11 @@
-import { useState } from 'react';
 import type { ReactNode } from 'react';
 
 /**
- * Menu unificado de player (spec Tela B3).
+ * Barra inferior do player, no arranjo do YouTube.
  *
- * O mesmo componente serve o player de 1 tela (`StreamViewer`), o tile da
- * grade (`StreamTile`) e o preview de quem transmite (`LocalPreview`):
- * mesmo visual, mesmas opções, mesma ordem.
- *
- * Ordem fixa: Som (só com onToggleMute) · Pausar/Reproduzir · Zoom
- * (só com onZoomChange) · Tela cheia (só com onToggleFullscreen) ·
- * Diagnóstico (só com onShowStats) · Configurações (só no preview) ·
- * Parar de assistir (só na grade) · Parar transmissão (só no preview) ·
- * Fechar (só no player de 1 tela).
+ * Esquerda: reproduzir e volume (o slider abre ao lado do alto-falante).
+ * Direita: zoom, estatísticas e, por último, tela cheia.
+ * O preview e a grade usam a mesma barra; cada um só liga os botões que tem.
  */
 
 /** Níveis de zoom: 100% → 125% → 150% → 175% → 200%. */
@@ -56,13 +49,10 @@ interface StreamControlsProps {
   onStopSharing?: () => void;
   /** Fecha o player (só no modo 1 tela). */
   onClose?: () => void;
-  /** O menu fica no topo do preview: os popovers abrem para baixo. */
-  popoverBelow?: boolean;
 }
 
-/** "1x", "1,25x", "1,5x" — número no formato brasileiro com o "x" do zoom. */
-function formatZoom(value: number): string {
-  return `${value.toLocaleString('pt-BR', { maximumFractionDigits: 2 })}x`;
+function zoomPercent(value: number): string {
+  return `${Math.round(value * 100)}%`;
 }
 
 export default function StreamControls({
@@ -86,247 +76,156 @@ export default function StreamControls({
   onStopWatching,
   onStopSharing,
   onClose,
-  popoverBelow = false,
 }: StreamControlsProps) {
-  const [showVolume, setShowVolume] = useState(false);
-  const [showZoom, setShowZoom] = useState(false);
-
   const isMuted = muted || volume <= 0;
   const volumeIcon = isMuted ? 'volume_off' : volume < 0.5 ? 'volume_down' : 'volume_up';
   const zoomIndex = Math.max(0, ZOOM_LEVELS.findIndex((level) => level === zoom));
   const lastIndex = ZOOM_LEVELS.length - 1;
-
-  const popoverGap = popoverBelow ? 'mt-3' : 'mb-3';
-  const zoomPercent = (zoomIndex / lastIndex) * 100;
-
-  const settingsPopover = settingsActive && settingsPanel ? (
-    <div className={`${popoverGap} max-h-80 min-h-0 overflow-y-auto rounded-xl bg-[#111318]/95 backdrop-blur-xl shadow-2xl z-50`}>
-      {settingsPanel}
-    </div>
-  ) : null;
-
-  const volumePopover = showVolume && onToggleMute && onVolumeChange ? (
-    <div className={`${popoverGap} w-52 bg-[#18191c]/95 backdrop-blur-xl border border-[#272a37] rounded-xl px-3.5 py-3 shadow-2xl flex flex-col gap-2 z-50`}>
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] font-bold text-[#dbdee1] uppercase tracking-wider select-none">Volume da Live</span>
-        <span className="font-label-mono text-[11px] font-semibold text-primary">{Math.round(volume * 100)}%</span>
-      </div>
-      <div className="flex items-center gap-2.5">
-        <button
-          type="button"
-          onClick={onToggleMute}
-          className="text-outline hover:text-white cursor-pointer flex items-center justify-center shrink-0 w-4"
-          title={isMuted ? 'Ativar áudio' : 'Silenciar'}
-          aria-label={isMuted ? `Ativar áudio de ${nickname}` : `Silenciar áudio de ${nickname}`}
-        >
-          <span className="material-symbols-outlined text-[16px]">{volumeIcon}</span>
-        </button>
-        <input
-          type="range"
-          min={0}
-          max={1}
-          step={0.05}
-          value={isMuted ? 0 : volume}
-          onChange={(e) => onVolumeChange(Number(e.target.value))}
-          aria-label={`Volume de ${nickname}`}
-          className="volume-slider flex-1 h-1.5 rounded-full appearance-none cursor-pointer"
-          style={{
-            background: `linear-gradient(to right, rgb(16, 185, 129) ${(isMuted ? 0 : volume) * 100}%, rgb(53, 55, 60) ${(isMuted ? 0 : volume) * 100}%)`,
-          }}
-        />
-        <span className="material-symbols-outlined text-[16px] text-[#dbdee1] select-none shrink-0 w-4">volume_up</span>
-      </div>
-    </div>
-  ) : null;
-
-  const zoomPopover = showZoom && onZoomChange ? (
-    <div className={`${popoverGap} w-52 bg-[#18191c]/95 backdrop-blur-xl border border-[#272a37] rounded-xl px-3.5 py-3 shadow-2xl flex flex-col gap-2 z-50`}>
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] font-bold text-[#dbdee1] uppercase tracking-wider select-none">Zoom</span>
-        <span className="font-label-mono text-[11px] font-semibold text-primary">{formatZoom(zoom)}</span>
-      </div>
-      <div className="flex items-center gap-2.5">
-        <button
-          type="button"
-          onClick={() => onZoomChange(ZOOM_LEVELS[Math.max(0, zoomIndex - 1)])}
-          disabled={zoomIndex === 0}
-          className="text-outline hover:text-white cursor-pointer flex items-center justify-center shrink-0 w-4 disabled:opacity-35 disabled:cursor-not-allowed"
-          aria-label="Diminuir zoom"
-        >
-          <span className="material-symbols-outlined text-[16px]">zoom_out</span>
-        </button>
-        <input
-          type="range"
-          min={0}
-          max={lastIndex}
-          step={1}
-          value={zoomIndex}
-          onChange={(e) => onZoomChange(ZOOM_LEVELS[Number(e.target.value)] ?? 1)}
-          aria-label="Zoom da transmissão"
-          className="volume-slider flex-1 h-1.5 rounded-full appearance-none cursor-pointer"
-          style={{
-            background: `linear-gradient(to right, rgb(16, 185, 129) ${zoomPercent}%, rgb(53, 55, 60) ${zoomPercent}%)`,
-          }}
-        />
-        <button
-          type="button"
-          onClick={() => onZoomChange(ZOOM_LEVELS[Math.min(lastIndex, zoomIndex + 1)])}
-          disabled={zoomIndex === lastIndex}
-          className="text-[#dbdee1] hover:text-white cursor-pointer flex items-center justify-center shrink-0 w-4 disabled:opacity-35 disabled:cursor-not-allowed"
-          aria-label="Aumentar zoom"
-        >
-          <span className="material-symbols-outlined text-[16px]">zoom_in</span>
-        </button>
-      </div>
-    </div>
-  ) : null;
+  const shownVolume = isMuted ? 0 : volume;
 
   return (
-    <div className="flex flex-col items-center min-h-0 max-h-full">
-      {!popoverBelow && settingsPopover}
-      {!popoverBelow && volumePopover}
-      {!popoverBelow && zoomPopover}
-
-      {/* Ilha compacta. O play fica entre o som e o zoom, na mesma ordem em todo player. */}
-      <div className="shrink-0 px-2 py-1 rounded-full bg-black/75 backdrop-blur-xl border border-white/10 shadow-2xl flex items-center gap-1">
-        <div className="flex items-center gap-1">
-        {/* 1. Som — botão split (ícone + chevron abre o popover) */}
-        {onToggleMute && (
-        <div className="flex items-center rounded-full bg-white/5 hover:bg-white/10 border border-white/10 transition-colors">
-          <button
-            type="button"
-            onClick={onToggleMute}
-            className="w-7 h-7 flex items-center justify-center text-white/80 hover:text-white transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-primary/60"
-            title={isMuted ? 'Ativar áudio' : 'Silenciar'}
-            aria-label={isMuted ? `Ativar áudio de ${nickname}` : `Silenciar áudio de ${nickname}`}
-          >
-            <span className="material-symbols-outlined text-[18px]">{volumeIcon}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => { setShowZoom(false); setShowVolume((open) => !open); }}
-            className="h-7 px-1 flex items-center justify-center text-white/80 hover:text-white border-l border-white/10 transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-primary/60"
-            title="Ajustar Volume"
-            aria-label="Ajustar o volume da live"
-          >
-            <span className="material-symbols-outlined text-[13px]">expand_less</span>
-          </button>
+    <div data-player-controls className="flex w-full min-w-0 flex-col justify-end">
+      {settingsActive && settingsPanel && (
+        <div className="mb-2 mr-2 max-h-80 min-h-0 self-end overflow-y-auto rounded-xl bg-[#111318]/95 shadow-2xl backdrop-blur-xl">
+          {settingsPanel}
         </div>
-        )}
-        </div>
+      )}
 
-        {/* 2. Pausar / Reproduzir — sempre no centro do menu */}
-        <ControlButton
-          icon={paused ? 'play_circle' : 'pause'}
-          title={paused ? 'Reproduzir' : 'Pausar'}
-          ariaLabel={paused ? `Reproduzir transmissão de ${nickname}` : `Pausar transmissão de ${nickname}`}
-          onClick={onTogglePause}
-        />
-
-        <div className="flex items-center gap-1">
-        {/* 3. Zoom — lupa + slider, no mesmo estilo do volume */}
-        {onZoomChange && (
-        <div className="flex items-center rounded-full bg-white/5 hover:bg-white/10 border border-white/10 transition-colors">
-          <button
-            type="button"
-            onClick={() => onZoomChange(1)}
-            className="w-7 h-7 flex items-center justify-center text-white/80 hover:text-white transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-primary/60"
-            aria-label={`Zoom ${formatZoom(zoom)}. Voltar ao 100%`}
-          >
-            <span className="material-symbols-outlined text-[18px]">search</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => { setShowVolume(false); setShowZoom((open) => !open); }}
-            className="h-7 px-1 flex items-center justify-center text-white/80 hover:text-white border-l border-white/10 transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-primary/60"
-            aria-label="Ajustar o zoom"
-          >
-            <span className="material-symbols-outlined text-[13px]">{popoverBelow ? 'expand_more' : 'expand_less'}</span>
-          </button>
-        </div>
-        )}
-
-        {/* 4. Tela cheia */}
-        {onToggleFullscreen && (
-        <ControlButton
-          icon={fullscreen ? 'fullscreen_exit' : 'fullscreen'}
-          title={fullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
-          ariaLabel={fullscreen ? 'Sair da tela cheia' : 'Tela cheia da transmissão'}
-          onClick={onToggleFullscreen}
-          active={fullscreen}
-        />
-        )}
-
-        {/* 5. Diagnóstico (só quando o player tem subscribeStats) */}
-        {onShowStats && (
+      <div className="flex w-full items-center justify-between gap-2 pb-1.5 pl-2 pr-[7.5rem] pt-1 sm:pl-3">
+        <div className="flex min-w-0 items-center gap-0.5">
           <ControlButton
-            icon="info"
-            title="Diagnóstico"
-            ariaLabel={`Diagnóstico da transmissão de ${nickname}`}
-            onClick={onShowStats}
-            active={statsActive}
+            icon={paused ? 'play_arrow' : 'pause'}
+            title={paused ? 'Reproduzir' : 'Pausar'}
+            ariaLabel={paused ? `Reproduzir transmissão de ${nickname}` : `Pausar transmissão de ${nickname}`}
+            onClick={onTogglePause}
+            large
           />
-        )}
 
-        {/* 6. Configurações da transmissão (só no preview) */}
-        {onShowSettings && (
-          <div className="relative">
+          {onToggleMute && onVolumeChange && (
+            <div className="group/volume flex items-center">
+              <ControlButton
+                icon={volumeIcon}
+                title={isMuted ? 'Ativar áudio' : 'Silenciar'}
+                ariaLabel={isMuted ? `Ativar áudio de ${nickname}` : `Silenciar áudio de ${nickname}`}
+                onClick={onToggleMute}
+              />
+              <div className="max-w-0 overflow-hidden opacity-0 transition-all duration-200 ease-out group-hover:max-w-24 group-hover:opacity-100 group-hover/volume:max-w-24 group-hover/volume:opacity-100 group-focus-within/volume:max-w-24 group-focus-within/volume:opacity-100">
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={shownVolume}
+                  onChange={(event) => onVolumeChange(Number(event.target.value))}
+                  aria-label={`Volume de ${nickname}`}
+                  className="volume-slider mx-1.5 h-1 w-16 cursor-pointer appearance-none rounded-full"
+                  style={{
+                    background: `linear-gradient(to right, rgb(16, 185, 129) ${shownVolume * 100}%, rgba(255,255,255,0.35) ${shownVolume * 100}%)`,
+                  }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex shrink-0 items-center gap-0.5">
+          {onZoomChange && (
+            <div className="mr-1 flex items-center">
+              <ControlButton
+                icon="remove"
+                title="Diminuir zoom"
+                ariaLabel="Diminuir zoom"
+                onClick={() => onZoomChange(ZOOM_LEVELS[Math.max(0, zoomIndex - 1)])}
+                disabled={zoomIndex === 0}
+              />
+              <button
+                type="button"
+                onClick={() => onZoomChange(1)}
+                title="Voltar ao 100%"
+                aria-label={`Zoom ${zoomPercent(zoom)}. Voltar ao 100%`}
+                className="h-8 min-w-12 rounded-md px-1 font-label-mono text-[12px] font-semibold text-white/90 hover:bg-white/10 hover:text-white cursor-pointer focus-visible:ring-2 focus-visible:ring-white/70"
+              >
+                {zoomPercent(zoom)}
+              </button>
+              <ControlButton
+                icon="add"
+                title="Aumentar zoom"
+                ariaLabel="Aumentar zoom"
+                onClick={() => onZoomChange(ZOOM_LEVELS[Math.min(lastIndex, zoomIndex + 1)])}
+                disabled={zoomIndex === lastIndex}
+              />
+            </div>
+          )}
+
+          {onShowStats && (
             <ControlButton
-              icon="settings"
-              title="Configurações"
-              ariaLabel="Configurações da transmissão"
-              onClick={onShowSettings}
-              active={settingsActive}
+              icon="info"
+              title="Estatísticas"
+              ariaLabel={`Estatísticas da transmissão de ${nickname}`}
+              onClick={onShowStats}
+              active={statsActive}
             />
-            {settingsNotice && (
-              <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-amber-400 pointer-events-none" />
-            )}
-          </div>
-        )}
+          )}
 
-        {/* 7. Parar de assistir (só na grade) */}
-        {onStopWatching && (
-          <ControlButton
-            icon="visibility_off"
-            title="Parar de assistir"
-            ariaLabel={`Parar de assistir a transmissão de ${nickname}`}
-            onClick={onStopWatching}
-            danger
-          />
-        )}
+          {onShowSettings && (
+            <div className="relative">
+              <ControlButton
+                icon="settings"
+                title="Configurações"
+                ariaLabel="Configurações da transmissão"
+                onClick={onShowSettings}
+                active={settingsActive}
+              />
+              {settingsNotice && (
+                <span className="pointer-events-none absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-amber-400" />
+              )}
+            </div>
+          )}
 
-        {/* 8. Parar transmissão (só no preview) */}
-        {onStopSharing && (
-          <ControlButton
-            icon="stop_screen_share"
-            title="Parar transmissão"
-            ariaLabel="Parar transmissão"
-            onClick={onStopSharing}
-            danger
-          />
-        )}
+          {onStopWatching && (
+            <ControlButton
+              icon="visibility_off"
+              title="Parar de assistir"
+              ariaLabel={`Parar de assistir a transmissão de ${nickname}`}
+              onClick={onStopWatching}
+              danger
+            />
+          )}
 
-        {/* 9. Fechar (só no player de 1 tela) */}
-        {onClose && (
-          <ControlButton
-            icon="close"
-            title="Fechar transmissão"
-            ariaLabel="Fechar transmissão"
-            onClick={onClose}
-            danger
-          />
-        )}
+          {onStopSharing && (
+            <ControlButton
+              icon="stop_screen_share"
+              title="Parar transmissão"
+              ariaLabel="Parar transmissão"
+              onClick={onStopSharing}
+              danger
+            />
+          )}
+
+          {onClose && (
+            <ControlButton
+              icon="close"
+              title="Fechar transmissão"
+              ariaLabel="Fechar transmissão"
+              onClick={onClose}
+              danger
+            />
+          )}
+
+          {onToggleFullscreen && (
+            <ControlButton
+              icon={fullscreen ? 'fullscreen_exit' : 'fullscreen'}
+              title={fullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
+              ariaLabel={fullscreen ? 'Sair da tela cheia' : 'Tela cheia da transmissão'}
+              onClick={onToggleFullscreen}
+              active={fullscreen}
+            />
+          )}
         </div>
       </div>
-
-      {popoverBelow && zoomPopover}
-      {popoverBelow && volumePopover}
-      {popoverBelow && settingsPopover}
     </div>
   );
 }
-
-/* ── Helpers ── */
 
 function ControlButton({
   icon,
@@ -336,6 +235,7 @@ function ControlButton({
   active,
   danger,
   disabled,
+  large,
 }: {
   icon: string;
   title: string;
@@ -344,6 +244,7 @@ function ControlButton({
   active?: boolean;
   danger?: boolean;
   disabled?: boolean;
+  large?: boolean;
 }) {
   return (
     <button
@@ -352,15 +253,15 @@ function ControlButton({
       title={title}
       aria-label={ariaLabel}
       disabled={disabled}
-      className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-primary/60 disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:bg-transparent ${
+      className={`${large ? 'h-10 w-10' : 'h-8 w-8'} flex items-center justify-center rounded-full transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-white/70 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent ${
         danger
-          ? 'text-white/80 hover:text-error hover:bg-error-container/20'
+          ? 'text-white/90 hover:bg-white/10 hover:text-white'
           : active
-          ? 'text-primary bg-white/10'
-          : 'text-white/80 hover:text-white hover:bg-white/10'
+            ? 'bg-white/15 text-white'
+            : 'text-white/90 hover:bg-white/10 hover:text-white'
       }`}
     >
-      <span className="material-symbols-outlined text-[16px]">{icon}</span>
+      <span className={`material-symbols-outlined ${large ? 'text-[28px]' : 'text-[22px]'}`}>{icon}</span>
     </button>
   );
 }

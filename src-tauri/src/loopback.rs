@@ -1,8 +1,11 @@
 //! Áudio da captura.
 //!
 //! Janela: loopback WASAPI só da árvore do processo (`ActivateAudioInterfaceAsync`
-//! + `AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS`). Tela: loopback do dispositivo de
-//! saída. Os dois saem em f32 intercalado, 48 kHz, 2 canais.
+//! + `AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS`, modo incluir). Tela inteira: o mesmo
+//! cliente, no modo excluir, com o PID deste executável, para o som do próprio
+//! app e do WebView2 não voltar para a sala. Build anterior à 20348, ou falha
+//! nessa ativação, cai no loopback do dispositivo. Os dois saem em f32
+//! intercalado, 48 kHz, 2 canais.
 
 use std::mem::ManuallyDrop;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,8 +24,8 @@ use windows::Win32::Media::Audio::{
     IAudioCaptureClient, IAudioClient, AUDIOCLIENT_ACTIVATION_PARAMS,
     AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
     AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-    AUDCLNT_STREAMFLAGS_LOOPBACK, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
-    VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX,
+    AUDCLNT_STREAMFLAGS_LOOPBACK, PROCESS_LOOPBACK_MODE, PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+    PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX,
 };
 use windows::Win32::System::Com::{
     CoInitializeEx, CoTaskMemAlloc, CoUninitialize, IAgileObject, IAgileObject_Impl, BLOB,
@@ -44,6 +47,57 @@ const RPC_E_CHANGED_MODE: HRESULT = HRESULT(0x8001_0106u32 as i32);
 const E_FAIL: HRESULT = HRESULT(0x8000_4005u32 as i32);
 /// Pacote maior que isto não vira slice. Dois segundos a 48 kHz já é folga.
 const MAX_PACKET_FRAMES: u32 = 96_000;
+/// Excluir a árvore do processo só existe a partir do Windows 10 build 20348.
+const EXCLUDE_PROCESS_TREE_BUILD: u32 = 20_348;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProcessCapture {
+    /// Tela inteira: todo o sistema, menos este processo e os filhos.
+    ExcludeOwnTree,
+    /// Janela: só o processo daquela janela.
+    IncludeWindow,
+}
+
+fn process_capture(kind: &str, build: u32) -> Option<ProcessCapture> {
+    match kind {
+        "monitor" if build >= EXCLUDE_PROCESS_TREE_BUILD => Some(ProcessCapture::ExcludeOwnTree),
+        "window" => Some(ProcessCapture::IncludeWindow),
+        _ => None,
+    }
+}
+
+fn loopback_mode(choice: ProcessCapture) -> PROCESS_LOOPBACK_MODE {
+    match choice {
+        ProcessCapture::ExcludeOwnTree => PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+        ProcessCapture::IncludeWindow => PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
+    }
+}
+
+fn windows_build() -> u32 {
+    #[repr(C)]
+    struct OsVersionInfoW {
+        size: u32,
+        major: u32,
+        minor: u32,
+        build: u32,
+        platform: u32,
+        service_pack: [u16; 128],
+    }
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn RtlGetVersion(info: *mut OsVersionInfoW) -> i32;
+    }
+    let mut info = OsVersionInfoW {
+        size: std::mem::size_of::<OsVersionInfoW>() as u32,
+        major: 0,
+        minor: 0,
+        build: 0,
+        platform: 0,
+        service_pack: [0; 128],
+    };
+    let status = unsafe { RtlGetVersion(&mut info) };
+    if status < 0 { 0 } else { info.build }
+}
 
 pub struct AudioPump {
     kind: PumpKind,
@@ -72,11 +126,23 @@ pub fn start(
     tx: SyncSender<Vec<f32>>,
     stop: Arc<AtomicBool>,
 ) -> Result<AudioPump, String> {
-    if kind == "window" {
-        match process_id(window_id).and_then(|pid| spawn_process_loopback(pid, tx.clone(), Arc::clone(&stop))) {
+    if let Some(choice) = process_capture(kind, windows_build()) {
+        let pid = match choice {
+            ProcessCapture::ExcludeOwnTree => Ok(std::process::id()),
+            ProcessCapture::IncludeWindow => process_id(window_id),
+        };
+        let started = match pid {
+            Ok(pid) => spawn_process_loopback(pid, loopback_mode(choice), tx.clone(), Arc::clone(&stop)),
+            Err(err) => Err(err),
+        };
+        match started {
             Ok(pump) => return Ok(AudioPump { kind: pump }),
             Err(err) => {
-                eprintln!("[captura] loopback do processo falhou ({err}). Seguindo com o loopback do dispositivo.");
+                let what = match choice {
+                    ProcessCapture::ExcludeOwnTree => "exclusão do próprio processo",
+                    ProcessCapture::IncludeWindow => "loopback do processo",
+                };
+                eprintln!("[captura] {what} falhou ({err}). Seguindo com o loopback do dispositivo.");
             }
         }
     }
@@ -111,13 +177,14 @@ pub fn process_id(window_id: u32) -> Result<u32, String> {
 
 fn spawn_process_loopback(
     pid: u32,
+    mode: PROCESS_LOOPBACK_MODE,
     tx: SyncSender<Vec<f32>>,
     stop: Arc<AtomicBool>,
 ) -> Result<PumpKind, String> {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     let thread = std::thread::Builder::new()
         .name("telinha-proc-audio".into())
-        .spawn(move || run_process_loopback(pid, tx, stop, ready_tx))
+        .spawn(move || run_process_loopback(pid, mode, tx, stop, ready_tx))
         .map_err(|err| err.to_string())?;
     match ready_rx.recv_timeout(Duration::from_secs(4)) {
         Ok(Ok(())) => Ok(PumpKind::Process(thread)),
@@ -134,6 +201,7 @@ fn spawn_process_loopback(
 
 fn run_process_loopback(
     pid: u32,
+    mode: PROCESS_LOOPBACK_MODE,
     tx: SyncSender<Vec<f32>>,
     stop: Arc<AtomicBool>,
     ready: std::sync::mpsc::Sender<Result<(), String>>,
@@ -146,7 +214,7 @@ fn run_process_loopback(
             return;
         }
     };
-    let capture = match activate_process_client(pid) {
+    let capture = match activate_process_client(pid, mode) {
         Ok(capture) => capture,
         Err(err) => {
             let _ = ready.send(Err(err));
@@ -202,7 +270,7 @@ impl Drop for MtaGuard {
     }
 }
 
-fn activate_process_client(pid: u32) -> Result<ProcessClient, String> {
+fn activate_process_client(pid: u32, mode: PROCESS_LOOPBACK_MODE) -> Result<ProcessClient, String> {
     // O MMDevAPI libera este blob com CoTaskMemFree. Tem de nascer no
     // CoTaskMemAlloc, e a gente não libera de novo.
     let params_ptr = unsafe { CoTaskMemAlloc(std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>()) }
@@ -216,7 +284,7 @@ fn activate_process_client(pid: u32) -> Result<ProcessClient, String> {
             Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
                 ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
                     TargetProcessId: pid,
-                    ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
+                    ProcessLoopbackMode: mode,
                 },
             },
         });
@@ -646,6 +714,31 @@ fn stereo_at(input: &[f32], channels: usize, index: usize) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_screen_excludes_this_process_tree() {
+        assert_eq!(process_capture("monitor", 20_348), Some(ProcessCapture::ExcludeOwnTree));
+        assert_eq!(
+            loopback_mode(ProcessCapture::ExcludeOwnTree),
+            PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+        );
+        assert_eq!(PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE.0, 1);
+    }
+
+    #[test]
+    fn old_windows_keeps_the_device_loopback_for_the_screen() {
+        assert_eq!(process_capture("monitor", 20_347), None);
+        assert_eq!(process_capture("monitor", 0), None);
+    }
+
+    #[test]
+    fn window_capture_still_includes_only_that_process() {
+        assert_eq!(process_capture("window", 10_240), Some(ProcessCapture::IncludeWindow));
+        assert_eq!(
+            loopback_mode(ProcessCapture::IncludeWindow),
+            PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
+        );
+    }
 
     #[test]
     fn stereo_48k_passes_samples_through() {

@@ -10,6 +10,8 @@ import {
   summarizePlan,
   summarizeTelemetry,
 } from './relay-protocol.mjs';
+import { startDiscordBot } from './discord-bot.mjs';
+import { createTicketStore } from './discord-tickets.mjs';
 
 // ── Config ──────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT || '4000', 10);
@@ -36,6 +38,9 @@ let nextChatId = 1;
 /** @type {Map<string, Room>} code → Room */
 const rooms = new Map();
 
+/** Convites de uso único das salas presas a um canal de voz. */
+const voiceTickets = createTicketStore();
+
 /** @type {Map<WebSocket, PeerInfo>} */
 const peers = new Map();
 
@@ -44,7 +49,7 @@ let nextPeerId = 1;
 /**
  * @typedef {{ id: string, ws: WebSocket, nickname: string, roomCode: string|null, isSharing: boolean, isDesktop: boolean, lastSeen: number, lastChatAt: number }} PeerInfo
  * @typedef {{ id: string, from: string, nickname: string, text: string, ts: number, clientId: string|null }} ChatEntry
- * @typedef {{ code: string, password: string|null, peers: Map<string, PeerInfo>, createdAt: number, history: ChatEntry[], emptySince: number|null, cleanupTimer: NodeJS.Timeout|null }} Room
+ * @typedef {{ code: string, password: string|null, peers: Map<string, PeerInfo>, createdAt: number, history: ChatEntry[], emptySince: number|null, cleanupTimer: NodeJS.Timeout|null, voiceChannelId: string|null, discordPrivate: boolean, discordRestricted: boolean, discordHoldTimer: NodeJS.Timeout|null }} Room
  */
 
 // ── Helpers ─────────────────────────────────────────────
@@ -83,12 +88,35 @@ function broadcast(room, msg, excludeId = null) {
   }
 }
 
+function roomPrivateFlag(room) {
+  return Boolean(room.password || room.discordPrivate);
+}
+
+/** Sala criada pelo /telinha espera o primeiro clique sem prender o processo. */
+function holdEmptyDiscordRoom(room) {
+  if (!room || room.discordHoldTimer || room.peers.size > 0) return;
+  room.discordHoldTimer = setTimeout(() => {
+    room.discordHoldTimer = null;
+    if (room.peers.size > 0) return;
+    rooms.delete(room.code);
+    console.log('[discord] sala da call liberada');
+  }, 2 * 60 * 60 * 1000);
+  if (typeof room.discordHoldTimer.unref === 'function') room.discordHoldTimer.unref();
+}
+
+function cancelDiscordHold(room) {
+  if (!room?.discordHoldTimer) return;
+  clearTimeout(room.discordHoldTimer);
+  room.discordHoldTimer = null;
+}
+
 /**
  * Sala que ficou vazia não é removida na hora: ela espera
  * ROOM_EMPTY_GRACE_MS. Quem recarregou a página (F5) volta para o mesmo
  * código dentro dessa janela e ainda recebe o histórico do chat.
  */
 function scheduleRoomCleanup(room) {
+  cancelDiscordHold(room);
   if (room.cleanupTimer) return;
   room.emptySince = Date.now();
   room.cleanupTimer = setTimeout(() => {
@@ -108,6 +136,7 @@ function scheduleRoomCleanup(room) {
 
 /** A sala voltou a ter gente: cancela a remoção pendente. */
 function cancelRoomCleanup(room) {
+  cancelDiscordHold(room);
   if (!room.cleanupTimer) return;
   clearTimeout(room.cleanupTimer);
   room.cleanupTimer = null;
@@ -216,6 +245,10 @@ wss.on('connection', (ws) => {
           history: [],
           emptySince: null,
           cleanupTimer: null,
+          voiceChannelId: null,
+          discordPrivate: false,
+          discordRestricted: false,
+          discordHoldTimer: null,
         };
         rooms.set(code, room);
 
@@ -224,6 +257,7 @@ wss.on('connection', (ws) => {
           code,
           peerId,
           hasPassword: !!room.password,
+          isPrivate: roomPrivateFlag(room),
         });
         console.log(`[sala] criada: ${code} por ${peer.nickname}`);
         break;
@@ -239,6 +273,10 @@ wss.on('connection', (ws) => {
         }
         if (room.password && room.password !== msg.password) {
           send(ws, { type: 'error', message: 'Senha incorreta.' });
+          return;
+        }
+        if (room.discordRestricted && !voiceTickets.consume(room, msg.ticket)) {
+          send(ws, { type: 'error', message: 'Convite inválido ou expirado. Volte ao Discord e clique em Entrar na Sala de novo.' });
           return;
         }
         // sai de sala anterior
@@ -264,6 +302,7 @@ wss.on('connection', (ws) => {
           code,
           peerId,
           peers: peerList,
+          isPrivate: roomPrivateFlag(room),
         });
 
         // histórico de chat da sala (últimas 50 mensagens)
@@ -461,4 +500,12 @@ httpServer.listen(PORT, () => {
   console.log(`\n  🍺 Telinha do Botecão - Servidor de Sinalização`);
   console.log(`  ➜ Rodando em http://localhost:${PORT}`);
   console.log(`  ➜ Health check: http://localhost:${PORT}/health\n`);
+});
+
+void startDiscordBot({
+  rooms,
+  holdEmptyRoom: holdEmptyDiscordRoom,
+  issueVoiceTicket: (room) => voiceTickets.issue(room),
+}).catch(() => {
+  console.error('[discord] bot não iniciou; sinalização segue');
 });

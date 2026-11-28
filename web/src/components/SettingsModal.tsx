@@ -12,6 +12,8 @@ export interface BotecaoSettings {
   audioMode: AudioMode;
   /** Bipes curtos de evento da sala (mensagem, entrou, saiu, nova stream). */
   eventSounds: boolean;
+  /** Não publica código nem botão de entrada no Discord. */
+  hideDiscordActivity: boolean;
 }
 
 const DEFAULT_SETTINGS: BotecaoSettings = {
@@ -21,6 +23,7 @@ const DEFAULT_SETTINGS: BotecaoSettings = {
   fps: 30,
   audioMode: 'source',
   eventSounds: true,
+  hideDiscordActivity: false,
 };
 
 const AUDIO_MODES: { key: AudioMode; label: string; desc: string }[] = [
@@ -33,12 +36,13 @@ export function loadSettings(): BotecaoSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as { audioMode?: unknown; shareAudio?: unknown; eventSounds?: unknown };
+      const parsed = JSON.parse(raw) as { audioMode?: unknown; shareAudio?: unknown; eventSounds?: unknown; hideDiscordActivity?: unknown };
       return {
         ...DEFAULT_SETTINGS,
         ...parsed,
         audioMode: migrateAudioMode(parsed),
         eventSounds: resolveEventSounds(parsed.eventSounds),
+        hideDiscordActivity: parsed.hideDiscordActivity === true,
       };
     }
   } catch { /* ignore */ }
@@ -54,6 +58,12 @@ function saveSettings(settings: BotecaoSettings) {
     shareAudio: audioMode !== 'off',
     eventSounds,
   }));
+}
+
+/** Grava na hora o interruptor do Discord, sem esperar o Salvar do modal. */
+export function setHideDiscordActivity(hidden: boolean): void {
+  const next = { ...loadSettings(), hideDiscordActivity: hidden };
+  saveSettings(next);
 }
 
 const RES_OPTIONS: { key: BotecaoSettings['resolution']; label: string; badge: string; desc: string }[] = [
@@ -73,9 +83,11 @@ interface SettingsModalProps {
   nickname: string;
   onClose: () => void;
   onSave: (settings: BotecaoSettings) => void;
+  /** Some quando o Discord não está no pipe local. */
+  showDiscordHide?: boolean;
 }
 
-export default function SettingsModal({ nickname, onClose, onSave }: SettingsModalProps) {
+export default function SettingsModal({ nickname, onClose, onSave, showDiscordHide = false }: SettingsModalProps) {
   const [settings, setSettings] = useState<BotecaoSettings>(() => {
     const loaded = loadSettings();
     if (!loaded.displayName) loaded.displayName = nickname;
@@ -308,6 +320,29 @@ export default function SettingsModal({ nickname, onClose, onSave }: SettingsMod
                 />
               </button>
             </div>
+
+            {showDiscordHide && <div className="flex items-center justify-between p-3 rounded-xl bg-surface-container/60 border border-outline-variant/30">
+              <div className="flex flex-col gap-0.5 pr-3">
+                <span className="font-body-md text-body-md text-on-surface font-medium leading-none">Ocultar atividade no Discord</span>
+                <span className="text-[11px] pt-0.5 text-on-surface-variant">O status não mostra o código nem o botão de entrada. Sala com senha já fica oculta.</span>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={settings.hideDiscordActivity}
+                aria-label="Ocultar atividade no Discord"
+                onClick={() => update('hideDiscordActivity', !settings.hideDiscordActivity)}
+                className={`shrink-0 w-11 h-6 rounded-full transition-colors relative cursor-pointer ${
+                  settings.hideDiscordActivity ? 'bg-primary' : 'bg-surface-container-high border border-outline-variant/40'
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 w-5 h-5 rounded-full transition-all ${
+                    settings.hideDiscordActivity ? 'left-[22px] bg-on-primary' : 'left-0.5 bg-outline'
+                  }`}
+                />
+              </button>
+            </div>}
 
             <span className="font-body-sm text-body-sm text-on-surface-variant">Não captura microfone. Uma janela só leva o som de todo o Windows no modo separado.</span>
           </div>

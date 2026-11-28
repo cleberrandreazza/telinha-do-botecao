@@ -8,6 +8,8 @@ interface HomeProps {
   onJoinRoom: (code: string, nickname: string, password?: string) => void;
   error: string | null;
   connecting: boolean;
+  /** Código vindo de um link, já preenchido em Entrar. */
+  initialCode?: string;
 }
 
 /** Erro de campo: aparece colado ao input que-o causou. */
@@ -19,15 +21,21 @@ type FieldError = { field: 'nickname' | 'code'; message: string } | null;
 const INPUT = 'w-full h-12 bg-surface-input/90 text-white placeholder:text-slate-500 border rounded-xl px-4 text-sm leading-5 transition-all outline-none';
 const LABEL = 'block text-xs font-semibold uppercase tracking-wider text-slate-300';
 
-export default function Home({ onCreateRoom, onJoinRoom, error, connecting }: HomeProps) {
+export default function Home({ onCreateRoom, onJoinRoom, error, connecting, initialCode = '' }: HomeProps) {
   // No desktop as duas colunas aparecem juntas; no mobile o segmented
   // control escolhe qual delas fica visível.
-  const [tab, setTab] = useState<'create' | 'join'>('create');
+  const [tab, setTab] = useState<'create' | 'join'>(initialCode ? 'join' : 'create');
   const [nickname, setNickname] = useState('');
   const [createPassword, setCreatePassword] = useState('');
   const [joinPassword, setJoinPassword] = useState('');
-  const [code, setCode] = useState('');
+  const [code, setCode] = useState(initialCode);
   const [fieldError, setFieldError] = useState<FieldError>(null);
+
+  useEffect(() => {
+    if (!initialCode) return;
+    setCode(initialCode);
+    setTab('join');
+  }, [initialCode]);
 
   // Carrega perfil salvo ao montar
   useEffect(() => {

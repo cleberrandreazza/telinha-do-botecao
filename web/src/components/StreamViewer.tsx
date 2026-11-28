@@ -183,26 +183,6 @@ export default function StreamViewer({
   // (limitado às bordas). O pan é local do player.
   const { pan, dragging, onPointerDown, onPointerMove, onPointerUp, onPointerCancel } = useZoomPan(containerRef, zoom);
 
-  const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
-    // Não mexe em digitação: input, textarea e contenteditable ficam de fora.
-    const target = event.target as HTMLElement | null;
-    if (target) {
-      const tag = target.tagName?.toLowerCase();
-      if (tag === 'input' || tag === 'textarea' || target.isContentEditable) return;
-    }
-    if (event.ctrlKey || event.metaKey || event.altKey) return;
-    if (event.key === '+' || event.key === '=') {
-      event.preventDefault();
-      zoomIn();
-    } else if (event.key === '-' || event.key === '_') {
-      event.preventDefault();
-      zoomOut();
-    } else if (event.key === '0') {
-      event.preventDefault();
-      resetZoom();
-    }
-  }, [zoomIn, zoomOut, resetZoom]);
-
   // Volume 0 silencia. Desmutar fica no gesto (botão ou slider), não neste efeito.
   const volumeRef = useRef(volume);
   volumeRef.current = volume;
@@ -260,6 +240,82 @@ export default function StreamViewer({
       document.exitFullscreen();
     }
   }, []);
+
+  const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement | null;
+    if (target) {
+      const tag = target.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || target.isContentEditable) return;
+    }
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.key === '+' || event.key === '=') {
+      event.preventDefault();
+      zoomIn();
+    } else if (event.key === '-' || event.key === '_') {
+      event.preventDefault();
+      zoomOut();
+    } else if (event.key === '0') {
+      event.preventDefault();
+      resetZoom();
+    } else if (event.key === 'f' || event.key === 'F') {
+      event.preventDefault();
+      toggleFullscreen();
+    }
+  }, [zoomIn, zoomOut, resetZoom, toggleFullscreen]);
+
+  const CHROME_IDLE_MS = 2500;
+  const [chromeIdle, setChromeIdle] = useState(false);
+  const [chromeHeld, setChromeHeld] = useState(false);
+  const idleTimer = useRef<number | null>(null);
+  const gestureRef = useRef({ x: 0, y: 0, moved: false });
+  const clickTimer = useRef<number | null>(null);
+  const showChrome = !chromeIdle || chromeHeld || isPaused;
+
+  const armChrome = useCallback(() => {
+    setChromeIdle(false);
+    if (idleTimer.current !== null) window.clearTimeout(idleTimer.current);
+    idleTimer.current = window.setTimeout(() => setChromeIdle(true), CHROME_IDLE_MS);
+  }, []);
+
+  useEffect(() => {
+    armChrome();
+    return () => {
+      if (idleTimer.current !== null) window.clearTimeout(idleTimer.current);
+      if (clickTimer.current !== null) window.clearTimeout(clickTimer.current);
+    };
+  }, [armChrome]);
+
+  const onStagePointerDown = (event: React.PointerEvent<HTMLVideoElement>) => {
+    gestureRef.current = { x: event.clientX, y: event.clientY, moved: false };
+    containerRef.current?.focus({ preventScroll: true });
+    onPointerDown(event);
+  };
+  const onStagePointerMove = (event: React.PointerEvent<HTMLVideoElement>) => {
+    const gesture = gestureRef.current;
+    if (Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) > 6) gesture.moved = true;
+    onPointerMove(event);
+  };
+  const onStageClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('button, input, a, select, textarea, [data-player-controls], .player-chrome')) return;
+    if (gestureRef.current.moved || dragging || isLoading) return;
+    if (event.detail > 1) return;
+    if (clickTimer.current !== null) window.clearTimeout(clickTimer.current);
+    clickTimer.current = window.setTimeout(() => {
+      clickTimer.current = null;
+      togglePause();
+    }, 250);
+  };
+  const onStageDoubleClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('button, input, a, select, textarea, [data-player-controls], .player-chrome')) return;
+    if (gestureRef.current.moved || isLoading) return;
+    if (clickTimer.current !== null) {
+      window.clearTimeout(clickTimer.current);
+      clickTimer.current = null;
+    }
+    toggleFullscreen();
+  };
 
   useEffect(() => {
     const handler = () => setIsFullscreen(!!document.fullscreenElement);
@@ -341,8 +397,7 @@ export default function StreamViewer({
   const settings = videoTrack?.getSettings();
   const trackRequestedFps = typeof settings?.frameRate === 'number' ? settings.frameRate : null;
 
-  // Hide cursor in fullscreen when mouse inactive
-  const containerStyle: React.CSSProperties = isFullscreen && mouseInactive ? { cursor: 'none' } : {};
+  const containerStyle: React.CSSProperties = !showChrome || (isFullscreen && mouseInactive && !chromeHeld) ? { cursor: 'none' } : {};
 
   return (
     <div
@@ -350,6 +405,13 @@ export default function StreamViewer({
       style={containerStyle}
       tabIndex={0}
       onKeyDown={handleKeyDown}
+      onMouseMove={armChrome}
+      onMouseLeave={() => {
+        setChromeHeld(false);
+        if (!isPaused) setChromeIdle(true);
+      }}
+      onClick={onStageClick}
+      onDoubleClick={onStageDoubleClick}
       aria-label="Player da live assistida"
       className={`relative w-full h-full flex items-center justify-center rounded-2xl overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${
         crtState === 'turning-on' ? 'crt-turn-on' : ''
@@ -360,8 +422,8 @@ export default function StreamViewer({
         ref={videoRef}
         autoPlay
         playsInline
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
+        onPointerDown={onStagePointerDown}
+        onPointerMove={onStagePointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerCancel}
         style={{
@@ -467,8 +529,6 @@ export default function StreamViewer({
         </div>
       )}
 
-      {/* Gradient overlay top + bottom (matches Stitch) */}
-      <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/30 pointer-events-none transition-opacity duration-300 autohide-ui rounded-2xl" />
 
       {/* Analog flash overlay on turn-on */}
       {crtState === 'turning-on' && (
@@ -486,7 +546,7 @@ export default function StreamViewer({
       )}
 
       {showStats && (
-        <div className="absolute top-16 right-4 z-30 autohide-ui">
+        <div className="absolute top-16 right-4 z-30">
           <StatsPanel
             snapshot={snapshot}
             trackRequestedFps={trackRequestedFps}
@@ -499,7 +559,7 @@ export default function StreamViewer({
       )}
 
       {/* Streamer name badge (top-left) */}
-      <div className="absolute top-3 left-3 px-2.5 py-1 rounded-lg bg-surface/80 backdrop-blur-md border border-outline-variant/30 flex items-center gap-2 z-10 autohide-ui">
+      <div className={`absolute top-3 left-3 px-2.5 py-1 rounded-lg bg-surface/80 backdrop-blur-md border border-outline-variant/30 flex items-center gap-2 z-10 transition-opacity duration-300 ${showChrome ? 'opacity-100' : 'opacity-0'}`}>
         <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
         <span className="text-[12px] font-body text-on-surface font-medium">{nickname}</span>
       </div>
@@ -521,10 +581,15 @@ export default function StreamViewer({
         </div>
       )}
 
-      {/* ── Floating Control Island (mesmo menu dos tiles da grade) ── */}
       <div
-        className={`absolute bottom-6 left-1/2 -translate-x-1/2 z-30 autohide-ui transition-all duration-300 flex flex-col items-center ${
-          isFullscreen && mouseInactive ? 'opacity-0 translate-y-6 pointer-events-none' : 'opacity-100 translate-y-0'
+        onMouseEnter={() => setChromeHeld(true)}
+        onMouseLeave={() => setChromeHeld(false)}
+        onFocus={() => setChromeHeld(true)}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setChromeHeld(false);
+        }}
+        className={`player-chrome absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-black/80 via-black/40 to-transparent pt-10 transition-opacity duration-300 ${
+          showChrome ? 'is-open opacity-100' : 'pointer-events-none opacity-0'
         }`}
       >
         <StreamControls

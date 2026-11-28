@@ -65,6 +65,18 @@ body.fullscreen-ui.mouse-inactive .autohide-ui {
   opacity: 0 !important;
   pointer-events: none !important;
 }
+body.fullscreen-ui.mouse-inactive .player-chrome.is-open {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+body.fullscreen-ui.mouse-inactive .player-chrome.is-open,
+body.fullscreen-ui.mouse-inactive .player-chrome.is-open *,
+body.fullscreen-ui.mouse-inactive .player-chrome:hover,
+body.fullscreen-ui.mouse-inactive .player-chrome:hover *,
+body.fullscreen-ui.mouse-inactive .player-chrome:focus-within,
+body.fullscreen-ui.mouse-inactive .player-chrome:focus-within * {
+  cursor: auto !important;
+}
 body.fullscreen-ui.mouse-inactive,
 body.fullscreen-ui.mouse-inactive *,
 body.fullscreen-ui.mouse-inactive *::before,

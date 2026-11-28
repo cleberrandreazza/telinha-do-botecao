@@ -1,3 +1,4 @@
+import { isTauriDesktop } from '../utils.ts';
 import { classifyAudio } from './audio.ts';
 import { resolutionFacts, type CaptureProbe, type EncoderProbe, type ResolutionFacts } from './resolution.ts';
 import type { TimelineEvent } from './timeline.ts';
@@ -168,8 +169,23 @@ export function buildReport(input: {
   return sanitize(report);
 }
 
+/** Nome sugerido no seletor do app. O navegador continua com `reportFilename`. */
+export function statsExportFilename(when = new Date()): string {
+  const stamp = when.toISOString().replace(/[:.]/g, '-');
+  return `telinha-stats-${stamp}.json`;
+}
+
 export function triggerJsonDownload(filename: string, data: unknown) {
   const json = JSON.stringify(sanitize(data), null, 2);
+  if (isTauriDesktop()) {
+    const defaultFilename = statsExportFilename();
+    void import('@tauri-apps/api/core')
+      .then(({ invoke }) => invoke<string | null>('save_json_file', { defaultFilename, content: json }))
+      .catch((error: unknown) => {
+        console.error('[diagnóstico] não salvou o JSON', error);
+      });
+    return json;
+  }
   if (typeof document === 'undefined') return json;
   const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);

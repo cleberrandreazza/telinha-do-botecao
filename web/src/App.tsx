@@ -12,7 +12,7 @@ import {
 import type { AppScreen, ChatMessage, GridMode, PeerInfo, StreamInfo, ServerMessage } from './lib/types';
 import { sanitizeChatText, isOwnMessage } from './lib/chat';
 import { installAudioUnlock, playSound, setSoundsEnabled } from './lib/sounds';
-import { loadSettings } from './components/SettingsModal';
+import { loadSettings, setHideDiscordActivity } from './components/SettingsModal';
 import { gridModeForSharers, limitNoticeForMode, loadGridMode, remoteSlotsForMode, saveGridMode } from './lib/grid';
 import {
   loadRoomSession,
@@ -34,6 +34,9 @@ import type { StreamResolution } from './components/ResolutionControl';
 import type { StreamFrameRate } from './components/StreamSettings';
 import { describeSwitchError, type DisplaySource } from './lib/sourceSwitch';
 import type { StreamConfig } from './lib/webrtc';
+import { loadProfile } from './lib/profile';
+import { buildPresence, discordHideSwitchVisible, pushDiscordPresence, readDiscordRpcStatus } from './lib/discordPresence';
+import { desktopRoomUrl, roomCodeFromLocation } from './lib/roomLink';
 import { clampWebPreset, webShareNeedsDesktopPrompt, webViewerShouldSuggestDesktop } from './lib/desktopPrompt';
 import { DesktopSharePrompt } from './components/DesktopAppPrompt';
 import { describeCapture, readTrackSettings } from './lib/diagnostics/index';
@@ -203,6 +206,10 @@ export default function App() {
 
   // ── Estado da sala ──
   const [roomCode, setRoomCode] = useState('');
+  const [roomPrivate, setRoomPrivate] = useState(false);
+  const [hideDiscord, setHideDiscord] = useState(() => loadSettings().hideDiscordActivity);
+  const [discordConnected, setDiscordConnected] = useState(false);
+  const [linkedCode, setLinkedCode] = useState<string | null>(null);
   const [myPeerId, setMyPeerId] = useState('');
   const [nickname, setNickname] = useState('');
   const [peers, setPeers] = useState<PeerInfo[]>([]);
@@ -283,6 +290,8 @@ export default function App() {
   const connectPromiseRef = useRef<Promise<SignalingClient> | null>(null);
   /** Código da sala para o qual o join-room já foi enviado (evita entrar 2x). */
   const joinedCodeRef = useRef<string | null>(null);
+  /** Senha desta entrada: a sala conta como privada mesmo antes do servidor confirmar. */
+  const pendingSecretRef = useRef(false);
   const peersRef = useRef<PeerInfo[]>([]);
   const nickRef = useRef<string>('');
   const myPeerIdRef = useRef('');
@@ -431,6 +440,7 @@ export default function App() {
       case 'room-created': {
         const selfPeer: PeerInfo = { id: msg.peerId, nickname: nickRef.current, isSharing: false, isDesktop: isTauriDesktop() };
         setRoomCode(msg.code);
+        setRoomPrivate(Boolean(msg.isPrivate || msg.hasPassword || pendingSecretRef.current));
         setMyPeerId(msg.peerId);
         setPeers([selfPeer]);
         setScreen('room');
@@ -448,6 +458,7 @@ export default function App() {
           ? msg.peers
           : [...msg.peers, selfJoined];
         setRoomCode(msg.code);
+        setRoomPrivate(Boolean(msg.isPrivate || pendingSecretRef.current));
         setMyPeerId(msg.peerId);
         setPeers(peersWithSelf);
         setScreen('room');
@@ -659,6 +670,7 @@ export default function App() {
     setError(null);
     setConnecting(true);
     setNickname(nick);
+    pendingSecretRef.current = Boolean(password);
 
     try {
       const signal = await ensureConnected();
@@ -669,14 +681,23 @@ export default function App() {
     }
   };
 
-  const handleJoinRoom = async (code: string, nick: string, password?: string) => {
+  const handleJoinRoom = async (code: string, nick: string, password?: string, ticket?: string | null) => {
     setError(null);
     setConnecting(true);
     setNickname(nick);
+    nickRef.current = nick;
+    pendingSecretRef.current = Boolean(password);
 
     try {
       const signal = await ensureConnected();
-      signal.send({ type: 'join-room', code, nickname: nick, password, isDesktop: isTauriDesktop() });
+      signal.send({
+        type: 'join-room',
+        code,
+        nickname: nick,
+        password,
+        isDesktop: isTauriDesktop(),
+        ...(ticket ? { ticket } : {}),
+      });
     } catch (err) {
       setError('Não foi possível conectar ao servidor. Verifique se o servidor está rodando.');
       setConnecting(false);
@@ -1143,6 +1164,8 @@ export default function App() {
   const resetRoom = () => {
     setScreen('home');
     setRoomCode('');
+    setRoomPrivate(false);
+    pendingSecretRef.current = false;
     setMyPeerId('');
     setPeers([]);
     setStreams([]);
@@ -1359,6 +1382,25 @@ export default function App() {
   useEffect(() => {
     if (isMockMode()) return;
 
+    const link = roomCodeFromLocation(window.location.pathname, window.location.search);
+    if (link) {
+      setLinkedCode(link.code);
+      if (link.ticket) {
+        const url = new URL(window.location.href);
+        url.searchParams.delete('ticket');
+        window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+      }
+      if (link.openApp && !isTauriDesktop()) {
+        window.location.assign(desktopRoomUrl(link.code, link.ticket));
+      }
+      const nick = loadProfile()?.nickname?.trim();
+      if (nick) {
+        pendingSecretRef.current = false;
+        void handleJoinRoom(link.code, nick, undefined, link.ticket);
+      }
+      return;
+    }
+
     const session = loadRoomSession();
     if (!session) return;
 
@@ -1373,6 +1415,69 @@ export default function App() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const joinLinkRef = useRef<(code: string, ticket?: string | null) => void>(() => {});
+  joinLinkRef.current = (code: string, ticket?: string | null) => {
+    const nick = nickRef.current.trim() || loadProfile()?.nickname?.trim() || 'Anônimo';
+    pendingSecretRef.current = false;
+    void handleJoinRoom(code, nick, undefined, ticket);
+  };
+
+  useEffect(() => {
+    if (!isTauriDesktop()) return;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void readDiscordRpcStatus().then((connected) => {
+        if (!cancelled) setDiscordConnected(connected);
+      });
+    }, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriDesktop()) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void (async () => {
+      const { listen } = await import('@tauri-apps/api/event');
+      const { invoke } = await import('@tauri-apps/api/core');
+      if (cancelled) return;
+      unlisten = await listen<{ code: string; ticket?: string | null }>('telinha-join', (event) => {
+        if (event.payload?.code) joinLinkRef.current(event.payload.code, event.payload.ticket);
+      });
+      try {
+        const pending = await invoke<{ code: string; ticket?: string | null } | null>('take_pending_join');
+        if (!cancelled && pending?.code) joinLinkRef.current(pending.code, pending.ticket);
+      } catch {
+        // O site não tem o comando.
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriDesktop()) return;
+    let cancelled = false;
+    void pushDiscordPresence(buildPresence({
+      inRoom: screen === 'room' && roomCode.length > 0,
+      roomCode,
+      roomPrivate,
+      hideActivity: hideDiscord,
+      isStreaming: isSharing,
+      viewerCount: peers.length,
+    })).then((connected) => {
+      if (!cancelled) setDiscordConnected(connected);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [screen, roomCode, roomPrivate, hideDiscord, isSharing, peers.length]);
 
   // "Voltar ao início" / "Cancelar": apaga a sessão salva e volta para a Home.
   const handleCancelReconnect = () => {
@@ -1443,6 +1548,7 @@ export default function App() {
           onJoinRoom={handleJoinRoom}
           error={error}
           connecting={connecting}
+          initialCode={linkedCode ?? undefined}
         />
       )}
 
@@ -1496,6 +1602,12 @@ export default function App() {
             peers,
           })}
           qualityLimited={webQualityLimited}
+          hideDiscordActivity={hideDiscord}
+          discordConnected={discordHideSwitchVisible(isTauriDesktop(), discordConnected)}
+          onHideDiscordActivity={(hidden) => {
+            setHideDiscordActivity(hidden);
+            setHideDiscord(hidden);
+          }}
         />
       )}
 

@@ -156,6 +156,16 @@ export interface ConnectionStats {
 type OnStreamCallback = (info: StreamInfo) => void;
 type OnStreamEndCallback = (peerId: string) => void;
 
+/** Id estável da árvore desta live. O mesmo peer sempre cai na mesma árvore. */
+function streamIdFor(peerId: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < peerId.length; index += 1) {
+    hash ^= peerId.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
 export class WebRTCManager {
   private signal: SignalingClient;
   /** Conexões indexadas por `papel:peerId` — os dois sentidos coexistem (ver lib/links.ts). */
@@ -207,12 +217,21 @@ export class WebRTCManager {
   private diagnosticsListeners = new Set<() => void>();
   private readonly timeline: SessionTimeline;
   private readonly desktopPeers = new Set<string>();
-  private readonly relayAnnouncements = new Map<string, { uploadKbps: number; cpuPercent: number; activeChildren: number; isDesktop: boolean }>();
+  private readonly relayAnnouncements = new Map<string, {
+    uploadKbps: number;
+    cpuPercent: number;
+    activeChildren: number;
+    isDesktop: boolean;
+    isCurrentlyBroadcasting: boolean;
+    activeRelayedStreams: number;
+  }>();
   private readonly relayChannels = new Map<string, RTCDataChannel>();
   private readonly relayPumps = new Map<string, { stop: () => void }>();
   private readonly fanoutPcs = new Map<string, RTCPeerConnection>();
   private readonly uplinkCaps = new Map<string, number>();
   private relayPlan: RelayPlan | null = null;
+  /** Uma árvore por transmissão. A chave é o `streamId` daquela live. */
+  private readonly relayPlans = new Map<number, RelayPlan>();
   private relayTimer: ReturnType<typeof setInterval> | null = null;
   /** Quem saiu da sala não volta para o motor até entrar de novo. */
   private readonly departedPeers = new Set<string>();
@@ -797,21 +816,30 @@ export class WebRTCManager {
           cpuPercent: msg.cpuPercent,
           activeChildren: msg.activeChildren,
           isDesktop: msg.isDesktop,
+          isCurrentlyBroadcasting: msg.isCurrentlyBroadcasting === true,
+          activeRelayedStreams: msg.activeRelayedStreams ?? 0,
         });
         break;
       case 'relay-plan':
         if (!isTauriDesktop() || msg.from === this.myPeerId) break;
-        this.relayPlan = {
-          primaryRelayId: msg.primaryRelayId,
-          secondaryRelayId: msg.secondaryRelayId,
-          splitEvenOdd: msg.splitEvenOdd,
-          canLocalNodeRelay: msg.canLocalNodeRelay,
-          sharerId: msg.from,
-        };
-        if (msg.primaryRelayId === this.myPeerId || msg.secondaryRelayId === this.myPeerId) {
-          this.openFanouts(this.relayPlan);
+        {
+          const incoming: RelayPlan = {
+            streamId: msg.streamId ?? streamIdFor(msg.from),
+            primaryRelayId: msg.primaryRelayId,
+            secondaryRelayId: msg.secondaryRelayId,
+            splitEvenOdd: msg.splitEvenOdd,
+            canLocalNodeRelay: msg.canLocalNodeRelay,
+            sharerId: msg.from,
+          };
+          this.rememberPlan(incoming);
+          if (incoming.primaryRelayId === this.myPeerId || incoming.secondaryRelayId === this.myPeerId) {
+            this.openFanouts(incoming);
+          }
+          if (!this.localStream) {
+            this.relayPlan = incoming;
+            setRelayTopology(incoming, !!incoming.primaryRelayId);
+          }
         }
-        setRelayTopology(this.relayPlan, !!msg.primaryRelayId);
         break;
       case 'sharing-stopped':
         // Aquele peer parou de enviar: fecha só o papel `receiver` dele.
@@ -2014,6 +2042,8 @@ export class WebRTCManager {
         cpuPercent: load.cpuPercent,
         activeChildren: Math.min(2, this.fanoutPcs.size),
         isDesktop: true,
+        isCurrentlyBroadcasting: this.localStream != null,
+        activeRelayedStreams: this.relayedStreamCount(),
       });
     }
     if (!this.localStream || !load) return;
@@ -2034,6 +2064,8 @@ export class WebRTCManager {
           isDesktop: true,
           activeChildren: announced?.activeChildren ?? 0,
           isDesktopRelayCapable: false,
+          isCurrentlyBroadcasting: announced?.isCurrentlyBroadcasting === true,
+          activeRelayedStreams: announced?.activeRelayedStreams ?? 0,
         },
       });
     }
@@ -2071,13 +2103,18 @@ export class WebRTCManager {
       await this.tauriInvoke('forget_routing_peer', { peerId });
     }
     if (generation !== this.planGeneration || !this.localStream) return;
+    const streamId = streamIdFor(this.myPeerId);
     const plan = await this.tauriInvoke<RelayPlan>('compute_routing_plan', {
       gamingMode: gamingModeForFrameRate(this.currentConfig.frameRate),
       localPeerId: this.myPeerId,
       localChildren: Math.min(2, this.fanoutPcs.size),
+      streamId,
+      isCurrentlyBroadcasting: true,
+      activeRelayedStreams: this.relayedStreamCount(),
     });
     if (!plan || generation !== this.planGeneration) return;
-    this.relayPlan = { ...plan, sharerId: this.myPeerId };
+    this.relayPlan = { ...plan, streamId, sharerId: this.myPeerId };
+    this.rememberPlan(this.relayPlan);
     const state = await this.syncRelayPath();
     if (generation !== this.planGeneration) return;
     if (state === 'waiting' && !force) return;
@@ -2090,6 +2127,7 @@ export class WebRTCManager {
     if (state === 'fallback') this.relayPlan = { ...published, sharerId: this.myPeerId };
     this.signal.send({
       type: 'relay-plan',
+      streamId,
       primaryRelayId: published.primaryRelayId,
       secondaryRelayId: published.secondaryRelayId,
       splitEvenOdd: published.splitEvenOdd,
@@ -2265,8 +2303,30 @@ export class WebRTCManager {
     for (const packet of packets) this.forwardRelayBytes(fromPeerId, packet);
   }
 
+  private rememberPlan(plan: RelayPlan) {
+    const streamId = plan.streamId ?? (plan.sharerId ? streamIdFor(plan.sharerId) : 0);
+    this.relayPlans.set(streamId, { ...plan, streamId });
+  }
+
+  /** Streams de outras pessoas que esta máquina já retransmite. */
+  private relayedStreamCount(): number {
+    let count = 0;
+    for (const plan of this.relayPlans.values()) {
+      if (!plan.sharerId || plan.sharerId === this.myPeerId) continue;
+      if (plan.primaryRelayId === this.myPeerId || plan.secondaryRelayId === this.myPeerId) count += 1;
+    }
+    return Math.min(255, count);
+  }
+
+  private planForSharer(sharerId: string): RelayPlan | null {
+    for (const plan of this.relayPlans.values()) {
+      if (plan.sharerId === sharerId) return plan;
+    }
+    return this.relayPlan?.sharerId === sharerId ? this.relayPlan : null;
+  }
+
   private forwardRelayBytes(fromPeerId: string, packet: Uint8Array) {
-    const plan = this.relayPlan;
+    const plan = this.planForSharer(fromPeerId);
     if (!plan?.sharerId || plan.sharerId !== fromPeerId) return;
     if (plan.primaryRelayId !== this.myPeerId && plan.secondaryRelayId !== this.myPeerId) return;
     const children = viewersForRelay(this.myPeerId, plan, [...this.desktopPeers], plan.sharerId);

@@ -432,6 +432,7 @@ fn boot_capture(
             .name("telinha-audio-ws".into())
             .spawn(move || audio_socket(listener, audio_rx, stop_audio))
             .ok();
+        // Tela inteira exclui o áudio deste processo. Build antiga cai no loopback do dispositivo.
         match loopback::start(&kind, source_id, audio_tx, stop.share()) {
             Ok(pump) => Some(pump),
             Err(err) => {
