@@ -74,7 +74,8 @@ test('quem está em outro canal não passa, e o aviso cita o canal certo', () =>
 });
 
 test('o convite efêmero leva o ticket na query e no link do app', () => {
-  const links = entryLinks({ origin: `${ORIGIN}/`, code: 'AB234C', ticket: 'abcdefghij123456' });
+  const links = entryLinks({ origin: `${ORIGIN}/`, redirectOrigin: 'https://telinha-signaling.onrender.com', code: 'AB234C', ticket: 'abcdefghij123456' });
   assert.equal(links.web, 'https://telinha-do-botecao.vercel.app/?sala=AB234C&ticket=abcdefghij123456');
   assert.equal(links.app, 'telinha://sala/AB234C?ticket=abcdefghij123456');
+  assert.equal(links.appWeb, 'https://telinha-signaling.onrender.com/abrir/AB234C?ticket=abcdefghij123456');
 });
