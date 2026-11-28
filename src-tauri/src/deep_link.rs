@@ -207,7 +207,7 @@ mod tests {
     #[test]
     fn preserves_one_time_discord_code_in_deep_link() {
         let target = room_target_from_url("telinha://sala/AB234C?discord_code=abcdefghijklmnopqrstuvwxyz12345678901234567890").unwrap();
-        assert_eq!(target.discord_code.as_deref(), Some("abcdefghijklmnopqrstuvwxyz123456"));
+        assert_eq!(target.discord_code.as_deref(), Some("abcdefghijklmnopqrstuvwxyz12345678901234567890"));
     }
 
     #[test]
