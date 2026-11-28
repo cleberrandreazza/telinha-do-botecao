@@ -50,12 +50,7 @@ export async function startDiscordBot({ rooms, holdEmptyRoom, store, onVoiceMemb
       await store.saveVoiceRoom(interaction.guildId, voiceChannelId, room.code);
 
       const origin = normalizeWebOrigin(process.env.PUBLIC_WEB_URL);
-      const serverOrigin = (process.env.RENDER_EXTERNAL_URL || '').replace(/\\/+$/, '');
-      if (!serverOrigin.startsWith('https://')) {
-        await interaction.reply({ content: 'PUBLIC_WEB_URL/RENDER_EXTERNAL_URL não configurada corretamente.', ephemeral: true });
-        return;
-      }
-      const url = `${serverOrigin}/discord/entry/${room.code}`;
+      const url = `${origin}/abrir/${room.code}?source=discord`;
       const button = new ButtonBuilder().setLabel('Entrar na Telinha').setStyle(ButtonStyle.Link).setURL(url);
       const row = new ActionRowBuilder().addComponents(button);
       await interaction.reply({
