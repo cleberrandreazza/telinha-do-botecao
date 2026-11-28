@@ -21,6 +21,7 @@ import type { AudioPlaybackReport, DiagnosticsSnapshot, PlaybackSample } from '.
 
 interface RoomProps {
   code: string;
+  hideRoomCode?: boolean;
   myPeerId: string;
   nickname: string;
   peers: PeerInfo[];
@@ -99,6 +100,7 @@ interface RoomProps {
 
 export default function Room({
   code,
+  hideRoomCode = false,
   myPeerId,
   nickname,
   peers,
@@ -689,6 +691,7 @@ export default function Room({
           open={chatOpen}
           onClose={() => setChatOpen(false)}
           roomCode={code}
+          hideRoomCode={hideRoomCode}
           onLeaveRoom={onLeaveRoom}
           peers={peers}
           isSharing={isSharing}
