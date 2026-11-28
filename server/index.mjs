@@ -171,7 +171,7 @@ function removeFromRoom(peer) {
 // ── HTTP server ─────────────────────────────────────────
 const httpServer = createServer((req, res) => {
   // Ponte HTTPS para abrir o aplicativo desktop a partir de um botão do Discord.
-  const appBridge = /^\\/abrir\\/([A-HJ-NP-Z2-9]{6})\\?ticket=([A-Za-z0-9_-]{16,128})$/.exec(req.url || '');
+  const appBridge = /^\/abrir\/([A-HJ-NP-Z2-9]{6})\?ticket=([A-Za-z0-9_-]{16,128})$/.exec(req.url || '');
   if (req.method === 'GET' && appBridge) {
     const [, code, ticket] = appBridge;
     const deepLink = `telinha://sala/${code}?ticket=${encodeURIComponent(ticket)}`;
