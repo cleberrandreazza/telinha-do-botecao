@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { normalizeWebOrigin } from './discord-rooms.mjs';
 
 const STATE_TTL_MS = 10 * 60_000;
-const SESSION_TTL_MS = 30 * 24 * 60 * 60_000;
+const SESSION_TTL_MS = 365 * 24 * 60 * 60_000;
 const DISCORD_API = 'https://discord.com/api/v10';
 
 function redirect(res, location) {
@@ -106,12 +106,44 @@ export function createDiscordOAuth({ store, webOrigin, getVoiceMembership }) {
     async validateSession(token, roomCode) {
       const session = await store.getWebSession(token);
       if (!session) return null;
+
+      // Atualiza o refresh token rotativo do Discord a cada nova entrada.
+      // Isso também detecta quando o usuário revogou o acesso à aplicação.
+      const authorization = await store.getAuthorization(session.discordUserId);
+      if (!authorization) {
+        await store.deleteWebSession(token);
+        return null;
+      }
+      try {
+        const refreshed = await discordRequest('/oauth2/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            client_id: clientId,
+            client_secret: clientSecret,
+            grant_type: 'refresh_token',
+            refresh_token: authorization.refreshToken,
+          }),
+        });
+        if (!refreshed.refresh_token) throw new Error('Discord não retornou refresh token.');
+        await store.saveAuthorization({
+          discordUserId: session.discordUserId,
+          username: authorization.username,
+          refreshToken: refreshed.refresh_token,
+          scope: refreshed.scope || authorization.scope,
+        });
+      } catch (error) {
+        console.warn('[discord-oauth] autorização expirada ou revogada:', error.message);
+        await store.deleteAuthorization(session.discordUserId);
+        return null;
+      }
+
       const membership = await getVoiceMembership(session.discordUserId, roomCode);
       if (!membership?.allowed) return null;
       return { ...session, guildId: membership.guildId, voiceChannelId: membership.voiceChannelId };
     },
-    async consumeSession(token) {
-      await store.deleteWebSession(token);
+    async consumeSession() {
+      // A sessão é reutilizável; não é convite nem ticket de uso único.
     },
   };
 }
