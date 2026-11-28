@@ -42,7 +42,7 @@ export function roomCodeFromLocation(pathname: string, search: string): RoomLink
   const parts = pathname.split('/').filter(Boolean);
   if (parts.length === 2 && parts[0].toLowerCase() === 'abrir') {
     const code = normalizeRoomCode(parts[1]);
-    if (code) return { code, openApp: true, ticket, discordSession: normalizeDiscordSession(params.get('discord_session')) };
+    if (code) return { code, openApp: true, ticket, discordCode: normalizeDiscordCode(params.get('discord_code')) };
   }
   if (parts.length === 1) {
     const code = normalizeRoomCode(parts[0]);
