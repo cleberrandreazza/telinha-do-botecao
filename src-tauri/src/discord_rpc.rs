@@ -120,7 +120,7 @@ fn plan_text(plan: &ActivityPlan) -> String {
         ActivityPlan::Clear => String::new(),
         ActivityPlan::Idle => format!("{IDLE_DETAILS}|{IDLE_STATE}"),
         ActivityPlan::Private { is_streaming } => if *is_streaming {
-            format!("🔴 LIVE — {PRIVATE_LABEL}")
+            "🔴 LIVE — Transmitindo tela em sala privada".to_string()
         } else {
             PRIVATE_LABEL.to_string()
         },
@@ -305,8 +305,7 @@ mod tests {
         assert!(!text.contains("AB234C"));
         assert!(!text.contains("Entrar na Sala"));
         assert!(!text.contains("https://"));
-        assert!(text.contains("LIVE"));
-        assert!(!text.contains("Transmitindo tela em sala privada"));
+        assert_eq!(text, "🔴 LIVE — Transmitindo tela em sala privada");
     }
 
     #[test]
