@@ -331,7 +331,7 @@ export class SurfaceFramePump {
   private openStream(fps: number): MediaStreamTrack {
     const track = this.canvas.captureStream(fps).getVideoTracks()[0];
     if (!track) throw new Error('O canvas não devolveu track de vídeo.');
-    track.contentHint = 'detail';
+    track.contentHint = 'motion';
     const read = track.getSettings.bind(track);
     const source = this.sourceTrack;
     track.getSettings = () => {

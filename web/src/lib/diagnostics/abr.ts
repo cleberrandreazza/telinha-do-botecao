@@ -24,7 +24,7 @@ export interface AbrDecision {
 // Thresholds antigos (60%/85%) causavam espiral de morte: um FPS já baixo
 // fazia o ABR cortar bitrate, o Chrome entregava ainda menos FPS, e a cascata
 // ia até 0.5 Mbps. O corte só acontece abaixo de 25% do alvo (~7 fps em 30).
-// Isso continua valendo com maintain-resolution: um mergulho curto não reduz o teto.
+// Isso continua valendo com degradation balanced: um mergulho curto não reduz o teto.
 // O piso do controlador é 25% do teto, o mesmo `minBitrate` do sender.
 const LOW_FPS_THRESHOLD = 0.25;
 const HIGH_FPS_THRESHOLD = 0.90;

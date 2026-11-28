@@ -4,6 +4,7 @@ import {
   detectScreenShareSupport,
   isMobileUserAgent,
   contentHintForSurface,
+  orderVideoCodecs,
   captureLimitNotice,
   captureVideoConstraints,
   captureFrameRateConstraints,
@@ -77,13 +78,33 @@ test('detecta user agent de celular', () => {
   assert.equal(isMobileUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120'), false);
 });
 
-test('aba e janela usam hint de detail (texto e interface)', () => {
-  assert.equal(contentHintForSurface('browser'), 'detail');
-  assert.equal(contentHintForSurface('window'), 'detail');
+test('aba e janela usam hint de motion para segurar 30 fps', () => {
+  assert.equal(contentHintForSurface('browser'), 'motion');
+  assert.equal(contentHintForSurface('window'), 'motion');
 });
 
 test('tela inteira continua com hint de motion', () => {
   assert.equal(contentHintForSurface('monitor'), 'motion');
+});
+
+test('VP9 fica na frente e H.264 logo atrás, com RTX no codec certo', () => {
+  const ordered = orderVideoCodecs([
+    { mimeType: 'video/VP8', preferredPayloadType: 96 },
+    { mimeType: 'video/rtx', preferredPayloadType: 97, sdpFmtpLine: 'apt=96' },
+    { mimeType: 'video/H264', preferredPayloadType: 102 },
+    { mimeType: 'video/rtx', preferredPayloadType: 103, sdpFmtpLine: 'apt=102' },
+    { mimeType: 'video/VP9', preferredPayloadType: 98 },
+    { mimeType: 'video/rtx', preferredPayloadType: 99, sdpFmtpLine: 'apt=98' },
+  ]);
+  assert.deepEqual(ordered.map((codec) => codec.preferredPayloadType), [98, 99, 102, 103, 96, 97]);
+});
+
+test('sem VP9 a lista começa no H.264', () => {
+  const ordered = orderVideoCodecs([
+    { mimeType: 'video/VP8', preferredPayloadType: 96 },
+    { mimeType: 'video/H264', preferredPayloadType: 102 },
+  ]);
+  assert.deepEqual(ordered.map((codec) => codec.mimeType), ['video/H264', 'video/VP8']);
 });
 
 test('superficie desconhecida nao muda o comportamento anterior', () => {

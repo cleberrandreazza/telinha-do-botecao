@@ -127,14 +127,56 @@ export function readScreenShareEnvironment(): ScreenShareEnvironment {
 /**
  * Hint de conteúdo do encoder.
  *
- * Aba e janela são texto e interface: 'detail' faz o encoder gastar bits com
- * nitidez de letras e botões, mesmo quando a janela é menor que o alvo
- * (1078×730 com 1080p pedido). 'motion' fica só para a tela inteira, que em
- * geral é vídeo ou jogo. Quando o navegador não informa a superfície, fica
- * 'motion' (o comportamento de antes, sem tratar uma tela desconhecida como texto).
+ * Aba, janela e tela inteira ficam em 'motion'. 'detail' faz o Chromium
+ * derrubar a aba para 5–15 FPS quando vê vídeo em movimento. 'motion' segura
+ * os 30 FPS; a nitidez fica com VP9 e com `degradationPreference` `balanced`.
+ * A superfície entra só para a chamada continuar estável: o hint não muda.
  */
-export function contentHintForSurface(displaySurface: string | null): 'detail' | 'motion' {
-  return displaySurface === 'browser' || displaySurface === 'window' ? 'detail' : 'motion';
+export function contentHintForSurface(_displaySurface: string | null): 'motion' {
+  return 'motion';
+}
+
+export interface VideoCodecPreference {
+  mimeType: string;
+  sdpFmtpLine?: string;
+  preferredPayloadType?: number | null;
+}
+
+function codecMime(codec: VideoCodecPreference): string {
+  return codec.mimeType.toLowerCase();
+}
+
+function codecApt(codec: VideoCodecPreference): string | null {
+  const match = codec.sdpFmtpLine?.match(/(?:^|;)\s*apt=(\d+)/);
+  return match ? match[1] : null;
+}
+
+/**
+ * VP9 na frente, quando o navegador oferece. H.264 vem logo depois, para
+ * Safari e iOS. O restante da lista (VP8, AV1, RTX dos outros) permanece,
+ * e o RTX acompanha o codec a que pertence.
+ */
+export function orderVideoCodecs<T extends VideoCodecPreference>(codecs: readonly T[]): T[] {
+  const payload = (codec: T) => (
+    codec.preferredPayloadType == null ? null : String(codec.preferredPayloadType)
+  );
+  const vp9Payloads = new Set(
+    codecs.filter((codec) => codecMime(codec) === 'video/vp9').map(payload).filter((value): value is string => value !== null),
+  );
+  const h264Payloads = new Set(
+    codecs.filter((codec) => codecMime(codec) === 'video/h264').map(payload).filter((value): value is string => value !== null),
+  );
+  const vp9: T[] = [];
+  const h264: T[] = [];
+  const rest: T[] = [];
+  for (const codec of codecs) {
+    const kind = codecMime(codec);
+    const associated = kind === 'video/rtx' ? codecApt(codec) : null;
+    if (kind === 'video/vp9' || (associated !== null && vp9Payloads.has(associated))) vp9.push(codec);
+    else if (kind === 'video/h264' || (associated !== null && h264Payloads.has(associated))) h264.push(codec);
+    else rest.push(codec);
+  }
+  return [...vp9, ...h264, ...rest];
 }
 
 /** Tamanho medido de uma captura (em pixels). */

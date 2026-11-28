@@ -1,6 +1,6 @@
 import { SignalingClient } from './signaling';
 import { configureAudioSenderParameters, configureOpusReceiverSdp, configureOpusSenderSdp } from './opus';
-import { assertScreenShareSupported, captureFrameRateConstraints, captureVideoConstraints, contentHintForSurface } from './screenShare';
+import { assertScreenShareSupported, captureFrameRateConstraints, captureVideoConstraints, contentHintForSurface, orderVideoCodecs } from './screenShare';
 import { asLinkRole, linkKey, oppositeRole, parseLinkKey, type LinkRole } from './links';
 import { describeSwitchError, errorNameOf, replaceTrackOnSenders, type DisplaySource, type TrackSenderLike } from './sourceSwitch';
 import { resolutionScaleDownBy, scalesWithCanvas, SurfaceFramePump } from './windowUpscale';
@@ -35,6 +35,9 @@ import {
   type PreparedShare,
   type ScopeStream,
 } from './diagnostics/index';
+
+/** Com banda, resolução nativa e 30 FPS ficam. Sem banda, o encoder equilibra os dois. */
+const VIDEO_DEGRADATION_PREFERENCE = 'balanced';
 
 function displayScope(stream: MediaStream): ScopeStream {
   return {
@@ -240,7 +243,10 @@ export class WebRTCManager {
     const stream = captured.stream as MediaStream;
     const surface = readDisplaySurface(displayScope(stream));
     const videoTrack = stream.getVideoTracks()[0] ?? null;
-    if (videoTrack) await this.applySurfaceConstraints(videoTrack, surface);
+    if (videoTrack) {
+      videoTrack.contentHint = 'motion';
+      await this.applySurfaceConstraints(videoTrack, surface);
+    }
 
     let pump: SurfaceFramePump | null = null;
     if (scalesWithCanvas(surface) && videoTrack) {
@@ -336,7 +342,7 @@ export class WebRTCManager {
    *
    * Uma troca que dá certo apaga o canvas e o Worker da fonte anterior, mede
    * a altura da fonte nova do zero e reaplica vídeo e áudio em cada conexão
-   * que está transmitindo. Aba e janela voltam com `contentHint` `detail`.
+   * que está transmitindo. Aba e janela voltam com `contentHint` `motion`.
    */
   async switchSource(source: DisplaySource): Promise<SwitchSourceResult> {
     try {
@@ -395,6 +401,7 @@ export class WebRTCManager {
       : decision.message;
 
     const videoTrack = stream.getVideoTracks()[0];
+    if (videoTrack) videoTrack.contentHint = 'motion';
     if (!videoTrack) {
       stream.getTracks().forEach((track) => track.stop());
       return {
@@ -543,9 +550,9 @@ export class WebRTCManager {
         }
         params.encodings[0].maxFramerate = frameRate;
         params.encodings[0].scaleResolutionDownBy = this.currentScaleDown();
-        // A resolução não pode cair para ganhar taxa, em nenhuma superfície.
+        // Com banda, resolução e FPS ficam. balanced só cede um dos dois quando a rede aperta.
         // @ts-ignore - degradationPreference exists but TypeScript doesn't know about it
-        params.degradationPreference = 'maintain-resolution';
+        params.degradationPreference = VIDEO_DEGRADATION_PREFERENCE;
         await videoSender.setParameters(params);
         applied += 1;
         console.info(`[WebRTC] ${frameRate} fps aplicado em ${key}`);
@@ -690,8 +697,8 @@ export class WebRTCManager {
       });
     }
 
-    // Prefere H264 (hardware-accelerated)
-    this.preferH264(pc);
+    // VP9 na frente; H.264 fica logo atrás para Safari/iOS.
+    this.preferVideoCodecs(pc);
 
     const offer = await pc.createOffer();
     const mungedOffer = new RTCSessionDescription({
@@ -722,17 +729,15 @@ export class WebRTCManager {
     }
   }
 
-  private preferH264(pc: RTCPeerConnection) {
+  private preferVideoCodecs(pc: RTCPeerConnection) {
     try {
+      const codecs = RTCRtpReceiver.getCapabilities('video')?.codecs ?? [];
+      if (codecs.length === 0) return;
+      const ordered = orderVideoCodecs(codecs);
       const transceivers = pc.getTransceivers();
       for (const t of transceivers) {
         if (t.sender?.track?.kind === 'video' || t.receiver?.track?.kind === 'video') {
-          const codecs = RTCRtpReceiver.getCapabilities('video')?.codecs || [];
-          const h264 = codecs.filter(c => c.mimeType === 'video/H264');
-          const rest = codecs.filter(c => c.mimeType !== 'video/H264');
-          if (h264.length > 0) {
-            t.setCodecPreferences([...h264, ...rest]);
-          }
+          t.setCodecPreferences(ordered);
         }
       }
     } catch {
@@ -771,11 +776,11 @@ export class WebRTCManager {
       params.encodings[0].scaleResolutionDownBy = scale;
 
       // @ts-ignore - degradationPreference exists but TypeScript doesn't know about it
-      params.degradationPreference = 'maintain-resolution';
+      params.degradationPreference = VIDEO_DEGRADATION_PREFERENCE;
 
       await videoSender.setParameters(params);
 
-      console.log(`[WebRTC] ✅ Sender configurado: maxBitrate=${(maxBitrate / 1_000_000).toFixed(1)}Mbps, minBitrate=${(senderMinBitrate(maxBitrate) / 1_000_000).toFixed(1)}Mbps, maxFps=${this.currentConfig.frameRate}, scale=${scale}, degradation=maintain-resolution`);
+      console.log(`[WebRTC] ✅ Sender configurado: maxBitrate=${(maxBitrate / 1_000_000).toFixed(1)}Mbps, minBitrate=${(senderMinBitrate(maxBitrate) / 1_000_000).toFixed(1)}Mbps, maxFps=${this.currentConfig.frameRate}, scale=${scale}, degradation=${VIDEO_DEGRADATION_PREFERENCE}`);
 
       // Verify params were applied
       const check = videoSender.getParameters();
@@ -837,6 +842,7 @@ export class WebRTCManager {
     const key = linkKey('receiver', fromId);
 
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    this.preferVideoCodecs(pc);
     const answer = await pc.createAnswer();
     const remoteSourceStereo = inspectAudioSdp(pc.remoteDescription?.sdp).fmtp.spropStereo;
     const mungedAnswer = new RTCSessionDescription({
@@ -1336,7 +1342,7 @@ export class WebRTCManager {
         writeEncodingBitrate(params.encodings[0], maxBitrate);
         params.encodings[0].maxFramerate = fps;
         // @ts-ignore - degradationPreference exists but TypeScript doesn't know about it
-        params.degradationPreference = 'maintain-resolution';
+        params.degradationPreference = VIDEO_DEGRADATION_PREFERENCE;
         await videoSender.setParameters(params);
         applied += 1;
         if (!this.surfacePump && this.limitsCaptureSize(videoSender.track)) {
@@ -1354,7 +1360,7 @@ export class WebRTCManager {
               writeEncodingBitrate(refreshed.encodings[0], maxBitrate);
               refreshed.encodings[0].maxFramerate = fps;
               // @ts-ignore - degradationPreference exists but TypeScript doesn't know about it
-              refreshed.degradationPreference = 'maintain-resolution';
+              refreshed.degradationPreference = VIDEO_DEGRADATION_PREFERENCE;
               await videoSender.setParameters(refreshed);
             }
           } catch (error) {
@@ -1519,7 +1525,11 @@ export class WebRTCManager {
       }
     }
     if (videoSenders.length > 0) {
-      const report = await replaceTrackOnSenders(videoSenders, () => next.clone());
+      const report = await replaceTrackOnSenders(videoSenders, () => {
+        const clone = next.clone();
+        clone.contentHint = 'motion';
+        return clone;
+      });
       if (report.attempted > 0 && report.replaced === 0) {
         next.onended = null;
         pump.restore(previous);
@@ -1545,7 +1555,7 @@ export class WebRTCManager {
       });
   }
 
-  /** `detail` em aba e janela, `motion` na tela inteira, inclusive nos clones enviados. */
+  /** `motion` em toda superfície, inclusive nos clones enviados. */
   private applyHintToSenders(hint: 'detail' | 'motion') {
     const outbound = this.localStream?.getVideoTracks()[0];
     if (outbound) outbound.contentHint = hint;
@@ -1622,7 +1632,11 @@ export class WebRTCManager {
       }
     }
     if (videoSenders.length > 0) {
-      const report = await replaceTrackOnSenders(videoSenders, () => next.clone());
+      const report = await replaceTrackOnSenders(videoSenders, () => {
+        const clone = next.clone();
+        clone.contentHint = next.contentHint || 'motion';
+        return clone;
+      });
       if (report.attempted > 0 && report.replaced === 0) {
         if (previous) {
           previous.onended = next.onended;
@@ -1641,7 +1655,7 @@ export class WebRTCManager {
     return true;
   }
 
-  /** Atualiza a escala pela altura atual e segura a resolução. Não mexe no teto do ABR. */
+  /** Atualiza a escala pela altura atual. balanced equilibra FPS e resolução. Não mexe no teto do ABR. */
   private async refreshSenderScale() {
     const scale = this.currentScaleDown();
     for (const [key, pc] of [...this.connections.entries()]) {
@@ -1654,7 +1668,7 @@ export class WebRTCManager {
         if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
         params.encodings[0].scaleResolutionDownBy = scale;
         // @ts-ignore - degradationPreference exists but TypeScript doesn't know about it
-        params.degradationPreference = 'maintain-resolution';
+        params.degradationPreference = VIDEO_DEGRADATION_PREFERENCE;
         await videoSender.setParameters(params);
       } catch (error) {
         console.warn(`[WebRTC] Falha ao atualizar a escala em ${key}:`, error);
