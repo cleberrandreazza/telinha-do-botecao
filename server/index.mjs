@@ -13,6 +13,7 @@ import {
 import { startDiscordBot } from './discord-bot.mjs';
 import { createDiscordStore } from './discord-store.mjs';
 import { createDiscordOAuth } from './discord-oauth.mjs';
+import { restoreVoiceRoom } from './discord-rooms.mjs';
 
 // ── Config ──────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT || '4000', 10);
@@ -271,7 +272,11 @@ wss.on('connection', (ws) => {
       // ── Entrar na sala ──
       case 'join-room': {
         const code = (msg.code || '').toUpperCase().trim();
-        const room = rooms.get(code);
+        let room = rooms.get(code);
+        if (!room && discordStore) {
+          const mapping = await discordStore.getVoiceRoomByCode(code);
+          if (mapping) room = restoreVoiceRoom(rooms, code, mapping.voiceChannelId, mapping.guildId);
+        }
         if (!room) {
           send(ws, { type: 'error', message: 'Sala não encontrada.' });
           return;
