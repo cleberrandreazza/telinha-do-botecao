@@ -84,9 +84,9 @@ function readMeasuredResolution(stream: MediaStream | null): string | null {
 /**
  * Aviso de "a captura é menor que a resolução pedida" (M10).
  *
- * O navegador não amplia: uma aba entrega o tamanho da própria janela. O
- * aviso usa só o que foi medido na faixa capturada — sem medição não há o
- * que afirmar (docs/diagnostics.md).
+ * O aviso usa só o que foi medido na faixa enviada. Sem medição não há o
+ * que afirmar (docs/diagnostics.md). Janela e aba abaixo do alvo saem pelo
+ * canvas; quando a faixa medida já alcança o alvo, este aviso fica vazio.
  */
 function readCaptureLimitNotice(
   stream: MediaStream | null,
@@ -906,6 +906,7 @@ export default function App() {
       if (result.ok && result.stream) {
         setLocalStream(result.stream);
         setStreamerNotice(result.reason);
+        setAudioNotice(rtc.getAudioNotice());
         attachLocalTrackHandlers(result.stream);
         setMeasuredSurface(result.surface);
       } else {

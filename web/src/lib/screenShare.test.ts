@@ -6,6 +6,7 @@ import {
   contentHintForSurface,
   captureLimitNotice,
   captureVideoConstraints,
+  captureFrameRateConstraints,
   isScreenShareCancellation,
   SHARE_CANCEL_NOTICE,
 } from './screenShare.ts';
@@ -135,6 +136,13 @@ test('limite de tamanho fica na captura como max, sem ideal', () => {
   });
   assert.ok(!('ideal' in constraints.width));
   assert.ok(!('ideal' in constraints.height));
+});
+
+test('pedido inicial, janela e aba levam só a taxa de quadros', () => {
+  const constraints = captureFrameRateConstraints(30);
+  assert.deepEqual(constraints, { frameRate: { ideal: 30, max: 30 } });
+  assert.equal('width' in constraints, false);
+  assert.equal('height' in constraints, false);
 });
 
 test('cancelar o seletor nativo e reconhecido pelo NotAllowedError', () => {

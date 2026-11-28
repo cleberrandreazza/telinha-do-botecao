@@ -490,6 +490,15 @@ export default function Room({
       <div className="flex-1 flex min-h-0 w-full">
         <main className="flex-1 min-w-0 h-full p-2.5 sm:p-3 flex flex-col overflow-hidden relative cursor-default z-10">
           <div className="flex-1 min-h-0 w-full flex flex-col gap-2 sm:gap-2.5">
+            {isSharing && audioNotice && (
+              <div
+                role="alert"
+                className="shrink-0 flex items-start gap-2.5 rounded-xl border border-amber-300/70 bg-amber-500 px-3.5 py-2.5 text-[13px] font-semibold leading-snug text-amber-950 shadow-[0_8px_24px_rgba(245,158,11,0.35)]"
+              >
+                <span className="material-symbols-outlined text-[20px] leading-none shrink-0" aria-hidden="true">volume_off</span>
+                <p className="min-w-0">{audioNotice}</p>
+              </div>
+            )}
             <div className="flex-1 min-h-0 w-full flex items-center justify-center">
               {showGrid ? (
                 /* ── Grade: 1, 2 ou 4 transmissões ao mesmo tempo.

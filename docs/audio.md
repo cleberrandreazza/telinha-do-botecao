@@ -49,7 +49,7 @@ Depois que a pessoa confirma o seletor, e antes de `localStream` e de `start-sha
 | `system` | desconhecida | Nenhum |
 | `off` | qualquer | Nenhum |
 
-Mensagens possíveis: “Áudio da aba disponível.”, “Áudio da janela disponível.”, “Áudio do Windows transmitido junto com a janela.”, “O navegador não isola o áudio desta janela.”, “Áudio não capturado pela superfície selecionada.”, “Áudio do Windows exige tela inteira ou janela.” e “Navegador não oferece opções suficientes para garantir o escopo solicitado.” Existir uma track não significa que o áudio está sendo enviado. O painel separa modo, superfície, política, tracks devolvidas, tracks autorizadas e o motivo do descarte. O estado **ÁUDIO SENDO ENVIADO** continua exigindo pacotes ou bytes em avanço.
+Mensagens possíveis: “Áudio da aba disponível.”, “Áudio da janela disponível.”, “Áudio do Windows transmitido junto com a janela.”, “O navegador não isola o áudio desta janela.”, “Áudio não capturado pela superfície selecionada.”, “Áudio do Windows exige tela inteira ou janela.” e “Navegador não oferece opções suficientes para garantir o escopo solicitado.” Quando o modo não é `off` e `returnedTracks` é 0, a mensagem de captura indisponível fica num banner âmbar no topo da sala enquanto a transmissão durar. Existir uma track não significa que o áudio está sendo enviado. O painel separa modo, superfície, política, tracks devolvidas, tracks autorizadas e o motivo do descarte. O estado **ÁUDIO SENDO ENVIADO** continua exigindo pacotes ou bytes em avanço.
 
 ## Como o som chega ao espectador
 

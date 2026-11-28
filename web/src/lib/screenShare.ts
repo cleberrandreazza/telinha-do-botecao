@@ -171,14 +171,13 @@ export function captureLimitNotice(
 }
 
 /**
- * Constraints de vídeo da captura para chegar na resolução pedida.
+ * Constraints de vídeo da tela inteira, aplicadas depois que a superfície já é conhecida.
  *
  * O limite fica na captura (`max`), não no encoder: o navegador reduz cada
- * frame para caber no alvo mantendo a proporção, não amplia e acompanha o
- * redimensionamento da janela. Um `scaleResolutionDownBy` calculado uma vez
- * pelo `getSettings()` ficava errado em janelas — o tamanho informado no início
- * nem sempre é o dos frames, e a janela muda depois — e o espectador recebia
- * menos pixels do que a captura entregava.
+ * frame para caber no alvo mantendo a proporção e não amplia. Janela e aba
+ * não usam estas constraints — `width` e `height` cortam o conteúdo quando a
+ * pessoa redimensiona. O canvas escala as duas só quando os dois lados estão
+ * abaixo do alvo.
  */
 export function captureVideoConstraints(
   target: CaptureSize,
@@ -187,8 +186,19 @@ export function captureVideoConstraints(
   return {
     width: { max: target.width },
     height: { max: target.height },
-    frameRate: { ideal: frameRate, max: frameRate },
+    frameRate: frameRateConstraints(frameRate),
   };
+}
+
+/** Só a taxa de quadros. É o pedido de `getDisplayMedia` e o de janela ou aba no `applyConstraints`. */
+export function captureFrameRateConstraints(
+  frameRate: number,
+): { frameRate: { ideal: number; max: number } } {
+  return { frameRate: frameRateConstraints(frameRate) };
+}
+
+function frameRateConstraints(frameRate: number): { ideal: number; max: number } {
+  return { ideal: frameRate, max: frameRate };
 }
 
 export class ScreenShareUnsupportedError extends Error {
