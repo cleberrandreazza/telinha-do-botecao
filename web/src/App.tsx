@@ -1396,7 +1396,9 @@ export default function App() {
     }
     const link = roomCodeFromLocation(window.location.pathname, window.location.search);
     if (link && params.get('source') === 'discord' && !discordSessionRef.current) {
-      const authOrigin = getSignalingUrl().replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\\/+$/, '');
+      const authUrl = new URL(getSignalingUrl());
+      authUrl.protocol = authUrl.protocol === 'wss:' ? 'https:' : 'http:';
+      const authOrigin = authUrl.origin;
       window.location.assign(`${authOrigin}/discord/entry/${link.code}`);
       return;
     }
