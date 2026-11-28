@@ -1515,7 +1515,7 @@ export default function App() {
         return;
       }
       try {
-        const pending = await invoke<{ code: string; ticket?: string | null; discordSession?: string | null } | null>('take_pending_join');
+        const pending = await invoke<{ code: string; ticket?: string | null; discordCode?: string | null } | null>('take_pending_join');
         if (!cancelled && pending?.code) joinLinkRef.current(pending.code, pending.ticket, pending.discordCode);
       } catch {
         // O site não tem o comando.
