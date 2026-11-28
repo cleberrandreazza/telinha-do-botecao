@@ -29,7 +29,9 @@ pub struct PresenceState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActivityPlan {
     Clear,
-    /// Sem atividade quando não há transmissão ativa.
+    /// Presença permanente enquanto o app estiver aberto, fora de uma sala.
+    Idle,
+    /// Sem código, party e botão em sala privada.
     Private,
     Public {
         party_id: Option<String>,
@@ -84,8 +86,11 @@ fn party_numbers(viewer_count: u32, max_peers: u32) -> (i32, i32) {
 /// Publica Rich Presence apenas enquanto o usuário transmite a tela.
 /// Sala privada não expõe código, party ou convite.
 pub fn plan_activity(state: &PresenceState) -> ActivityPlan {
-    if !state.enabled || !state.in_room || !state.is_streaming {
+    if !state.enabled {
         return ActivityPlan::Clear;
+    }
+    if !state.in_room {
+        return ActivityPlan::Idle;
     }
     if state.is_private {
         return ActivityPlan::Private;
@@ -106,6 +111,7 @@ pub fn plan_activity(state: &PresenceState) -> ActivityPlan {
 fn plan_text(plan: &ActivityPlan) -> String {
     match plan {
         ActivityPlan::Clear => String::new(),
+        ActivityPlan::Idle => format!("{IDLE_DETAILS}|{IDLE_STATE}"),
         ActivityPlan::Private => "🔴 LIVE — Transmitindo tela em sala privada".to_string(),
         ActivityPlan::Public { party_id, party_size, join_url } => format!(
             "🔴 LIVE — Transmitindo tela|{}|{}|{}",
@@ -165,6 +171,9 @@ fn apply(client: &mut Option<DiscordIpcClient>, plan: &ActivityPlan) -> Result<(
         let connected = client.as_mut().ok_or(())?;
         match plan {
             ActivityPlan::Clear => connected.clear_activity().map_err(|_| ()),
+            ActivityPlan::Idle => connected
+                .set_activity(activity::Activity::new().details(IDLE_DETAILS).state(IDLE_STATE))
+                .map_err(|_| ()),
             ActivityPlan::Private => connected
                 .set_activity(
                     activity::Activity::new()
@@ -304,10 +313,15 @@ mod tests {
     }
 
     #[test]
-    fn leaving_room_clears_activity() {
+    fn app_open_outside_room_keeps_idle_presence() {
         let mut state = sample(false);
         state.in_room = false;
-        assert_eq!(plan_activity(&state), ActivityPlan::Clear);
+        state.is_streaming = false;
+        assert_eq!(plan_activity(&state), ActivityPlan::Idle);
+        let text = plan_text(&plan_activity(&state));
+        assert!(text.contains(IDLE_DETAILS));
+        assert!(text.contains(IDLE_STATE));
+        assert!(!text.contains("AB234C"));
     }
 
     #[test]
