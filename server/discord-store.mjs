@@ -97,10 +97,7 @@ export function createDiscordStore(databaseUrl) {
       return result.rows[0] ? { discordUserId: result.rows[0].discord_user_id, username: result.rows[0].username } : null;
     },
 
-    async deleteWebSession(rawToken) {
-      const hash = createHash('sha256').update(String(rawToken || '')).digest('hex');
-      await pool.query('DELETE FROM discord_web_sessions WHERE session_hash = $1', [hash]);
-    },
+    async deleteWebSession() { /* Sessões persistem para reconexão e uso recorrente. */ },
 
     async getVoiceRoom(guildId, voiceChannelId) {
       const result = await pool.query('SELECT room_code FROM discord_voice_rooms WHERE guild_id = $1 AND voice_channel_id = $2', [guildId, voiceChannelId]);
