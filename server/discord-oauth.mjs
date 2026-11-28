@@ -34,6 +34,7 @@ export function createDiscordOAuth({ store, webOrigin, getVoiceMembership }) {
   const clientSecret = process.env.DISCORD_CLIENT_SECRET?.trim();
   const redirectUri = process.env.DISCORD_REDIRECT_URI?.trim();
   const refreshLocks = new Map();
+  const allowedExchangeOrigins = new Set([frontendOrigin, 'tauri://localhost', 'http://tauri.localhost', 'https://tauri.localhost']);
 
   function configured() {
     return Boolean(clientId && clientSecret && redirectUri);
@@ -103,12 +104,13 @@ export function createDiscordOAuth({ store, webOrigin, getVoiceMembership }) {
     if (req.method === 'GET' && entry) return begin(entry[1], res);
     if (req.method === 'GET' && url.pathname === '/discord/callback') return callback(req, res);
     if (url.pathname === '/discord/exchange') {
-      res.setHeader('Access-Control-Allow-Origin', frontendOrigin);
+      const requestOrigin = req.headers.origin || '';
+      if (allowedExchangeOrigins.has(requestOrigin)) res.setHeader('Access-Control-Allow-Origin', requestOrigin);
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
       if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return true; }
-      if (req.method !== 'POST' || req.headers.origin !== frontendOrigin) return sendText(res, 403, 'Origem não autorizada.');
+      if (req.method !== 'POST' || !allowedExchangeOrigins.has(requestOrigin)) return sendText(res, 403, 'Origem não autorizada.');
       let raw = '';
       for await (const chunk of req) { raw += chunk; if (raw.length > 4096) return sendText(res, 413, 'Requisição muito grande.'); }
       let payload;
