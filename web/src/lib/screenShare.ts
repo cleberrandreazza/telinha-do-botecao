@@ -151,8 +151,8 @@ export interface CaptureSize {
  *
  * A captura cabe no alvo mantendo a proporção: uma janela mais alta que 16:9
  * chega em 1080 de altura com largura menor. Só há aviso quando nenhum dos
- * dois lados alcança o alvo. Janela e aba mais baixas que o alvo saem pelo
- * canvas, então a faixa enviada já não é a nativa.
+ * dois lados alcança o alvo. Só a janela mais baixa que o alvo sai pelo
+ * canvas. A aba segue na track nativa, então a faixa enviada é a nativa.
  *
  * Devolve null quando não há medição (nada é estimado — ver
  * docs/diagnostics.md) ou quando a captura já cobre o alvo.
@@ -177,8 +177,8 @@ export function captureLimitNotice(
  * Só a altura tem teto (`max`). A largura acompanha a proporção: um ultrawide
  * 2560×1080 em 1080p não é espremido para caber em 1920. O navegador não
  * amplia. Janela e aba não usam estas constraints — `width` e `height` cortam
- * o conteúdo quando a pessoa redimensiona. O canvas entra só quando a altura
- * nativa fica abaixo do alvo.
+ * o conteúdo quando a pessoa redimensiona. O canvas entra só na janela, e só
+ * quando a altura nativa fica abaixo do alvo. A aba permanece na track nativa.
  */
 export function captureVideoConstraints(
   target: CaptureSize,

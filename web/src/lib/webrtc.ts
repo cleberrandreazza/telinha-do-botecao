@@ -141,7 +141,7 @@ export class WebRTCManager {
   /** Conexões indexadas por `papel:peerId` — os dois sentidos coexistem (ver lib/links.ts). */
   private connections = new Map<string, RTCPeerConnection>();
   private localStream: MediaStream | null = null;
-  /** Canvas de janela ou aba, ligado só enquanto a altura nativa está abaixo do alvo. */
+  /** Canvas de janela de aplicativo, ligado só enquanto a altura nativa está abaixo do alvo. Aba não usa. */
   private surfacePump: SurfaceFramePump | null = null;
   private scaleChain: Promise<void> = Promise.resolve();
   /** Descarta um ajuste de escala que ainda estava na fila da fonte anterior. */
@@ -1298,7 +1298,8 @@ export class WebRTCManager {
    * novo teto, no mesmo padrão de configureVideoSender.
    *
    * Na tela inteira o teto é só de altura: cada clone e a track local recebem
-   * o novo `height.max`, sem teto de largura. Janela e aba mudam o alvo do canvas.
+   * o novo `height.max`, sem teto de largura. A janela muda o alvo do canvas.
+   * A aba não recebe teto de tamanho: a escala fica no `scaleResolutionDownBy`.
    *
    * Devolve false só quando nenhuma conexão aceitou a mudança — nesse caso o
    * valor anterior continua valendo e a UI avisa.
@@ -1338,7 +1339,7 @@ export class WebRTCManager {
         params.degradationPreference = 'maintain-resolution';
         await videoSender.setParameters(params);
         applied += 1;
-        if (!this.surfacePump) {
+        if (!this.surfacePump && this.limitsCaptureSize(videoSender.track)) {
           try {
             await videoSender.track?.applyConstraints(constraints);
             const nextHeight = videoSender.track?.getSettings().height;
@@ -1383,8 +1384,9 @@ export class WebRTCManager {
     }
 
     // A track local é a origem dos clones de quem entrar depois.
+    // Aba não recebe teto de tamanho: a altura acima do preset fica no scale.
     const track = this.localStream?.getVideoTracks()[0];
-    if (track) {
+    if (track && this.limitsCaptureSize(track)) {
       try {
         await track.applyConstraints(constraints);
       } catch (error) {
@@ -1442,6 +1444,13 @@ export class WebRTCManager {
     }
   }
 
+  /** Aba e janela não recebem `width`/`height`. O teto de altura fica na tela inteira. */
+  private limitsCaptureSize(track?: MediaStreamTrack | null): boolean {
+    const fromTrack = track?.getSettings().displaySurface;
+    const surface = typeof fromTrack === 'string' ? fromTrack : this.audioCapture.displaySurface;
+    return surface !== 'browser' && surface !== 'window';
+  }
+
   /**
    * Escala do encoder pela altura da faixa que está saindo.
    * Canvas na altura do alvo e captura que já cabe devolvem 1.
@@ -1457,7 +1466,7 @@ export class WebRTCManager {
   private async applySurfaceConstraints(track: MediaStreamTrack, surface: string): Promise<void> {
     const fps = this.currentConfig.frameRate;
     const target = RESOLUTION_MAP[this.currentConfig.resolution];
-    const constraints = scalesWithCanvas(surface) || !target
+    const constraints = surface === 'window' || surface === 'browser' || !target
       ? captureFrameRateConstraints(fps)
       : captureVideoConstraints(target, fps);
     try {

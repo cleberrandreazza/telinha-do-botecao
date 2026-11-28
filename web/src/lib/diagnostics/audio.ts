@@ -366,6 +366,32 @@ function errorName(err: unknown): string {
   return err && typeof err === 'object' && 'name' in err ? String((err as { name: unknown }).name) : '';
 }
 
+const VOICE_PROCESSING = ['echoCancellation', 'noiseSuppression', 'autoGainControl'] as const;
+
+/**
+ * Tira os filtros de microfone da faixa já capturada.
+ *
+ * O `getDisplayMedia` continua com `audio: true`. Pedir esses campos na
+ * chamada inicial faz o Chrome descartar a faixa. O trio vem primeiro; se o
+ * navegador recusar o conjunto, cada filtro é pedido sozinho. Recusa não
+ * derruba o vídeo.
+ */
+async function disableVoiceProcessing(track: { applyConstraints?: (constraints: MediaTrackConstraints) => Promise<void> }): Promise<void> {
+  if (typeof track.applyConstraints !== 'function') return;
+  const apply = track.applyConstraints.bind(track);
+  try {
+    await apply({ echoCancellation: false, noiseSuppression: false, autoGainControl: false });
+  } catch {
+    for (const key of VOICE_PROCESSING) {
+      try {
+        await apply({ [key]: false });
+      } catch {
+        // Um filtro recusado não impede os outros nem a transmissão.
+      }
+    }
+  }
+}
+
 const CANCELLED = new Set(['NotAllowedError', 'AbortError']);
 const UNSUPPORTED = new Set(['TypeError', 'NotSupportedError', 'OverconstrainedError']);
 
@@ -382,11 +408,7 @@ export async function requestDisplayMedia<T>(
       const tracks = (stream as T & { getAudioTracks: () => Array<{ applyConstraints?: (constraints: MediaTrackConstraints) => Promise<void> }> }).getAudioTracks();
       await Promise.all(tracks.map(async (track) => {
         if (typeof track.applyConstraints !== 'function') return;
-        try {
-          await track.applyConstraints({ echoCancellation: false, noiseSuppression: false, autoGainControl: false });
-        } catch {
-          // Constraints opcionais não devem interromper o compartilhamento de vídeo.
-        }
+        await disableVoiceProcessing(track);
       }));
     }
     return stream;

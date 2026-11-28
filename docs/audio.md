@@ -22,9 +22,7 @@ Há três modos, gravados em `localStorage` como `audioMode`:
 
 `windowAudio: "system"` só é pedido no modo `system`, que a pessoa escolhe de propósito: ele leva o áudio de todo o Windows também quando a superfície é uma janela. O modo padrão nunca pede esse valor. Uma preferência antiga `shareAudio: true` migra para `source`. `shareAudio: false` migra para `off`. Nada migra sozinho para `system`. Um `audioMode: "device"` salvo pela versão antiga, que capturava uma entrada como o VB-Cable, não é mais aceito e segue a mesma migração de `shareAudio`.
 
-A captura pede `audio: true` como boolean. Logo depois, aplica `echoCancellation: false`, `noiseSuppression: false` e `autoGainControl: false` na track de áudio capturada, sem interromper o vídeo se o navegador rejeitar esses constraints.
-
-Medido no Chrome, com faixa de áudio de aba de verdade (`Tab audio`, mono, 48 kHz): esse `applyConstraints` é recusado com `OverconstrainedError` — a faixa de áudio de aba do Chromium não aceita o trio `echoCancellation`/`noiseSuppression`/`autoGainControl`. O erro é engolido de propósito, a faixa segue com os valores do navegador (`true`) e o vídeo não cai. Ou seja: no Chromium, desativar o cancelamento por `applyConstraints` não tem efeito na faixa de áudio de aba; o `catch` existe para a transmissão não quebrar.
+A captura pede `audio: true` como boolean. Logo depois, na faixa já devolvida de aba ou janela, aplica `echoCancellation: false`, `noiseSuppression: false` e `autoGainControl: false`. Esses campos não entram no `getDisplayMedia`: um objeto de processamento nessa chamada faz o Chrome descartar a faixa. Se o navegador recusar o trio, cada filtro é pedido sozinho. Qualquer recusa é ignorada, o vídeo segue, e o valor que realmente ficou é o de `getSettings` — nada é escrito no lugar de uma recusa.
 
 Se o navegador rejeitar uma opção com `TypeError`, `NotSupportedError` ou `OverconstrainedError`, a captura desce uma escada que nunca alarga o escopo:
 

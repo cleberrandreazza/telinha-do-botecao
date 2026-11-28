@@ -42,9 +42,9 @@ test('número ímpar arredonda para o par mais próximo', () => {
   assert.equal(evenDimension(1322.465), 1322);
 });
 
-test('aba e janela usam o canvas; tela inteira não', () => {
+test('só janela de aplicativo usa o canvas', () => {
   assert.equal(scalesWithCanvas('window'), true);
-  assert.equal(scalesWithCanvas('browser'), true);
+  assert.equal(scalesWithCanvas('browser'), false);
   assert.equal(scalesWithCanvas('monitor'), false);
   assert.equal(scalesWithCanvas('unknown'), false);
   assert.equal(scalesWithCanvas(null), false);

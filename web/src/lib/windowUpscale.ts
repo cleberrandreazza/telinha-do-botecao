@@ -1,10 +1,10 @@
 /**
- * Escala proporcional de janela ou aba, só quando a captura é mais baixa que o alvo.
+ * Escala proporcional de janela de aplicativo, só quando a captura é mais baixa que o alvo.
  *
- * A captura não leva `width`/`height`: o navegador entrega o tamanho real e
- * acompanha o resize sem cortar. Se a altura já alcança o alvo, a track
- * nativa segue direto — a largura não decide. Abaixo disso, um `<video>`
- * oculto desenha num canvas par, na altura do alvo e na proporção da fonte.
+ * Aba e tela inteira não passam por aqui: a track nativa segue, e o encoder
+ * reduz só pela altura quando a fonte é mais alta que o preset. A captura de
+ * janela não leva `width`/`height`. Se a altura já alcança o alvo, a track
+ * nativa segue. Abaixo disso, um `<video>` oculto desenha num canvas par.
  */
 
 export interface FrameSize {
@@ -12,9 +12,9 @@ export interface FrameSize {
   height: number;
 }
 
-/** Janela e aba podem passar pelo canvas. Tela inteira fica na captura direta. */
+/** Só janela de aplicativo pode passar pelo canvas. Aba e tela inteira ficam na track nativa. */
 export function scalesWithCanvas(surface: string | null): boolean {
-  return surface === 'window' || surface === 'browser';
+  return surface === 'window';
 }
 
 /** Inteiro par, no mínimo 2. Codec de vídeo recusa dimensão ímpar. */

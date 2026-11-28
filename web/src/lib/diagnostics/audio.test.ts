@@ -784,6 +784,27 @@ test('constraints de processamento apos captura', async () => {
   equal(applied[0]?.echoCancellation, false);
   equal(applied[0]?.noiseSuppression, false);
   equal(applied[0]?.autoGainControl, false);
+  equal(applied.length, 1);
+});
+
+test('trio de filtros recusado tenta cada um sozinho e nao derruba a captura', async () => {
+  const applied: MediaTrackConstraints[] = [];
+  const stream = {
+    getAudioTracks: () => [{
+      applyConstraints: async (value: MediaTrackConstraints) => {
+        applied.push(value);
+        if ('echoCancellation' in value && 'noiseSuppression' in value && 'autoGainControl' in value) {
+          throw new Error('OverconstrainedError');
+        }
+      },
+    }],
+  };
+  const captured = await requestDisplayMedia(async () => stream, {}, 'source');
+  equal(captured.audioScopeFallback, false);
+  equal(applied.length, 4);
+  equal(applied[1]?.echoCancellation, false);
+  equal(applied[2]?.noiseSuppression, false);
+  equal(applied[3]?.autoGainControl, false);
 });
 
 test('captura lê settings, constraints e capabilities sem inventar campo nem identificador', () => {
