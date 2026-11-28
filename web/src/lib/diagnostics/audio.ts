@@ -509,6 +509,7 @@ export function policyLabel(policy: string | null): string {
     case 'system-requires-monitor': return 'Áudio do Windows exige tela inteira ou janela.';
     case 'unknown-surface': return 'Áudio não capturado pela superfície selecionada.';
     case 'scope-unsupported': return 'Navegador não oferece opções suficientes para garantir o escopo solicitado.';
+    case 'native-loopback': return 'Áudio do Windows capturado pelo aplicativo.';
     case 'off': return 'Áudio desligado.';
     default: return 'n/d';
   }

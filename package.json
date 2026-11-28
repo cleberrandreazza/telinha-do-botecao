@@ -1,6 +1,6 @@
 {
   "name": "telinha-do-botecao",
-  "version": "1.0.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Compartilhador de tela P2P com WebRTC - gratuito e sem travamentos",
   "scripts": {
@@ -9,9 +9,12 @@
     "dev:web": "cd web && npm run dev",
     "install:all": "cd server && npm install && cd ../web && npm install",
     "build": "cd web && npm run build",
-    "test": "npm test --prefix web"
+    "test": "npm test --prefix web",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build --no-bundle"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.12.6",
     "concurrently": "^9.1.0"
   }
 }

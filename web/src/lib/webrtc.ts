@@ -12,6 +12,7 @@ import {
   audioModeFromConfig,
   captureUnavailableMessage,
   commitPreparedShare,
+  disabledAudioMessage,
   decideAudioScope,
   negotiationFromSdp,
   inspectAudioSdp,
@@ -55,7 +56,7 @@ function displayScope(stream: MediaStream): ScopeStream {
 
 export interface StreamConfig {
   resolution: '2160' | '1080' | '720' | '480';
-  frameRate: 30 | 15 | 5;
+  frameRate: 30 | 60 | 15 | 5;
   audio: boolean;
   audioMode?: AudioMode;
 }
@@ -220,7 +221,8 @@ export class WebRTCManager {
   /**
    * Captura a tela do usuário
    */
-  async startScreenShare(config?: StreamConfig): Promise<MediaStream> {
+  async startScreenShare(config?: StreamConfig, prepared?: MediaStream): Promise<MediaStream> {
+    if (prepared) return this.startPreparedShare(config, prepared);
     // Celular e endereços sem HTTPS não têm getDisplayMedia: falha aqui com
     // mensagem clara em vez de um TypeError genérico na captura.
     assertScreenShareSupported();
@@ -516,6 +518,98 @@ export class WebRTCManager {
   }
 
   /**
+   * Troca a fonte por um MediaStream já montado (captura nativa do desktop).
+   * O caminho do navegador continua em `switchSource`.
+   */
+  async switchScreenShare(prepared: MediaStream, config?: StreamConfig): Promise<SwitchSourceResult> {
+    if (config) {
+      const nextMode = prepared.getAudioTracks().length > 0 && config.audio !== false
+        ? (config.audioMode && config.audioMode !== 'off' ? config.audioMode : 'system')
+        : 'off';
+      this.currentConfig = { ...config, audio: nextMode !== 'off', audioMode: nextMode };
+    }
+    const mode = audioModeFromConfig(this.currentConfig);
+    const videoTrack = prepared.getVideoTracks()[0];
+    if (!videoTrack) {
+      prepared.getTracks().forEach((track) => track.stop());
+      return {
+        ok: false,
+        reason: 'A captura nativa não devolveu faixa de vídeo. A fonte atual continua valendo.',
+        stream: null,
+        surface: null,
+      };
+    }
+    videoTrack.contentHint = 'motion';
+    const preparedAudio = this.scopeNativeAudio(prepared, mode);
+    const surface = preparedAudio.surface;
+    const sendVideo = prepared.getVideoTracks()[0] ?? videoTrack;
+    const hint = contentHintForSurface(surface === 'unknown' ? null : surface);
+    sendVideo.contentHint = hint;
+
+    const videoSenders: TrackSenderLike[] = [];
+    const audioSenders: TrackSenderLike[] = [];
+    for (const [key, pc] of [...this.connections.entries()]) {
+      const parsed = parseLinkKey(key);
+      if (!parsed || parsed.role !== 'sender') continue;
+      for (const sender of pc.getSenders()) {
+        const kind = sender.track?.kind;
+        if (kind === 'video') videoSenders.push(sender);
+        else if (kind === 'audio') audioSenders.push(sender);
+      }
+    }
+
+    const previousStream = this.localStream;
+    const oldVideoTrack = previousStream?.getVideoTracks()[0] ?? null;
+    const videoReport = await replaceTrackOnSenders(videoSenders, () => {
+      const clone = sendVideo.clone();
+      clone.contentHint = hint;
+      return clone;
+    });
+    if (videoReport.attempted > 0 && videoReport.replaced === 0) {
+      prepared.getTracks().forEach((track) => track.stop());
+      return {
+        ok: false,
+        reason: 'Nenhuma conexão aceitou a nova fonte. A fonte atual continua valendo.',
+        stream: null,
+        surface: surface === 'unknown' ? null : surface,
+      };
+    }
+
+    await replaceTrackOnSenders(audioSenders, prepared.getAudioTracks()[0] ?? null);
+
+    const inUse = new Set<MediaStreamTrack>();
+    for (const [key, pc] of [...this.connections.entries()]) {
+      const parsed = parseLinkKey(key);
+      if (!parsed || parsed.role !== 'sender') continue;
+      for (const sender of pc.getSenders()) {
+        if (sender.track) inUse.add(sender.track);
+      }
+    }
+    if (oldVideoTrack) oldVideoTrack.onended = null;
+    if (oldVideoTrack && !inUse.has(oldVideoTrack)) oldVideoTrack.stop();
+    if (previousStream) {
+      for (const track of previousStream.getTracks()) {
+        if (!inUse.has(track)) track.stop();
+      }
+    }
+
+    const previousPump = this.surfacePump;
+    this.scaleEpoch += 1;
+    this.surfacePump = null;
+    previousPump?.stop();
+    this.localStream = prepared;
+    this.notePreparedAudio(prepared, mode, preparedAudio);
+    this.bindCaptureTrack(sendVideo, surface === 'unknown' ? null : surface);
+    await this.reconfigureActiveSenders();
+    return {
+      ok: true,
+      reason: preparedAudio.message,
+      stream: prepared,
+      surface: surface === 'unknown' ? null : surface,
+    };
+  }
+
+  /**
    * Troca o frame rate da live SEM derrubar o compartilhamento.
    *
    * Mesmo padrão de `setStreamResolution`: cada conexão de papel `sender`
@@ -523,7 +617,7 @@ export class WebRTCManager {
    * try/catch individual. Devolve false só quando nenhuma conexão aceitou —
    * nesse caso o valor anterior continua valendo e a UI avisa.
    */
-  async setStreamFrameRate(frameRate: 30 | 15 | 5): Promise<boolean> {
+  async setStreamFrameRate(frameRate: StreamConfig['frameRate']): Promise<boolean> {
     const previous = this.currentConfig.frameRate;
     this.currentConfig = { ...this.currentConfig, frameRate };
 
@@ -1188,6 +1282,67 @@ export class WebRTCManager {
     } catch (error) {
       console.warn('[ABR] Erro ao configurar params:', error);
     }
+  }
+
+  private async startPreparedShare(config: StreamConfig | undefined, stream: MediaStream): Promise<MediaStream> {
+    const cfg = config ?? this.currentConfig;
+    const mode: AudioMode = stream.getAudioTracks().length > 0 && cfg.audio !== false
+      ? (cfg.audioMode && cfg.audioMode !== 'off' ? cfg.audioMode : 'system')
+      : 'off';
+    this.currentConfig = { ...cfg, audio: mode !== 'off', audioMode: mode };
+    const videoTrack = stream.getVideoTracks()[0] ?? null;
+    if (!videoTrack) {
+      stream.getTracks().forEach((track) => track.stop());
+      throw new Error('A captura nativa não devolveu vídeo.');
+    }
+    videoTrack.contentHint = 'motion';
+    const prepared = this.scopeNativeAudio(stream, mode);
+    // O canvas e o loopback entram como localStream. A oferta usa preferVideoCodecs
+    // (VP9, depois H.264) e a resposta aplica configureVideoSender e configureAudioSenders.
+    this.surfacePump = null;
+    this.localStream = stream;
+    this.notePreparedAudio(stream, mode, prepared);
+    this.bindCaptureTrack(videoTrack, prepared.surface === 'unknown' ? null : prepared.surface);
+    this.signal.send({ type: 'start-sharing' });
+    this.timeline.transmissionStarted();
+    return stream;
+  }
+
+  /** A captura nativa já escolheu o áudio. Superfície ausente continua vazia. */
+  private scopeNativeAudio(stream: MediaStream, mode: AudioMode): PreparedShare {
+    const surface = readDisplaySurface(displayScope(stream));
+    const returned = stream.getAudioTracks().length;
+    if (mode === 'off') {
+      for (const track of [...stream.getAudioTracks()]) {
+        track.stop();
+        stream.removeTrack(track);
+      }
+      const message = disabledAudioMessage();
+      return {
+        surface,
+        decision: { keepAudio: false, policy: 'off', message },
+        returned,
+        kept: 0,
+        message,
+      };
+    }
+    if (returned === 0) {
+      const message = captureUnavailableMessage(null);
+      return {
+        surface,
+        decision: { keepAudio: false, policy: 'native-loopback', message },
+        returned,
+        kept: 0,
+        message,
+      };
+    }
+    return {
+      surface,
+      decision: { keepAudio: true, policy: 'native-loopback', message: null },
+      returned,
+      kept: returned,
+      message: null,
+    };
   }
 
   private notePreparedAudio(stream: MediaStream, mode: AudioMode, prepared: PreparedShare) {

@@ -101,9 +101,54 @@ export function getSignalingHost(hostname: string, configuredHost?: string): str
   return configuredHost;
 }
 
-export function getSignalingUrl(): string {
-  // ws:// em http, wss:// em https (o host vem do hostname da página ou da env)
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const host = getSignalingHost(window.location.hostname, import.meta.env.VITE_SIGNAL_HOST);
+/**
+ * Servidor de sinalização no Render, no host de produção.
+ * O app desktop empacotado não tem hostname útil: a página vem de `tauri.localhost`.
+ */
+export const DESKTOP_PRODUCTION_SIGNALING_URL = 'wss://telinha-do-botecao.onrender.com';
+
+export interface SignalingLocation {
+  hasTauriInternals: boolean;
+  protocol: string;
+  hostname: string;
+  configuredHost?: string;
+  signalingUrl?: string;
+}
+
+/**
+ * Shell do Tauri já com o frontend empacotado.
+ * No `tauri dev` a página continua em `http://localhost:3000`, então isto fica falso
+ * e o WebSocket segue na máquina local.
+ */
+export function isDesktopProduction(input: SignalingLocation): boolean {
+  if (!input.hasTauriInternals) return false;
+  if (input.protocol === 'tauri:') return true;
+  return input.hostname === 'tauri.localhost';
+}
+
+export function resolveSignalingUrl(input: SignalingLocation): string {
+  if (isDesktopProduction(input)) {
+    const explicit = input.signalingUrl?.trim();
+    if (explicit) return explicit;
+    return DESKTOP_PRODUCTION_SIGNALING_URL;
+  }
+  const protocol = input.protocol === 'https:' ? 'wss:' : 'ws:';
+  const host = getSignalingHost(input.hostname, input.configuredHost);
   return `${protocol}//${host}`;
+}
+
+/** O shell do Tauri (dev ou .exe). No site isto é falso. */
+export function isTauriDesktop(): boolean {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
+export function getSignalingUrl(): string {
+  const desktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  return resolveSignalingUrl({
+    hasTauriInternals: desktop,
+    protocol: window.location.protocol,
+    hostname: window.location.hostname,
+    configuredHost: import.meta.env.VITE_SIGNAL_HOST,
+    signalingUrl: import.meta.env.VITE_SIGNALING_URL,
+  });
 }

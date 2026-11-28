@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { clampPan, getSignalingHost, isLoopbackHost, hostnameOnly, panLimit } from './utils.ts';
+import {
+  clampPan,
+  DESKTOP_PRODUCTION_SIGNALING_URL,
+  getSignalingHost,
+  isDesktopProduction,
+  isLoopbackHost,
+  hostnameOnly,
+  panLimit,
+  resolveSignalingUrl,
+} from './utils.ts';
 
 test('WebSocket usa hostname atual para conexoes em LAN', () => {
   assert.equal(getSignalingHost('192.168.15.4'), '192.168.15.4:4000');
@@ -31,6 +40,49 @@ test('extrai o nome do host sem esquema, porta e caminho', () => {
   assert.equal(hostnameOnly('ws://192.168.15.4:4000'), '192.168.15.4');
   assert.equal(hostnameOnly('https://signal.example.test/ws'), 'signal.example.test');
   assert.equal(hostnameOnly('[::1]:4000'), '::1');
+});
+
+test('desktop empacotado usa o servidor de producao e nao o tauri.localhost', () => {
+  const packaged = {
+    hasTauriInternals: true,
+    protocol: 'https:',
+    hostname: 'tauri.localhost',
+  };
+  assert.equal(isDesktopProduction(packaged), true);
+  assert.equal(resolveSignalingUrl(packaged), DESKTOP_PRODUCTION_SIGNALING_URL);
+  assert.equal(resolveSignalingUrl(packaged).includes('tauri.localhost'), false);
+  assert.equal(
+    resolveSignalingUrl({ ...packaged, protocol: 'tauri:', hostname: 'localhost' }),
+    DESKTOP_PRODUCTION_SIGNALING_URL,
+  );
+  assert.equal(
+    resolveSignalingUrl({ ...packaged, signalingUrl: 'wss://signal.example.test/ws' }),
+    'wss://signal.example.test/ws',
+  );
+});
+
+test('tauri dev continua no servidor local', () => {
+  assert.equal(
+    resolveSignalingUrl({
+      hasTauriInternals: true,
+      protocol: 'http:',
+      hostname: 'localhost',
+    }),
+    'ws://localhost:4000',
+  );
+});
+
+test('site continua usando VITE_SIGNAL_HOST', () => {
+  assert.equal(
+    resolveSignalingUrl({
+      hasTauriInternals: false,
+      protocol: 'https:',
+      hostname: 'telinha.example.test',
+      configuredHost: 'telinha-do-botecao.onrender.com',
+      signalingUrl: 'wss://nao-usar.example.test',
+    }),
+    'wss://telinha-do-botecao.onrender.com',
+  );
 });
 
 test('sem zoom o pan nao anda', () => {

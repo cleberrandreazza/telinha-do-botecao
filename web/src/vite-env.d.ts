@@ -5,6 +5,8 @@ declare const __APP_VERSION__: string
 
 interface ImportMetaEnv {
   readonly VITE_SIGNAL_HOST?: string;
+  /** URL completa do WebSocket. Só o app desktop em produção usa este valor. */
+  readonly VITE_SIGNALING_URL?: string;
 }
 
 interface ImportMeta {

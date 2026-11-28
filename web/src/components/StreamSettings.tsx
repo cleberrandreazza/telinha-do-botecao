@@ -9,7 +9,7 @@ export interface StreamConfig {
 }
 
 /** Taxas de quadros aceitas pelo encoder. */
-export type StreamFrameRate = 30 | 15 | 5;
+export type StreamFrameRate = 30 | 60 | 15 | 5;
 
 const AUDIO_MODES: { value: AudioMode; label: string; desc: string }[] = [
   { value: 'off', label: 'Sem áudio', desc: 'Só vídeo.' },

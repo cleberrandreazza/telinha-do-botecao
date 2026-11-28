@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { SignalingClient } from './lib/signaling';
 import { WebRTCManager, RESOLUTION_MAP } from './lib/webrtc';
-import { getSignalingUrl } from './lib/utils';
+import { getSignalingUrl, isTauriDesktop } from './lib/utils';
 import {
   detectScreenShareSupport,
   readScreenShareEnvironment,
@@ -23,10 +23,13 @@ import {
 } from './lib/session';
 import Home from './components/Home';
 import UpdateNotice from './components/UpdateNotice';
+import DesktopUpdateNotice from './components/DesktopUpdateNotice';
 import { useVersionCheck } from './hooks/useVersionCheck';
+import { useDesktopUpdate } from './hooks/useDesktopUpdate';
 import Room from './components/Room';
 import Reconnecting from './components/Reconnecting';
 import StreamSettings from './components/StreamSettings';
+import DesktopSourcePicker from './components/DesktopSourcePicker';
 import type { StreamResolution } from './components/ResolutionControl';
 import type { StreamFrameRate } from './components/StreamSettings';
 import { describeSwitchError, type DisplaySource } from './lib/sourceSwitch';
@@ -190,6 +193,7 @@ function clearChatPendingTimer(timers: Map<string, number>, id: string): void {
 
 export default function App() {
   const version = useVersionCheck();
+  const desktopUpdate = useDesktopUpdate();
   // ── Estado da aplicação ──
   const [screen, setScreen] = useState<AppScreen>('home');
   const [error, setError] = useState<string | null>(null);
@@ -204,6 +208,8 @@ export default function App() {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [isSharing, setIsSharing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showDesktopPicker, setShowDesktopPicker] = useState(false);
+  const [desktopPickerMode, setDesktopPickerMode] = useState<'start' | 'switch'>('start');
   const [audioNotice, setAudioNotice] = useState<string | null>(null);
   /**
    * Aviso de cancelamento do seletor nativo (a pessoa fechou o "Escolher o
@@ -668,14 +674,19 @@ export default function App() {
   };
 
   const handleOpenSettings = () => {
+    setShareCancelNotice(null);
+    if (isTauriDesktop()) {
+      setError(null);
+      setDesktopPickerMode('start');
+      setShowDesktopPicker(true);
+      return;
+    }
     const support = detectScreenShareSupport(readScreenShareEnvironment());
     if (!support.supported) {
       setError(support.message);
       return;
     }
     setError(null);
-    // Tentar de novo limpa o aviso de cancelamento anterior.
-    setShareCancelNotice(null);
     setShowSettings(true);
   };
 
@@ -702,14 +713,20 @@ export default function App() {
     };
   }, [myPeerId, nickname, roomCode]);
 
-  const handleStartSharing = async (config?: StreamConfig) => {
+  const handleStartSharing = async (config?: StreamConfig, prepared?: MediaStream) => {
     setShowSettings(false);
+    setShowDesktopPicker(false);
     try {
-      const stream = await rtcRef.current?.startScreenShare(config);
+      const rtc = rtcRef.current;
+      if (!rtc) {
+        prepared?.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      const stream = await rtc.startScreenShare(config, prepared);
       if (stream) {
         setLocalStream(stream);
         setIsSharing(true);
-        setAudioNotice(rtcRef.current?.getAudioNotice() ?? null);
+        setAudioNotice(rtc.getAudioNotice() ?? null);
         // Transmitindo: nenhum aviso de cancelamento na tela.
         setShareCancelNotice(null);
         // A resolução inicial é a escolhida no StreamSettings.
@@ -726,6 +743,7 @@ export default function App() {
         attachLocalTrackHandlers(stream);
       }
     } catch (err: any) {
+      prepared?.getTracks().forEach((track) => track.stop());
       // Usuário cancelou o dialog de compartilhamento
       if (err?.name === 'ScreenShareUnsupportedError') {
         setError(err.message);
@@ -893,6 +911,11 @@ export default function App() {
    * faixa âmbar da barra.
    */
   const handleSwitchSource = useCallback(async (source: DisplaySource) => {
+    if (isTauriDesktop()) {
+      setDesktopPickerMode('switch');
+      setShowDesktopPicker(true);
+      return;
+    }
     if (streamerBusyRef.current) return;
 
     streamerBusyRef.current = true;
@@ -925,6 +948,51 @@ export default function App() {
       setMeasuredFrameRate(readMeasuredFrameRate(localStream));
     }
   }, [localStream]);
+
+  const handleDesktopConfirm = (stream: MediaStream, config: StreamConfig) => {
+    setShowDesktopPicker(false);
+    if (desktopPickerMode !== 'switch') {
+      void handleStartSharing(config, stream);
+      return;
+    }
+    if (streamerBusyRef.current) {
+      stream.getTracks().forEach((track) => track.stop());
+      return;
+    }
+    streamerBusyRef.current = true;
+    setStreamerBusy(true);
+    setStreamerNotice(null);
+    void (async () => {
+      try {
+        const rtc = rtcRef.current;
+        if (!rtc) {
+          stream.getTracks().forEach((track) => track.stop());
+          setStreamerNotice('A troca de fonte precisa de uma transmissão real.');
+          return;
+        }
+        const result = await rtc.switchScreenShare(stream, config);
+        if (result.ok && result.stream) {
+          setLocalStream(result.stream);
+          setStreamResolution(config.resolution);
+          setStreamFrameRate(config.frameRate);
+          setStreamerNotice(result.reason);
+          setAudioNotice(rtc.getAudioNotice());
+          attachLocalTrackHandlers(result.stream);
+          setMeasuredSurface(result.surface);
+        } else {
+          setStreamerNotice(result.reason ?? 'Não foi possível trocar a fonte. A fonte atual continua valendo.');
+        }
+      } catch (err) {
+        stream.getTracks().forEach((track) => track.stop());
+        setStreamerNotice(describeSwitchError(err));
+      } finally {
+        streamerBusyRef.current = false;
+        setStreamerBusy(false);
+        setMeasuredResolution(readMeasuredResolution(localStream));
+        setMeasuredFrameRate(readMeasuredFrameRate(localStream));
+      }
+    })();
+  };
 
   // ── Chat da sala ──
   // A mensagem entra na tela na hora (otimista, com id local) e é reconciliada
@@ -1289,8 +1357,17 @@ export default function App() {
   // ── Render ──
   return (
     <>
-      {version.hasUpdate && (
+      {!desktopUpdate.active && version.hasUpdate && (
         <UpdateNotice onUpdate={version.reload} onDismiss={version.dismiss} />
+      )}
+      {desktopUpdate.update && (
+        <DesktopUpdateNotice
+          version={desktopUpdate.update.version}
+          installing={desktopUpdate.installing}
+          progress={desktopUpdate.progress}
+          error={desktopUpdate.error}
+          onUpdate={desktopUpdate.install}
+        />
       )}
 
       {screen === 'home' && (
@@ -1363,6 +1440,18 @@ export default function App() {
         <StreamSettings
           onStart={handleStartSharing}
           onCancel={() => setShowSettings(false)}
+        />
+      )}
+      {showDesktopPicker && (
+        <DesktopSourcePicker
+          onCancel={() => {
+            setShowDesktopPicker(false);
+            if (desktopPickerMode === 'start') {
+              shareCancelIdRef.current += 1;
+              setShareCancelNotice({ id: shareCancelIdRef.current, text: SHARE_CANCEL_NOTICE });
+            }
+          }}
+          onConfirm={handleDesktopConfirm}
         />
       )}
     </>

@@ -8,6 +8,10 @@ dist/
 Thumbs.db
 *.tsbuildinfo
 
+# Binários do Tauri (o .exe portátil sai em src-tauri/target/release)
+src-tauri/target
+src-tauri/gen
+
 # Artefatos das ferramentas do workspace (skills instaladas) — não são do projeto
 .agents/
 skills-lock.json
