@@ -22,6 +22,8 @@ import {
   type RoomSession,
 } from './lib/session';
 import Home from './components/Home';
+import UpdateNotice from './components/UpdateNotice';
+import { useVersionCheck } from './hooks/useVersionCheck';
 import Room from './components/Room';
 import Reconnecting from './components/Reconnecting';
 import StreamSettings from './components/StreamSettings';
@@ -187,6 +189,7 @@ function clearChatPendingTimer(timers: Map<string, number>, id: string): void {
 }
 
 export default function App() {
+  const version = useVersionCheck();
   // ── Estado da aplicação ──
   const [screen, setScreen] = useState<AppScreen>('home');
   const [error, setError] = useState<string | null>(null);
@@ -1286,6 +1289,10 @@ export default function App() {
   // ── Render ──
   return (
     <>
+      {version.hasUpdate && (
+        <UpdateNotice onUpdate={version.reload} onDismiss={version.dismiss} />
+      )}
+
       {screen === 'home' && (
         <Home
           onCreateRoom={handleCreateRoom}
