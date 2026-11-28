@@ -1395,6 +1395,11 @@ export default function App() {
       try { discordSessionRef.current = window.localStorage.getItem('telinha.discord.session') || ''; } catch { /* storage indisponível */ }
     }
     const link = roomCodeFromLocation(window.location.pathname, window.location.search);
+    if (link && params.get('source') === 'discord' && !discordSessionRef.current) {
+      const authOrigin = getSignalingUrl().replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\\/+$/, '');
+      window.location.assign(`${authOrigin}/discord/entry/${link.code}`);
+      return;
+    }
     if (link) {
       setLinkedCode(link.code);
       if (link.ticket) {
