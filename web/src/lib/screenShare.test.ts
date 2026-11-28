@@ -5,7 +5,7 @@ import {
   isMobileUserAgent,
   contentHintForSurface,
   captureLimitNotice,
-  scaleFactorForCapture,
+  captureVideoConstraints,
   isScreenShareCancellation,
   SHARE_CANCEL_NOTICE,
 } from './screenShare.ts';
@@ -76,13 +76,13 @@ test('detecta user agent de celular', () => {
   assert.equal(isMobileUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120'), false);
 });
 
-test('aba do navegador usa hint de detail (texto e interface)', () => {
+test('aba e janela usam hint de detail (texto e interface)', () => {
   assert.equal(contentHintForSurface('browser'), 'detail');
+  assert.equal(contentHintForSurface('window'), 'detail');
 });
 
-test('tela e janela continuam com hint de motion', () => {
+test('tela inteira continua com hint de motion', () => {
   assert.equal(contentHintForSurface('monitor'), 'motion');
-  assert.equal(contentHintForSurface('window'), 'motion');
 });
 
 test('superficie desconhecida nao muda o comportamento anterior', () => {
@@ -97,7 +97,9 @@ test('captura menor que o alvo gera aviso com os numeros reais', () => {
   );
   assert.ok(notice !== null);
   assert.ok(/510×230/.test(String(notice)));
-  assert.ok(/maximize/i.test(String(notice)));
+  assert.ok(/resolução nativa/.test(String(notice)));
+  assert.ok(/sem esticar/.test(String(notice)));
+  assert.ok(!/menor que o alvo/.test(String(notice)));
 });
 
 test('captura do tamanho do alvo nao gera aviso', () => {
@@ -112,22 +114,27 @@ test('sem medicao nao ha aviso (nada e estimado)', () => {
   assert.equal(captureLimitNotice({ width: 510, height: 230 }, null, 'browser'), null);
 });
 
-test('captura menor que o alvo nao recebe downscale (nada de reduzir duas vezes)', () => {
-  assert.equal(scaleFactorForCapture(510, { width: 1920, height: 1080 }), 1);
+test('janela mais alta que 16:9 que alcanca a altura do alvo nao gera aviso', () => {
+  assert.equal(
+    captureLimitNotice({ width: 1440, height: 1080 }, { width: 1920, height: 1080 }, 'window'),
+    null,
+  );
 });
 
-test('captura do tamanho do alvo nao recebe downscale', () => {
-  assert.equal(scaleFactorForCapture(1920, { width: 1920, height: 1080 }), 1);
+test('janela pequena nos dois lados gera aviso', () => {
+  const notice = captureLimitNotice({ width: 1280, height: 720 }, { width: 1920, height: 1080 }, 'window');
+  assert.ok(/A janela está sendo transmitida na resolução nativa \(1280×720\), sem esticar/.test(String(notice)));
 });
 
-test('captura maior que o alvo reduz pela razao medida', () => {
-  assert.equal(scaleFactorForCapture(3840, { width: 1920, height: 1080 }), 2);
-  assert.equal(scaleFactorForCapture(2560, { width: 1920, height: 1080 }), 1.33);
-});
-
-test('sem medicao ou sem alvo o fator fica em 1 (nada e estimado)', () => {
-  assert.equal(scaleFactorForCapture(null, { width: 1920, height: 1080 }), 1);
-  assert.equal(scaleFactorForCapture(3840, null), 1);
+test('limite de tamanho fica na captura como max, sem ideal', () => {
+  const constraints = captureVideoConstraints({ width: 1920, height: 1080 }, 30);
+  assert.deepEqual(constraints, {
+    width: { max: 1920 },
+    height: { max: 1080 },
+    frameRate: { ideal: 30, max: 30 },
+  });
+  assert.ok(!('ideal' in constraints.width));
+  assert.ok(!('ideal' in constraints.height));
 });
 
 test('cancelar o seletor nativo e reconhecido pelo NotAllowedError', () => {

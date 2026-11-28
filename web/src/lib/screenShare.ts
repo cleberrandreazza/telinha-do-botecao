@@ -127,14 +127,14 @@ export function readScreenShareEnvironment(): ScreenShareEnvironment {
 /**
  * Hint de conteúdo do encoder.
  *
- * Uma ABA do navegador é texto e interface: o encoder precisa gastar bits com
- * nitidez, não com movimento — era o que deixava a aba pequena (510×230)
- * ilegível. Tela cheia e janela são, em geral, vídeo ou jogo: aí 'motion' é o
- * certo. Quando o navegador não informa a superfície, fica 'motion'
- * (comportamento de antes, sem regressão).
+ * Aba e janela são texto e interface: 'detail' faz o encoder gastar bits com
+ * nitidez de letras e botões, mesmo quando a janela é menor que o alvo
+ * (1078×730 com 1080p pedido). 'motion' fica só para a tela inteira, que em
+ * geral é vídeo ou jogo. Quando o navegador não informa a superfície, fica
+ * 'motion' (o comportamento de antes, sem tratar uma tela desconhecida como texto).
  */
 export function contentHintForSurface(displaySurface: string | null): 'detail' | 'motion' {
-  return displaySurface === 'browser' ? 'detail' : 'motion';
+  return displaySurface === 'browser' || displaySurface === 'window' ? 'detail' : 'motion';
 }
 
 /** Tamanho medido de uma captura (em pixels). */
@@ -146,9 +146,12 @@ export interface CaptureSize {
 /**
  * Aviso para quem transmite quando a captura é MENOR que a resolução pedida.
  *
- * O navegador não amplia: uma aba entrega o tamanho da própria janela e uma
- * janela pequena entrega poucos pixels. Sem isso o streamer acha que está
- * transmitindo em 1080p e a sala enxerga 510×230.
+ * O navegador não amplia nem estica: a aba e a janela saem no tamanho nativo.
+ * O texto explica isso. Não é uma falha da transmissão.
+ *
+ * A captura cabe no alvo mantendo a proporção: uma janela mais alta que 16:9
+ * chega em 1080 de altura com largura menor. Só há aviso quando nenhum dos
+ * dois lados alcança o alvo.
  *
  * Devolve null quando não há medição (nada é estimado — ver
  * docs/diagnostics.md) ou quando a captura já cobre o alvo.
@@ -159,33 +162,33 @@ export function captureLimitNotice(
   displaySurface: string | null,
 ): string | null {
   if (!captured || !target) return null;
-  if (captured.width >= target.width) return null;
+  if (captured.width >= target.width || captured.height >= target.height) return null;
 
   const size = `${captured.width}×${captured.height}`;
   const goal = `${target.width}×${target.height}`;
-  if (displaySurface === 'browser') {
-    return `A aba transmite no tamanho da janela (${size}). O navegador não amplia: maximize a janela para chegar mais perto de ${goal}.`;
-  }
-  return `A captura está em ${size}, menor que o alvo ${goal}.`;
+  const source = displaySurface === 'browser' ? 'A aba' : displaySurface === 'window' ? 'A janela' : 'A captura';
+  return `${source} está sendo transmitida na resolução nativa (${size}), sem esticar. O alvo ${goal} só vale quando a fonte é maior.`;
 }
 
 /**
- * Fator de redução do encoder para chegar na resolução pedida.
+ * Constraints de vídeo da captura para chegar na resolução pedida.
  *
- * A largura vem da medição real (`getSettings().width`): se a captura já for
- * menor que o alvo, o fator é 1 — o navegador não amplia, então reduzir de
- * novo só pioraria a imagem (é o que fazia a aba sair em 510×230 ilegível).
- * Sem largura medida não há como saber o tamanho da fonte: assume-se 1 em vez
- * de estimar, porque um valor estimado faria o encoder reduzir a imagem duas
- * vezes.
+ * O limite fica na captura (`max`), não no encoder: o navegador reduz cada
+ * frame para caber no alvo mantendo a proporção, não amplia e acompanha o
+ * redimensionamento da janela. Um `scaleResolutionDownBy` calculado uma vez
+ * pelo `getSettings()` ficava errado em janelas — o tamanho informado no início
+ * nem sempre é o dos frames, e a janela muda depois — e o espectador recebia
+ * menos pixels do que a captura entregava.
  */
-export function scaleFactorForCapture(
-  capturedWidth: number | null,
-  target: CaptureSize | null,
-): number {
-  if (!capturedWidth || !target) return 1;
-  if (capturedWidth < target.width) return 1;
-  return Math.max(1, Math.round((capturedWidth / target.width) * 100) / 100);
+export function captureVideoConstraints(
+  target: CaptureSize,
+  frameRate: number,
+): { width: { max: number }; height: { max: number }; frameRate: { ideal: number; max: number } } {
+  return {
+    width: { max: target.width },
+    height: { max: target.height },
+    frameRate: { ideal: frameRate, max: frameRate },
+  };
 }
 
 export class ScreenShareUnsupportedError extends Error {

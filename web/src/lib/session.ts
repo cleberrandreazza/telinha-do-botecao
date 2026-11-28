@@ -106,64 +106,6 @@ export function clearRoomSession(storage?: StorageLike | null): void {
   }
 }
 
-// ── Posição do preview local (lembrada na sessão) ──────
-
-/** Chave usada no sessionStorage para a posição do preview local. */
-export const LOCAL_PREVIEW_POSITION_KEY = 'telinha-local-preview-position';
-
-/** Posição do preview local, em pixels, dentro do palco. */
-export interface LocalPreviewPosition {
-  x: number;
-  y: number;
-}
-
-/** Salva a posição do preview local. Falhas de storage são silenciosas. */
-export function saveLocalPreviewPosition(
-  position: LocalPreviewPosition,
-  storage?: StorageLike | null,
-): void {
-  const store = resolveStorage(storage);
-  if (!store) return;
-  try {
-    store.setItem(
-      LOCAL_PREVIEW_POSITION_KEY,
-      JSON.stringify({ x: Math.round(position.x), y: Math.round(position.y) }),
-    );
-  } catch {
-    // storage indisponível
-  }
-}
-
-/**
- * Carrega a posição do preview local. Devolve `null` quando não há dado
- * salvo ou o dado está corrompido.
- */
-export function loadLocalPreviewPosition(
-  storage?: StorageLike | null,
-): LocalPreviewPosition | null {
-  const store = resolveStorage(storage);
-  if (!store) return null;
-
-  let raw: string | null;
-  try {
-    raw = store.getItem(LOCAL_PREVIEW_POSITION_KEY);
-  } catch {
-    return null;
-  }
-  if (!raw) return null;
-
-  try {
-    const parsed = JSON.parse(raw) as Partial<LocalPreviewPosition> | null;
-    if (!parsed || typeof parsed !== 'object') return null;
-    const x = typeof parsed.x === 'number' ? parsed.x : Number.NaN;
-    const y = typeof parsed.y === 'number' ? parsed.y : Number.NaN;
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-    return { x, y };
-  } catch {
-    return null;
-  }
-}
-
 // ── Client ID (identidade estável entre recargas) ──────
 
 /** Chave usada no sessionStorage para o clientId. */

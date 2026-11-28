@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { clampBoxPosition, clampPan, getSignalingHost, isLoopbackHost, hostnameOnly, panLimit } from './utils.ts';
+import { clampPan, getSignalingHost, isLoopbackHost, hostnameOnly, panLimit } from './utils.ts';
 
 test('WebSocket usa hostname atual para conexoes em LAN', () => {
   assert.equal(getSignalingHost('192.168.15.4'), '192.168.15.4:4000');
@@ -52,30 +52,4 @@ test('o pan e limitado as bordas do quadro', () => {
 test('pan invalido vira zero', () => {
   const limit = panLimit(800, 400, 2);
   assert.deepEqual(clampPan({ x: Number.NaN, y: Number.POSITIVE_INFINITY }, limit), { x: 0, y: 0 });
-});
-
-test('a caixa fica dentro do palco', () => {
-  const box = { width: 256, height: 160 };
-  const stage = { width: 1000, height: 600 };
-  // Dentro dos limites: a posição é mantida.
-  assert.deepEqual(clampBoxPosition({ x: 100, y: 200 }, box, stage, 8), { x: 100, y: 200 });
-  // Cantos: a posição máxima é o palco menos a caixa menos a folga.
-  assert.deepEqual(clampBoxPosition({ x: 9999, y: 9999 }, box, stage, 8), { x: 736, y: 432 });
-  // Canto oposto: nunca passa da folga da borda.
-  assert.deepEqual(clampBoxPosition({ x: -50, y: -50 }, box, stage, 8), { x: 8, y: 8 });
-});
-
-test('caixa maior que o palco fica na margem', () => {
-  const box = { width: 900, height: 700 };
-  const stage = { width: 100, height: 100 };
-  assert.deepEqual(clampBoxPosition({ x: 40, y: 40 }, box, stage, 8), { x: 8, y: 8 });
-});
-
-test('posicao invalida vira a margem', () => {
-  const box = { width: 200, height: 100 };
-  const stage = { width: 800, height: 600 };
-  assert.deepEqual(
-    clampBoxPosition({ x: Number.NaN, y: Number.POSITIVE_INFINITY }, box, stage, 8),
-    { x: 8, y: 8 },
-  );
 });

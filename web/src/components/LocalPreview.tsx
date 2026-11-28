@@ -1,182 +1,87 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { RefObject } from 'react';
-import { describeCapture, readTrackSettings } from '../lib/diagnostics/index';
-import { clampBoxPosition } from '../lib/utils';
-import { loadLocalPreviewPosition, saveLocalPreviewPosition } from '../lib/session';
-
-/** Folga entre o preview e a borda do palco. */
-const STAGE_MARGIN = 8;
+import { useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
+import BotecaoIcon from './BotecaoIcon';
+import StreamControls from './StreamControls';
 
 interface LocalPreviewProps {
   stream: MediaStream | null;
   nickname: string;
-  /** Palco que limita o preview (o `main` da sala). */
-  stageRef?: RefObject<HTMLElement | null>;
-}
-
-interface DragState {
-  pointerId: number;
-  startX: number;
-  startY: number;
-  originX: number;
-  originY: number;
+  /** Encerra a transmissão (opção do menu). */
+  onStopSharing: () => void;
+  /** Configurações da transmissão, abertas pelo menu. */
+  settings: ReactNode;
+  /** Há um aviso da captura: o ícone de configurações ganha um ponto âmbar. */
+  notice?: boolean;
+  /** Abre o diagnóstico de quem transmite. */
+  onShowStats?: () => void;
+  /** O painel de diagnóstico está aberto. */
+  statsActive?: boolean;
+  /** Pausa o vídeo local sem mudar a pausa que a pessoa escolheu. */
+  holdPaused?: boolean;
+  /** Classes extras do tile (por exemplo, some no modo teatro). */
+  className?: string;
+  /** Resolução escolhida, sem o "p" (1080 → "1080p"). */
+  resolution?: string;
+  /** Taxa de quadros escolhida. */
+  frameRate?: number;
 }
 
 /**
- * Preview local de quem transmite: mostra a própria captura antes/durante
- * a live e a resolução real da track. Medida ausente fica "n/d".
+ * Preview local de quem transmite: a primeira célula da grade, só para quem
+ * transmite. Mostra a própria captura.
  *
- * O preview é arrastável (pela faixa de baixo, com "Sua transmissão ·
- * apelido"), fica sempre dentro do palco e a posição é lembrada na
- * sessão. O botão de pausa congela apenas o vídeo local — o áudio nunca
- * toca, porque o `<video>` segue sempre `muted`.
+ * Usa o mesmo menu dos outros players (`StreamControls`), sem som, zoom
+ * nem tela cheia. O menu fica sempre visível no rodapé, com Diagnóstico,
+ * Configurações e Parar transmissão. O preview entra pausado; a pausa
+ * congela só o vídeo local.
  */
-export default function LocalPreview({ stream, nickname, stageRef }: LocalPreviewProps) {
+export default function LocalPreview({ stream, nickname, onStopSharing, settings, notice = false, onShowStats, statsActive = false, holdPaused = false, className, resolution, frameRate }: LocalPreviewProps) {
+  const controlsRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const boxRef = useRef<HTMLDivElement>(null);
-  const [capture, setCapture] = useState('n/d');
-  const [position, setPosition] = useState({ x: 0, y: 0 });
-  const [positioned, setPositioned] = useState(false);
-  const [dragging, setDragging] = useState(false);
-  const [paused, setPaused] = useState(false);
-  const dragRef = useRef<DragState | null>(null);
-  const positionRef = useRef(position);
-  positionRef.current = position;
+  const [paused, setPaused] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
-
-  /** Mede o palco e a caixa do preview (px). */
-  const measure = useCallback(() => {
-    const stage = stageRef?.current ?? null;
-    const box = boxRef.current;
-    if (!stage || !box) return null;
-    return {
-      stage: { width: stage.clientWidth, height: stage.clientHeight },
-      box: { width: box.offsetWidth, height: box.offsetHeight },
-    };
-  }, [stageRef]);
-
-  /** Primeira colocação: canto inferior direito, ou a posição da sessão. */
-  const placeInitial = useCallback(() => {
-    const sizes = measure();
-    if (!sizes) return false;
-    const saved = loadLocalPreviewPosition();
-    const fallback = {
-      x: sizes.stage.width - sizes.box.width - STAGE_MARGIN,
-      y: sizes.stage.height - sizes.box.height - STAGE_MARGIN,
-    };
-    setPosition(clampBoxPosition(saved ?? fallback, sizes.box, sizes.stage, STAGE_MARGIN));
-    setPositioned(true);
-    return true;
-  }, [measure]);
-
-  useLayoutEffect(() => {
-    placeInitial();
-  }, [placeInitial]);
-
-  // Reserva: se o palco ainda não estava medido, tenta de novo.
-  useEffect(() => {
-    if (!positioned) placeInitial();
-  }, [positioned, placeInitial]);
-
-  // Janela redimensionada: o preview continua dentro do palco.
-  useEffect(() => {
-    const onResize = () => {
-      const sizes = measure();
-      if (!sizes) return;
-      setPosition((current) => clampBoxPosition(current, sizes.box, sizes.stage, STAGE_MARGIN));
-    };
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, [measure]);
+  const holdPausedRef = useRef(holdPaused);
+  holdPausedRef.current = holdPaused;
 
   // Liga a stream local no <video> (sem áudio, para não ecoar a própria voz)
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !stream) return;
-    if (video.srcObject !== stream) {
-      video.srcObject = stream;
-      if (!pausedRef.current) {
-        void video.play().catch(() => { /* autoplay bloqueado: o preview volta no próximo gesto */ });
-      }
-    }
+    video.muted = true;
+    if (video.srcObject !== stream) video.srcObject = stream;
+    if (pausedRef.current || holdPausedRef.current) video.pause();
+    else void video.play().catch(() => { /* o play fica para o botão do menu */ });
   }, [stream]);
 
-  // O preview local nunca emite áudio (evita eco na sala).
+  // O teatro pausa o preview sem apagar a pausa escolhida no menu.
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    video.muted = true;
-  }, [stream]);
+    if (paused || holdPaused) video.pause();
+    else void video.play().catch(() => {});
+  }, [paused, holdPaused, stream]);
 
-  // Resolução e fps medidos na track — nada é estimado
+  // Configurações abertas: Esc ou clique fora fecham.
   useEffect(() => {
-    if (!stream) {
-      setCapture('n/d');
-      return;
-    }
-    const track = stream.getVideoTracks()[0];
-    if (!track) {
-      setCapture('n/d');
-      return;
-    }
-    const read = () => {
-      let settings = null;
-      try {
-        settings = readTrackSettings(track.getSettings() as Record<string, unknown>);
-      } catch {
-        settings = null;
-      }
-      setCapture(describeCapture(settings));
+    if (!settingsOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSettingsOpen(false);
     };
-    read();
-    const timer = setInterval(read, 1000);
-    return () => clearInterval(timer);
-  }, [stream]);
+    const onDown = (event: MouseEvent) => {
+      if (controlsRef.current && !controlsRef.current.contains(event.target as Node)) setSettingsOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onDown);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('mousedown', onDown);
+    };
+  }, [settingsOpen]);
 
   if (!stream) return null;
 
-  // ── Arrasto pela faixa de baixo ──
-  const onHandlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.pointerType === 'mouse' && event.button !== 0) return;
-    dragRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      originX: positionRef.current.x,
-      originY: positionRef.current.y,
-    };
-    setDragging(true);
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-  };
-
-  const onHandlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    const sizes = measure();
-    if (!sizes) return;
-    const next = clampBoxPosition(
-      {
-        x: drag.originX + (event.clientX - drag.startX),
-        y: drag.originY + (event.clientY - drag.startY),
-      },
-      sizes.box,
-      sizes.stage,
-      STAGE_MARGIN,
-    );
-    positionRef.current = next;
-    setPosition(next);
-  };
-
-  const onHandlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    dragRef.current = null;
-    setDragging(false);
-    saveLocalPreviewPosition(positionRef.current);
-  };
-
-  // ── Pausa do vídeo local (o áudio nunca toca) ──
   const togglePaused = () => {
     const video = videoRef.current;
     if (!video) return;
@@ -189,69 +94,63 @@ export default function LocalPreview({ stream, nickname, stageRef }: LocalPrevie
     }
   };
 
+  const configLabel = resolution && frameRate ? `${resolution}p ${frameRate}fps` : null;
+
   return (
     <div
-      ref={boxRef}
-      style={{ transform: `translate(${position.x}px, ${position.y}px)` }}
-      className={`absolute left-0 top-0 z-30 w-56 sm:w-64 rounded-2xl overflow-hidden border border-[#1f222e] bg-[#111318]/95 backdrop-blur-xl shadow-2xl ${
-        positioned ? '' : 'opacity-0'
-      }`}
+      aria-label="Sua transmissão"
+      className={`relative h-full w-full min-h-0 flex flex-col rounded-2xl overflow-hidden bg-black border border-[#272a37] shadow-2xl ${className ?? ''}`}
     >
-      <div className="relative aspect-video bg-black">
+      <div className="relative flex-1 min-h-0 overflow-hidden bg-black">
         <video
           ref={videoRef}
-          autoPlay
           playsInline
           muted
-          className="w-full h-full object-contain"
+          className="w-full h-full object-contain bg-black"
         />
-        <div className="absolute inset-0 crt-scanlines pointer-events-none opacity-20" />
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_45%,rgba(0,0,0,0.6)_100%)] pointer-events-none" />
-
-        {/* Badge: ao vivo (vermelho pulsante) / pausado (âmbar, sem pulso) */}
-        {paused ? (
-          <span
-            title="pausado • sem som"
-            className="absolute top-1.5 left-2 flex items-center gap-1.5 px-1.5 py-0.5 rounded-md bg-black/70 text-[10px] font-label-mono uppercase tracking-wider text-amber-300"
-          >
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-            pausado
-          </span>
-        ) : (
-          <span className="absolute top-1.5 left-2 flex items-center gap-1.5 px-1.5 py-0.5 rounded-md bg-black/70 text-[10px] font-label-mono uppercase tracking-wider text-red-400">
-            <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-            ao vivo
-          </span>
+        {paused && (
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px] flex items-center justify-center z-10 pointer-events-none">
+            <div className="flex flex-col items-center gap-2">
+              <span className="w-14 h-14 rounded-full bg-black/70 flex items-center justify-center">
+                <BotecaoIcon size={28} />
+              </span>
+              <span className="text-[11px] font-label-mono font-bold text-on-surface tracking-wider leading-none text-center -mr-[0.05em]">
+                preview pausado
+              </span>
+            </div>
+          </div>
         )}
 
-        {/* Pausar: congela só o vídeo local (o áudio nunca toca) */}
-        <button
-          type="button"
-          onClick={togglePaused}
-          title={paused ? 'Reproduzir o preview (sem som)' : 'Pausar o preview (sem som)'}
-          aria-label={paused ? 'Reproduzir o preview local' : 'Pausar o preview local'}
-          className="absolute top-1.5 right-2 w-7 h-7 rounded-lg bg-black/70 backdrop-blur-md border border-white/10 flex items-center justify-center text-on-surface hover:text-primary hover:border-primary/40 transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-primary/60 z-10"
-        >
-          <span className="material-symbols-outlined text-[16px]">{paused ? 'play_circle' : 'pause'}</span>
-        </button>
-      </div>
+        {/* Selo do preview e, logo abaixo, a configuração escolhida. */}
+        <div className="absolute top-2 left-2 z-10 flex flex-col items-start gap-1.5 pointer-events-none">
+          <div className="h-6 px-2 rounded-lg bg-black/70 backdrop-blur-md border border-white/10 flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-red-500 motion-safe:animate-pulse shrink-0" />
+            <span className="text-[12px] font-body text-on-surface font-medium leading-none truncate max-w-[140px]">Sua transmissão</span>
+          </div>
+          {configLabel && (
+            <div className="h-6 px-2 rounded-lg bg-black/70 backdrop-blur-md border border-white/10 flex items-center">
+              <span className="text-[12px] font-label-mono text-on-surface font-medium leading-none">{configLabel}</span>
+            </div>
+          )}
+        </div>
 
-      {/* Faixa de arrasto (24px): "Sua transmissão · apelido" + resolução medida */}
-      <div
-        onPointerDown={onHandlePointerDown}
-        onPointerMove={onHandlePointerMove}
-        onPointerUp={onHandlePointerUp}
-        onPointerCancel={onHandlePointerUp}
-        title="Arrastar o preview"
-        aria-label="Arrastar o preview local"
-        className={`flex items-center justify-between gap-2 h-6 px-2.5 border-t border-[#1f222e] touch-none select-none ${
-          dragging ? 'cursor-grabbing' : 'cursor-grab'
-        }`}
-      >
-        <span className="text-[10px] text-on-surface font-medium truncate">
-          Sua transmissão <span className="text-outline">· {nickname}</span>
-        </span>
-        <span className="font-label-mono text-[10px] text-primary shrink-0">{capture}</span>
+        {/* Menu do preview: sempre visível, sem zoom nem tela cheia */}
+        <div className="absolute top-2 bottom-2 inset-x-2 flex flex-col items-center justify-end z-20 pointer-events-none">
+          <div ref={controlsRef} className="min-h-0 max-h-full flex flex-col pointer-events-auto">
+            <StreamControls
+              nickname={nickname}
+              paused={paused}
+              onTogglePause={togglePaused}
+              onShowStats={onShowStats}
+              statsActive={statsActive}
+              onShowSettings={() => setSettingsOpen((open) => !open)}
+              settingsActive={settingsOpen}
+              settingsNotice={notice}
+              settingsPanel={settings}
+              onStopSharing={onStopSharing}
+            />
+          </div>
+        </div>
       </div>
     </div>
   );

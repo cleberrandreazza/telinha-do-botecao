@@ -18,6 +18,9 @@ export interface AbrDecision {
   state: AbrState;
 }
 
+// O teto inicial vem da resolução escolhida (1080p = 8 Mbps). O tamanho real
+// da captura não entra aqui: uma janela menor que o alvo não reduz o teto.
+//
 // Thresholds antigos (60%/85%) causavam espiral de morte: um FPS já baixo
 // fazia o ABR cortar bitrate, o Chrome entregava ainda menos FPS, e a cascata
 // ia até 0.5 Mbps. O corte só acontece abaixo de 25% do alvo (~7 fps em 30).

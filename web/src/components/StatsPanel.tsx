@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import {
   diagnosisSummary,
   effectiveResolution,
@@ -48,6 +48,52 @@ export default function StatsPanel({
   emptyHint,
 }: StatsPanelProps) {
   const [view, setView] = useState<'summary' | 'technical'>('summary');
+  const panelRef = useRef<HTMLDivElement>(null);
+  const offsetRef = useRef({ x: 0, y: 0 });
+  const dragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+
+  const moveOffset = (x: number, y: number) => {
+    const panel = panelRef.current;
+    if (panel) {
+      const rect = panel.getBoundingClientRect();
+      const layoutLeft = rect.left - offsetRef.current.x;
+      const layoutTop = rect.top - offsetRef.current.y;
+      const minX = 8 - layoutLeft;
+      const minY = 8 - layoutTop;
+      const maxX = window.innerWidth - 48 - layoutLeft;
+      const maxY = window.innerHeight - 48 - layoutTop;
+      const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), Math.max(min, max));
+      x = clamp(x, minX, maxX);
+      y = clamp(y, minY, maxY);
+    }
+    offsetRef.current = { x, y };
+    setOffset({ x, y });
+  };
+
+  const onDragStart = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    if ((event.target as HTMLElement).closest('button, select, a, input')) return;
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* o arrasto segue pelos eventos do próprio cabeçalho */ }
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: offsetRef.current.x,
+      originY: offsetRef.current.y,
+    };
+  };
+
+  const onDragMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    moveOffset(drag.originX + event.clientX - drag.startX, drag.originY + event.clientY - drag.startY);
+  };
+
+  const onDragEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (dragRef.current?.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+  };
   const sample = snapshot?.sample ?? null;
   const measured = sample ? pipelineFps(sample) : null;
   const livePresented = livePlayback && livePlayback.api !== 'none' ? livePlayback.presentedFps : null;
@@ -66,8 +112,19 @@ export default function StatsPanel({
   const summary = diagnosis ? diagnosisSummary(diagnosis) : 'Dados insuficientes para diagnóstico';
 
   return (
-    <div className="bg-black/85 backdrop-blur-xl border border-white/10 rounded-xl p-3 shadow-2xl text-[11px] font-label-mono text-[#dbdee1] flex flex-col gap-1.5 min-w-[250px] max-w-[340px] max-h-[min(72vh,580px)] overflow-y-auto">
-      <div className="flex items-center justify-between gap-3 pb-1 border-b border-white/10">
+    <div
+      ref={panelRef}
+      style={{ transform: `translate(${offset.x}px, ${offset.y}px)` }}
+      className="bg-black/85 backdrop-blur-xl border border-white/10 rounded-xl p-3 shadow-2xl text-[11px] font-label-mono text-[#dbdee1] flex flex-col gap-1.5 min-w-[250px] max-w-[340px] max-h-[min(72vh,580px)] overflow-y-auto"
+    >
+      <div
+        onPointerDown={onDragStart}
+        onPointerMove={onDragMove}
+        onPointerUp={onDragEnd}
+        onPointerCancel={onDragEnd}
+        className="flex items-center justify-between gap-3 pb-1 border-b border-white/10 cursor-grab active:cursor-grabbing touch-none select-none"
+        title="Arrastar"
+      >
         <span className="text-[10px] uppercase tracking-wider text-primary font-bold">Estatísticas</span>
         <div className="flex items-center gap-1">
           <ToggleButton active={view === 'summary'} onClick={() => setView('summary')}>Resumo</ToggleButton>

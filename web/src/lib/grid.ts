@@ -22,6 +22,27 @@ export const GRID_MODE_KEY = 'telinha-grid-mode';
 /** Teto absoluto de transmissões simultâneas (o maior modo de grade). */
 export const MAX_SIMULTANEOUS_STREAMS = 4;
 
+/** Aviso acima do botão de compartilhar quando as vagas de transmissão acabaram. */
+export const SHARE_SLOTS_FULL_NOTICE =
+  'Grade ocupada: 4 pessoas já estão transmitindo. Aguarde uma vaga para compartilhar.';
+
+/** Modo da grade que cabe as lives dos outros: 1 → 1, 2 → 2, 3 ou mais → 4. */
+export function gridModeForSharers(count: number): GridMode {
+  if (count <= 1) return 1;
+  if (count === 2) return 2;
+  return 4;
+}
+
+/** Células da grade para lives dos outros: quem transmite usa a primeira com o próprio preview. */
+export function remoteSlotsForMode(mode: GridMode, sharing: boolean): number {
+  return Math.max(0, maxStreamsForMode(mode) - (sharing ? 1 : 0));
+}
+
+/** Já há transmissões demais para mais alguém começar a compartilhar? */
+export function areShareSlotsFull(otherSharers: number): boolean {
+  return otherSharers >= MAX_SIMULTANEOUS_STREAMS;
+}
+
 /** O valor é um modo de grade válido? (protege o localStorage de lixo) */
 export function isGridMode(value: unknown): value is GridMode {
   return value === 1 || value === 2 || value === 4;

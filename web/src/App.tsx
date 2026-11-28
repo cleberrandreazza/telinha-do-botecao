@@ -13,7 +13,7 @@ import type { AppScreen, ChatMessage, GridMode, PeerInfo, StreamInfo, ServerMess
 import { sanitizeChatText, isOwnMessage } from './lib/chat';
 import { installAudioUnlock, playSound, setSoundsEnabled } from './lib/sounds';
 import { loadSettings } from './components/SettingsModal';
-import { limitNoticeForMode, loadGridMode, maxStreamsForMode, saveGridMode } from './lib/grid';
+import { gridModeForSharers, limitNoticeForMode, loadGridMode, remoteSlotsForMode, saveGridMode } from './lib/grid';
 import {
   loadRoomSession,
   saveRoomSession,
@@ -224,8 +224,8 @@ export default function App() {
   /** Superfície capturada ("browser"/"window"/"monitor") ou null. */
   const [measuredSurface, setMeasuredSurface] = useState<string | null>(null);
   /**
-   * Aviso de "a captura é menor que o alvo" (M10). Vai para o mesmo espaço
-   * do aviso de resolução — a tela não ganha nenhum elemento novo.
+   * Aviso de que a captura saiu na resolução nativa, menor que o alvo.
+   * Vai para o mesmo espaço do aviso de resolução, com tom informativo.
    */
   const [captureNotice, setCaptureNotice] = useState<string | null>(null);
 
@@ -304,6 +304,8 @@ export default function App() {
   const mockStreamsRef = useRef<StreamInfo[]>([]);
   /** Modo da grade em vigor (o limite de slots vem dele). */
   const gridModeRef = useRef<GridMode>(gridMode);
+  /** true enquanto eu transmito: o preview ocupa a primeira célula da grade. */
+  const isSharingRef = useRef(false);
 
   // Sync refs
   useEffect(() => {
@@ -352,11 +354,31 @@ export default function App() {
     setStreamLimitNotice(null);
   }, []);
 
+  /**
+   * A grade acompanha quantos outros estão transmitindo (1, 2 ou 4). O ref
+   * muda antes do pedido da live, para o limite do modo antigo não barrá-la.
+   */
+  const applyGridForSharers = useCallback((list: PeerInfo[], selfId: string) => {
+    // Quem transmite ocupa uma célula com o próprio preview.
+    const count = list.filter(p => p.isSharing && p.id !== selfId).length + (isSharingRef.current ? 1 : 0);
+    if (count === 0) return;
+    const mode = gridModeForSharers(count);
+    gridModeRef.current = mode;
+    setGridMode(mode);
+  }, []);
+
+  // Começar ou parar de transmitir muda as células: o preview entra ou sai da grade.
+  useEffect(() => {
+    if (isSharingRef.current === isSharing) return;
+    isSharingRef.current = isSharing;
+    applyGridForSharers(peersRef.current, myPeerIdRef.current);
+  }, [isSharing, applyGridForSharers]);
+
   // ── Grade: pedir a live de um peer (até o limite do modo da grade) ──
   const handleRequestStream = useCallback((peerId: string) => {
     const requested = requestedSharersRef.current;
     if (requested.has(peerId)) return;
-    const limit = maxStreamsForMode(gridModeRef.current);
+    const limit = remoteSlotsForMode(gridModeRef.current, isSharingRef.current);
     if (requested.size >= limit) {
       // Sem slot: o peer continua na sidebar e o aviso explica o motivo.
       setStreamLimitNotice(limitNoticeForMode(gridModeRef.current));
@@ -438,6 +460,7 @@ export default function App() {
         saveRoomSession({ code: msg.code, nickname: nickRef.current, wasSharing: false, savedAt: Date.now() });
 
         // Solicita streams de quem já está compartilhando (até o limite da grade)
+        applyGridForSharers(msg.peers, msg.peerId);
         for (const peer of msg.peers) {
           // Quem o usuário mandou "parar de assistir" não volta sozinho.
           if (peer.isSharing && !unwatchedRef.current.has(peer.id)) {
@@ -448,11 +471,14 @@ export default function App() {
       }
 
       case 'peer-joined':
+        peersRef.current = [...peersRef.current, msg.peer];
         setPeers(prev => [...prev, msg.peer]);
         playSound('peer-joined');
         break;
 
       case 'peer-left':
+        peersRef.current = peersRef.current.filter(p => p.id !== msg.peerId);
+        applyGridForSharers(peersRef.current, myPeerIdRef.current);
         setPeers(prev => prev.filter(p => p.id !== msg.peerId));
         setStreams(prev => prev.filter(s => s.peerId !== msg.peerId));
         requestedSharersRef.current.delete(msg.peerId);
@@ -461,6 +487,8 @@ export default function App() {
         break;
 
       case 'sharing-started':
+        peersRef.current = peersRef.current.map(p => p.id === msg.peerId ? { ...p, isSharing: true } : p);
+        applyGridForSharers(peersRef.current, myPeerIdRef.current);
         setPeers(prev =>
           prev.map(p => p.id === msg.peerId ? { ...p, isSharing: true } : p)
         );
@@ -473,6 +501,8 @@ export default function App() {
         break;
 
       case 'sharing-stopped':
+        peersRef.current = peersRef.current.map(p => p.id === msg.peerId ? { ...p, isSharing: false } : p);
+        applyGridForSharers(peersRef.current, myPeerIdRef.current);
         setPeers(prev =>
           prev.map(p => p.id === msg.peerId ? { ...p, isSharing: false } : p)
         );
@@ -1048,6 +1078,13 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [shareCancelNotice]);
 
+  // Aviso da sala (ex.: sessão restaurada) some sozinho.
+  useEffect(() => {
+    if (!restoredNotice) return;
+    const timer = window.setTimeout(() => setRestoredNotice(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [restoredNotice]);
+
   // ── Mock mode: ?mock na URL ──
   useEffect(() => {
     if (!isMockMode()) return;
@@ -1079,9 +1116,14 @@ export default function App() {
       // Todas as lives do mock ficam guardadas: dá para reassistir ("Assistir")
       // depois de "Parar de assistir".
       mockStreamsRef.current = readyStreams;
+      if (readyStreams.length > 0) {
+        const mode = gridModeForSharers(readyStreams.length + (isSharingRef.current ? 1 : 0));
+        gridModeRef.current = mode;
+        setGridMode(mode);
+      }
       // A grade do mock respeita o limite do modo: só as lives que cabem são
       // assistidas — as outras ficam na lista lateral ("fora da grade").
-      const limit = maxStreamsForMode(gridModeRef.current);
+      const limit = remoteSlotsForMode(gridModeRef.current, isSharingRef.current);
       const visible = readyStreams.slice(0, limit);
       requestedSharersRef.current = new Set(visible.map(s => s.peerId));
       setStreams(visible);
@@ -1097,7 +1139,7 @@ export default function App() {
     if (!isMockMode()) return;
     const mock = mockStreamsRef.current;
     if (mock.length === 0) return;
-    const limit = maxStreamsForMode(gridMode);
+    const limit = remoteSlotsForMode(gridMode, isSharingRef.current);
     // Mantém quem já estava sendo assistido e completa com os demais —
     // sem ressuscitar quem o usuário mandou "parar de assistir".
     const next = mock.filter(s => requestedSharersRef.current.has(s.peerId)).slice(0, limit);
@@ -1285,13 +1327,13 @@ export default function App() {
           measuredSurface={measuredSurface}
           streamerBusy={streamerBusy}
           streamerNotice={streamerNotice ?? captureNotice}
+          streamerNoticeInformative={!streamerNotice && Boolean(captureNotice)}
           onSelectResolution={handleSelectResolution}
           onSelectFrameRate={handleSelectFrameRate}
           onSwitchSource={handleSwitchSource}
           streamLimitNotice={streamLimitNotice}
           shareCancelNotice={shareCancelNotice?.text ?? null}
           gridMode={gridMode}
-          onGridModeChange={setGridMode}
           onRequestStream={handleRequestStream}
           onStreamRemoved={handleStreamRemoved}
         />

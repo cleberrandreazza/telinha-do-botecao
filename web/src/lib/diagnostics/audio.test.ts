@@ -7,10 +7,12 @@ import {
   captureUnavailableMessage,
   classifyAudio,
   commitPreparedShare,
+  decideAudioScope,
   inspectAudioSdp,
   migrateAudioMode,
   negotiationFromSdp,
   parseOpusFmtp,
+  policyLabel,
   readAudioCapture,
   requestDisplayMedia,
   resolvePlayback,
@@ -96,11 +98,11 @@ function fakeShare(surface: string | undefined, audioCount: number) {
   };
 }
 
-test('modo source exclui áudio global e áudio de janela, e ainda pede áudio da aba', () => {
+test('modo source exclui áudio global e pede só o áudio da aba ou da janela', () => {
   const source = buildDisplayMediaOptions({ frameRate: { ideal: 30 } }, 'source');
   equal(source.audio, true);
   equal(source.systemAudio, 'exclude');
-  equal(source.windowAudio, 'exclude');
+  equal(source.windowAudio, 'window');
   equal(source.suppressLocalAudioPlayback, undefined);
   ok(!('suppressLocalAudioPlayback' in source));
   ok(!('echoCancellation' in source));
@@ -110,10 +112,12 @@ test('modo source exclui áudio global e áudio de janela, e ainda pede áudio d
   const system = buildDisplayMediaOptions({}, 'system');
   equal(system.audio, true);
   equal(system.systemAudio, 'include');
-  equal(system.windowAudio, 'exclude');
+  equal(system.windowAudio, 'system');
   equal(system.suppressLocalAudioPlayback, undefined);
   ok(!('suppressLocalAudioPlayback' in system));
-  ok(system.windowAudio !== 'system');
+
+  equal(buildDisplayMediaOptions({}, 'source', { windowAudio: 'exclude' }).windowAudio, 'exclude');
+  equal(buildDisplayMediaOptions({}, 'system', { windowAudio: 'exclude' }).windowAudio, 'exclude');
 
   const off = buildDisplayMediaOptions({}, 'off');
   equal(off.audio, false);
@@ -131,13 +135,37 @@ test('política de superfície descarta áudio fora do escopo e preserva o víde
     assignLocal: (stream) => order.push(`localStream:${stream.getAudioTracks().length}`),
     startSharing: () => order.push('start-sharing'),
   });
-  equal(order.join(','), 'localStream:0,start-sharing');
+  equal(order.join(','), 'localStream:1,start-sharing');
   equal(windowResult.returned, 1);
-  equal(windowResult.kept, 0);
-  equal(windowResult.decision.policy, 'window-no-global');
-  equal(windowShare.audio[0].stopped, true);
+  equal(windowResult.kept, 1);
+  equal(windowResult.decision.policy, 'window-audio');
+  equal(windowShare.audio[0].stopped, false);
   equal(windowShare.video.stopped, false);
-  equal(windowShare.getVideoTracks().length, 1);
+
+  // O navegador recusou `windowAudio: 'window'`: a janela não tem áudio isolado garantido.
+  const unisolated = fakeShare('window', 1);
+  const unisolatedResult = commitPreparedShare({
+    stream: unisolated,
+    mode: 'source',
+    windowAudioFallback: true,
+    assignLocal: () => {},
+    startSharing: () => {},
+  });
+  equal(unisolatedResult.kept, 0);
+  equal(unisolatedResult.decision.policy, 'window-unsupported');
+  equal(unisolated.audio[0].stopped, true);
+  equal(unisolated.video.stopped, false);
+  equal(unisolated.getVideoTracks().length, 1);
+
+  const windowEmpty = fakeShare('window', 0);
+  const windowEmptyResult = commitPreparedShare({
+    stream: windowEmpty,
+    mode: 'source',
+    assignLocal: () => {},
+    startSharing: () => {},
+  });
+  equal(windowEmptyResult.kept, 0);
+  ok(windowEmptyResult.message?.includes('desta janela'));
 
   const tab = fakeShare('browser', 1);
   const tabResult = commitPreparedShare({
@@ -171,19 +199,40 @@ test('política de superfície descarta áudio fora do escopo e preserva o víde
   }).decision.policy, 'system-monitor');
   equal(monitorSystem.getAudioTracks().length, 1);
 
-  for (const surface of ['browser', 'window'] as const) {
-    const share = fakeShare(surface, 1);
-    const result = commitPreparedShare({
-      stream: share,
-      mode: 'system',
-      assignLocal: () => {},
-      startSharing: () => {},
-    });
-    equal(result.kept, 0);
-    equal(result.decision.policy, 'system-requires-monitor');
-    equal(share.audio[0].stopped, true);
-    equal(share.video.stopped, false);
-  }
+  const windowSystem = fakeShare('window', 1);
+  const windowSystemResult = commitPreparedShare({
+    stream: windowSystem,
+    mode: 'system',
+    assignLocal: () => {},
+    startSharing: () => {},
+  });
+  equal(windowSystemResult.kept, 1);
+  equal(windowSystemResult.decision.policy, 'system-window');
+  ok(windowSystemResult.message?.includes('Windows'));
+  equal(windowSystem.audio[0].stopped, false);
+
+  const windowSystemFallback = fakeShare('window', 1);
+  equal(commitPreparedShare({
+    stream: windowSystemFallback,
+    mode: 'system',
+    windowAudioFallback: true,
+    assignLocal: () => {},
+    startSharing: () => {},
+  }).decision.policy, 'window-unsupported');
+  equal(windowSystemFallback.audio[0].stopped, true);
+  equal(windowSystemFallback.video.stopped, false);
+
+  const tabSystem = fakeShare('browser', 1);
+  const tabSystemResult = commitPreparedShare({
+    stream: tabSystem,
+    mode: 'system',
+    assignLocal: () => {},
+    startSharing: () => {},
+  });
+  equal(tabSystemResult.kept, 0);
+  equal(tabSystemResult.decision.policy, 'system-requires-monitor');
+  equal(tabSystem.audio[0].stopped, true);
+  equal(tabSystem.video.stopped, false);
 
   for (const mode of ['source', 'system'] as const) {
     const unknown = fakeShare(undefined, 1);
@@ -224,14 +273,18 @@ test('fallback de compatibilidade não alarga o escopo do áudio', async () => {
     }
     return fakeShare('browser', 0);
   }, { ideal: true }, 'source');
-  equal(seen.length, 2);
+  equal(seen.length, 3);
   equal(seen[0].systemAudio, 'exclude');
-  equal(seen[0].windowAudio, 'exclude');
-  equal(seen[1].audio, false);
-  equal(seen[1].systemAudio, undefined);
-  equal(seen[1].windowAudio, undefined);
+  equal(seen[0].windowAudio, 'window');
+  equal(seen[1].systemAudio, 'exclude');
+  equal(seen[1].windowAudio, 'exclude');
+  equal(seen[2].audio, false);
+  equal(seen[2].systemAudio, undefined);
+  equal(seen[2].windowAudio, undefined);
   equal(captured.audioScopeFallback, true);
+  equal(captured.windowAudioFallback, false);
   ok(seen.every((options) => options.windowAudio !== 'system'));
+  ok(seen.every((options) => options.audio !== true || 'windowAudio' in options));
 
   const order: string[] = [];
   commitPreparedShare({
@@ -259,6 +312,86 @@ test('fallback de compatibilidade não alarga o escopo do áudio', async () => {
   equal(calls, 1);
 });
 
+test('navegador sem windowAudio "window" recua para "exclude" e mantém o vídeo', async () => {
+  for (const name of ['TypeError', 'NotSupportedError', 'OverconstrainedError']) {
+    const seen: Record<string, unknown>[] = [];
+    const captured = await requestDisplayMedia(async (options) => {
+      seen.push(options);
+      if (options.windowAudio === 'window') {
+        const error = new Error('unsupported');
+        error.name = name;
+        throw error;
+      }
+      return fakeShare('window', 0);
+    }, {}, 'source');
+    equal(seen.length, 2);
+    equal(seen[1].windowAudio, 'exclude');
+    equal(seen[1].systemAudio, 'exclude');
+    equal(seen[1].audio, true);
+    equal(captured.windowAudioFallback, true);
+    equal(captured.audioScopeFallback, false);
+    equal(captured.stream.getVideoTracks().length, 1);
+  }
+
+  const systemSeen: Record<string, unknown>[] = [];
+  const system = await requestDisplayMedia(async (options) => {
+    systemSeen.push(options);
+    if (options.windowAudio === 'system') {
+      const error = new Error('unsupported');
+      error.name = 'TypeError';
+      throw error;
+    }
+    return fakeShare('window', 0);
+  }, {}, 'system');
+  equal(systemSeen[1].windowAudio, 'exclude');
+  equal(systemSeen[1].systemAudio, 'include');
+  equal(system.windowAudioFallback, true);
+});
+
+test('troca de fonte: recuo para "exclude" acontece, só o degrau de vídeo volta como erro', async () => {
+  const seen: Record<string, unknown>[] = [];
+  const captured = await requestDisplayMedia(async (options) => {
+    seen.push(options);
+    if (options.windowAudio === 'window') {
+      const error = new Error('unsupported');
+      error.name = 'TypeError';
+      throw error;
+    }
+    return fakeShare('window', 0);
+  }, {}, 'source', { fallbackToVideoOnly: false });
+  equal(seen.length, 2);
+  equal(captured.windowAudioFallback, true);
+
+  let calls = 0;
+  let name = '';
+  try {
+    await requestDisplayMedia(async () => {
+      calls += 1;
+      const error = new Error('unsupported');
+      error.name = 'NotSupportedError';
+      throw error;
+    }, {}, 'source', { fallbackToVideoOnly: false });
+  } catch (err) {
+    name = err instanceof Error ? err.name : '';
+  }
+  equal(name, 'NotSupportedError');
+  equal(calls, 2);
+});
+
+test('política de janela: source e system mantêm a track; fallback e tela inteira em source descartam', () => {
+  equal(decideAudioScope('source', 'window').keepAudio, true);
+  equal(decideAudioScope('source', 'window').policy, 'window-audio');
+  equal(decideAudioScope('system', 'window').keepAudio, true);
+  equal(decideAudioScope('system', 'window').policy, 'system-window');
+  equal(decideAudioScope('source', 'window', { windowAudioFallback: true }).keepAudio, false);
+  equal(decideAudioScope('system', 'window', { windowAudioFallback: true }).keepAudio, false);
+  equal(decideAudioScope('source', 'monitor').keepAudio, false);
+  equal(decideAudioScope('source', 'browser', { windowAudioFallback: true }).keepAudio, true);
+  equal(policyLabel('window-audio'), 'Áudio da janela disponível.');
+  equal(policyLabel('system-window'), 'Áudio do Windows transmitido junto com a janela.');
+  equal(policyLabel('window-unsupported'), 'O navegador não isola o áudio desta janela.');
+});
+
 test('preferência antiga de áudio não migra para o modo global', () => {
   equal(migrateAudioMode({ shareAudio: false }), 'off');
   equal(migrateAudioMode({ shareAudio: true }), 'source');
@@ -268,6 +401,11 @@ test('preferência antiga de áudio não migra para o modo global', () => {
   equal(audioModeFromConfig({ audio: true }), 'source');
   equal(audioModeFromConfig({ audio: false }), 'off');
   equal(audioModeFromConfig({ audio: true, audioMode: 'system' }), 'system');
+});
+
+test('preferência salva do antigo modo device volta para o padrão', () => {
+  equal(migrateAudioMode({ audioMode: 'device', shareAudio: true }), 'source');
+  equal(migrateAudioMode({ audioMode: 'device', shareAudio: false }), 'off');
 });
 
 test('compartilhamento sem áudio e captura só de vídeo', () => {
@@ -285,11 +423,11 @@ test('compartilhamento sem áudio e captura só de vídeo', () => {
     requested: true,
     capturedTracks: 0,
     displaySurface: 'window',
-    policy: 'window-no-global',
+    policy: 'window-unsupported',
     returnedTracks: 1,
     authorizedTracks: 0,
-    discardReason: 'Áudio global desabilitado para janelas.',
-  })).reason, 'Áudio global desabilitado para janelas.');
+    discardReason: 'O navegador não isola o áudio desta janela. O vídeo segue sem áudio.',
+  })).reason, 'O navegador não isola o áudio desta janela. O vídeo segue sem áudio.');
   ok(captureUnavailableMessage('window').includes('janela'));
   ok(captureUnavailableMessage('monitor').includes('tela inteira'));
 });

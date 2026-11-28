@@ -1,10 +1,13 @@
 import { useEffect, useRef } from 'react';
 
 interface CrtEmptyStateProps {
-  onOpenSidebar: () => void;
+  onShare: () => void;
+  /** Sem suporte a captura, ou grade de transmissões cheia. */
+  shareDisabled?: boolean;
+  shareTitle?: string;
 }
 
-export default function CrtEmptyState({ onOpenSidebar }: CrtEmptyStateProps) {
+export default function CrtEmptyState({ onShare, shareDisabled = false, shareTitle }: CrtEmptyStateProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   // ── Green-tinted CRT Static Noise ──
@@ -158,20 +161,19 @@ export default function CrtEmptyState({ onOpenSidebar }: CrtEmptyStateProps) {
         {/* ── Text ── */}
         <div className="flex flex-col gap-1.5 items-center mt-1">
           <h3 className="font-headline-md text-[17px] sm:text-[19px] text-on-surface font-semibold tracking-tight">
-            Voce nao esta assistindo nenhuma transmissao
+            Nenhuma transmissao ativa no momento
           </h3>
-          <p className="font-body-md text-[13px] text-on-surface-variant max-w-sm">
-            Abra o menu lateral e confira quem esta transmitindo
-          </p>
         </div>
 
-        {/* ── Open Sidebar Button ── */}
         <button
-          onClick={onOpenSidebar}
-          className="px-5 py-2.5 rounded-xl bg-primary-container hover:bg-secondary-container text-on-primary-container font-label-lg text-label-lg font-semibold shadow-lg shadow-primary-container/20 hover:shadow-primary-container/30 transition-all flex items-center gap-2 cursor-pointer active:scale-95"
+          type="button"
+          onClick={onShare}
+          disabled={shareDisabled}
+          title={shareTitle}
+          className="px-5 py-2.5 rounded-xl bg-primary-container hover:bg-secondary-container text-on-primary-container font-label-lg text-label-lg font-semibold shadow-lg shadow-primary-container/20 hover:shadow-primary-container/30 transition-all flex items-center gap-2 cursor-pointer active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100"
         >
-          <span className="material-symbols-outlined text-[19px]">dock_to_right</span>
-          <span>Abrir menu lateral</span>
+          <span className="material-symbols-outlined text-[19px]">screen_share</span>
+          <span>Compartilhar Tela</span>
         </button>
       </div>
     </div>

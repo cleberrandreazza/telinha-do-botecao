@@ -3,12 +3,9 @@ import { test } from 'node:test';
 import {
   clearRoomSession,
   getClientId,
-  loadLocalPreviewPosition,
   loadRoomSession,
-  saveLocalPreviewPosition,
   saveRoomSession,
   CLIENT_ID_KEY,
-  LOCAL_PREVIEW_POSITION_KEY,
   ROOM_SESSION_KEY,
 } from './session.ts';
 import type { RoomSession, StorageLike } from './session.ts';
@@ -121,34 +118,4 @@ test('getClientId gera ids diferentes para storages diferentes', () => {
 
 test('getClientId devolve string vazia sem storage', () => {
   assert.equal(getClientId(null), '');
-});
-
-// ── Posição do preview local ──────────────────────────
-
-test('a posição do preview local faz round-trip na sessão', () => {
-  const storage = new MemoryStorage();
-
-  saveLocalPreviewPosition({ x: 120.4, y: 260.6 }, storage);
-  const loaded = loadLocalPreviewPosition(storage);
-
-  assert.deepEqual(loaded, { x: 120, y: 261 });
-  assert.equal(storage.getItem(LOCAL_PREVIEW_POSITION_KEY) !== null, true);
-});
-
-test('posição do preview local devolve null sem dado salvo', () => {
-  const storage = new MemoryStorage();
-  assert.equal(loadLocalPreviewPosition(storage), null);
-});
-
-test('posição do preview local devolve null quando o dado está corrompido', () => {
-  const storage = new MemoryStorage();
-  storage.setItem(LOCAL_PREVIEW_POSITION_KEY, '{nao e json');
-  assert.equal(loadLocalPreviewPosition(storage), null);
-
-  storage.setItem(LOCAL_PREVIEW_POSITION_KEY, JSON.stringify({ x: 'a', y: 2 }));
-  assert.equal(loadLocalPreviewPosition(storage), null);
-});
-
-test('posição do preview local devolve null sem storage', () => {
-  assert.equal(loadLocalPreviewPosition(null), null);
 });

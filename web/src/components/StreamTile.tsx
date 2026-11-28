@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import StreamControls, { ZOOM_LEVELS } from './StreamControls';
+import StatsPanel from './StatsPanel';
 import { useZoomPan } from '../lib/useZoomPan';
+import {
+  PlaybackMonitor,
+  type AudioPlaybackReport,
+  type DiagnosticsSnapshot,
+  type PlaybackSample,
+} from '../lib/diagnostics/index';
 
 interface StreamTileProps {
   /** Stream de vídeo mostrada neste tile. */
@@ -13,12 +21,18 @@ interface StreamTileProps {
   volume: number;
   onToggleMute: () => void;
   onVolumeChange: (volume: number) => void;
-  /** Coloca a stream em tela cheia (modo foco). */
-  onFocus: () => void;
+  /** Entra ou sai do modo teatro (a stream ocupa a grade inteira). */
+  onTheater?: () => void;
+  /** Esta stream está em modo teatro. */
+  theater?: boolean;
   /** Para de assistir este tile (fecha a recepção daquela live). */
   onStopWatching?: () => void;
-  /** Abre o StatsPanel sobre este tile. */
-  onShowStats?: () => void;
+  /** Assina o diagnóstico desta recepção. Sem ele, o botão não aparece. */
+  subscribeStats?: (cb: (snapshot: DiagnosticsSnapshot) => void) => () => void;
+  /** Entrega a reprodução medida neste vídeo. Sem monitor, o painel fica n/d. */
+  pushPlayback?: (sample: PlaybackSample) => boolean;
+  pushAudioPlayback?: (report: AudioPlaybackReport) => boolean;
+  onExportDiagnostics?: () => void;
   /** Fator de zoom local do tile (1 = 100%). */
   zoom?: number;
   onZoomChange?: (zoom: number) => void;
@@ -49,9 +63,13 @@ export default function StreamTile({
   volume,
   onToggleMute,
   onVolumeChange,
-  onFocus,
+  onTheater,
+  theater = false,
   onStopWatching,
-  onShowStats,
+  subscribeStats,
+  pushPlayback,
+  pushAudioPlayback,
+  onExportDiagnostics,
   zoom,
   onZoomChange,
   fill = false,
@@ -61,6 +79,21 @@ export default function StreamTile({
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [internalZoom, setInternalZoom] = useState(1);
+  const [showStats, setShowStats] = useState(false);
+  const [snapshot, setSnapshot] = useState<DiagnosticsSnapshot | null>(null);
+  const [livePlayback, setLivePlayback] = useState<PlaybackSample | null>(null);
+  const [liveAudio, setLiveAudio] = useState<AudioPlaybackReport | null>(null);
+  const showStatsRef = useRef(false);
+  const latestPlayback = useRef<PlaybackSample | null>(null);
+  const subscribeRef = useRef(subscribeStats);
+  const pushPlaybackRef = useRef(pushPlayback);
+  const pushAudioRef = useRef(pushAudioPlayback);
+  const exportRef = useRef(onExportDiagnostics);
+  showStatsRef.current = showStats;
+  subscribeRef.current = subscribeStats;
+  pushPlaybackRef.current = pushPlayback;
+  pushAudioRef.current = pushAudioPlayback;
+  exportRef.current = onExportDiagnostics;
 
   // O zoom pode vir controlado pelo Room (por peerId) ou ficar no tile.
   const currentZoom = zoom ?? internalZoom;
@@ -73,12 +106,25 @@ export default function StreamTile({
   // `<video>` fica congelado (e sem som) até o usuário mandar reproduzir.
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
+  const audioBlockedRef = useRef(false);
+  const playErrorRef = useRef<string | null>(null);
+
+  const playVideo = (video: HTMLVideoElement) => {
+    if (pausedRef.current) return;
+    void video.play().then(() => {
+      audioBlockedRef.current = false;
+      playErrorRef.current = null;
+    }).catch((error: unknown) => {
+      audioBlockedRef.current = true;
+      playErrorRef.current = error instanceof Error && error.message ? error.message : 'reprodução bloqueada';
+    });
+  };
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
     if (video.srcObject !== stream) video.srcObject = stream;
-    const play = () => { if (pausedRef.current) return; void video.play().catch(() => {}); };
+    const play = () => playVideo(video);
     play();
     video.addEventListener('loadedmetadata', play);
     return () => video.removeEventListener('loadedmetadata', play);
@@ -91,7 +137,7 @@ export default function StreamTile({
     if (paused) {
       video.pause();
     } else {
-      void video.play().catch(() => {});
+      void playVideo(video);
     }
   }, [paused, stream]);
 
@@ -102,6 +148,54 @@ export default function StreamTile({
     video.muted = muted;
     video.volume = muted ? 0 : Math.min(1, Math.max(0, volume));
   }, [muted, volume, stream]);
+
+  // Reprodução medida neste vídeo. O que o monitor não aceita fica no painel
+  // aberto; campo ausente continua n/d, sem copiar outra métrica.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const monitor = new PlaybackMonitor(video, (sample) => {
+      latestPlayback.current = sample;
+      const accepted = pushPlaybackRef.current?.(sample) ?? false;
+      if (showStatsRef.current && !accepted) setLivePlayback(sample);
+    });
+    monitor.start();
+    const reportAudio = () => {
+      const current = video.srcObject instanceof MediaStream ? video.srcObject : stream;
+      const report: AudioPlaybackReport = {
+        muted: video.muted,
+        volume: video.volume,
+        paused: video.paused,
+        blocked: audioBlockedRef.current,
+        playError: playErrorRef.current,
+        elementAudioTracks: current.getAudioTracks().length,
+        readyState: video.readyState,
+      };
+      const accepted = pushAudioRef.current?.(report) ?? false;
+      if (showStatsRef.current && !accepted) setLiveAudio(report);
+    };
+    reportAudio();
+    const audioTimer = setInterval(reportAudio, 1000);
+    return () => {
+      monitor.stop();
+      clearInterval(audioTimer);
+    };
+  }, [stream]);
+
+  useEffect(() => {
+    if (!showStats) return;
+    setLivePlayback(latestPlayback.current);
+    const subscribe = subscribeRef.current;
+    if (!subscribe) return;
+    let active = true;
+    const unsubscribe = subscribe((next) => {
+      if (active) setSnapshot(next);
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [showStats]);
 
   const applyZoom = (next: number) => {
     const clamped = Math.min(ZOOM_LEVELS[ZOOM_LEVELS.length - 1], Math.max(1, next));
@@ -139,9 +233,6 @@ export default function StreamTile({
         }`}
       />
 
-      {/* Scanlines da moldura CRT por cima do vídeo */}
-      <div className="absolute inset-0 crt-scanlines opacity-20 pointer-events-none" />
-
       {/* Overlay de pausa: quadro congelado + aviso no centro do tile */}
       {paused && (
         <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px] flex items-center justify-center z-10 pointer-events-none">
@@ -149,7 +240,7 @@ export default function StreamTile({
             <span className="w-14 h-14 rounded-full bg-black/70 flex items-center justify-center">
               <span className="material-symbols-outlined text-[28px] text-on-surface">play_circle</span>
             </span>
-            <span className="text-[11px] font-label-mono font-bold text-on-surface uppercase tracking-wider">
+            <span className="text-[11px] font-label-mono font-bold text-on-surface uppercase tracking-wider leading-none text-center -mr-[0.05em]">
               Transmissão Pausada
             </span>
           </div>
@@ -157,22 +248,26 @@ export default function StreamTile({
       )}
 
       {/* Badge do transmissor (topo-esquerdo) */}
-      <div className="absolute top-2 left-2 px-2 py-1 rounded-lg bg-black/70 backdrop-blur-md border border-white/10 flex items-center gap-1.5 z-10 pointer-events-none">
-        <span className="w-1.5 h-1.5 rounded-full bg-primary motion-safe:animate-pulse" />
-        <span className="text-[9px] font-label-mono font-bold text-primary uppercase tracking-wider">AO VIVO</span>
-        <span className="text-[12px] font-body text-on-surface font-medium truncate max-w-[110px]">{nickname}</span>
+      <div className="absolute top-2 left-2 h-6 px-2 rounded-lg bg-black/70 backdrop-blur-md border border-white/10 flex items-center gap-1.5 z-10 pointer-events-none">
+        <span className="w-1.5 h-1.5 rounded-full bg-primary motion-safe:animate-pulse shrink-0" />
+        <span className="text-[12px] font-body text-on-surface font-medium leading-none truncate max-w-[110px]">{nickname}</span>
       </div>
 
-      {/* Expandir (modo foco) — topo-direito */}
-      <button
-        type="button"
-        onClick={onFocus}
-        title={`Abrir ${nickname} em tela cheia`}
-        aria-label={`Abrir transmissão de ${nickname} em tela cheia`}
-        className="absolute top-2 right-2 w-9 h-9 sm:w-8 sm:h-8 rounded-lg bg-black/70 backdrop-blur-md border border-white/10 flex items-center justify-center text-on-surface hover:text-primary hover:border-primary/40 transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-primary/60 z-10"
-      >
-        <span className="material-symbols-outlined text-[18px]">open_in_full</span>
-      </button>
+      {onTheater && (
+        <button
+          type="button"
+          onClick={onTheater}
+          aria-pressed={theater}
+          aria-label={theater ? 'Voltar à grade' : 'Modo teatro'}
+          className={`absolute top-2 right-2 z-20 w-9 h-9 sm:w-8 sm:h-8 rounded-lg bg-black/70 backdrop-blur-md border flex items-center justify-center transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-primary/60 ${
+            theater
+              ? 'text-primary border-primary/40 hover:border-primary/60'
+              : 'text-on-surface border-white/10 hover:text-primary hover:border-primary/40'
+          }`}
+        >
+          <span className="material-symbols-outlined text-[18px]">{theater ? 'grid_view' : 'theaters'}</span>
+        </button>
+      )}
 
       {/* Controles do rodapé — mesmo menu do player de 1 tela, no hover/foco */}
       <div className="absolute bottom-2 inset-x-2 flex items-center justify-center opacity-0 group-hover:opacity-100 focus-within:opacity-100 pointer-events-none group-hover:pointer-events-auto focus-within:pointer-events-auto transition-opacity z-10">
@@ -187,10 +282,25 @@ export default function StreamTile({
           zoom={currentZoom}
           onZoomChange={applyZoom}
           onToggleFullscreen={() => { void containerRef.current?.requestFullscreen(); }}
-          onShowStats={onShowStats}
+          onShowStats={subscribeStats ? () => setShowStats((open) => !open) : undefined}
+          statsActive={showStats}
           onStopWatching={onStopWatching}
         />
       </div>
+
+      {showStats && createPortal(
+        <div className="fixed top-16 right-4 z-50">
+          <StatsPanel
+            snapshot={snapshot}
+            trackRequestedFps={typeof stream.getVideoTracks()[0]?.getSettings().frameRate === 'number' ? stream.getVideoTracks()[0].getSettings().frameRate : null}
+            livePlayback={snapshot?.sample.playback ?? livePlayback}
+            liveAudio={snapshot?.sample.audio ? null : liveAudio}
+            onClose={() => setShowStats(false)}
+            onExport={() => exportRef.current?.()}
+          />
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }

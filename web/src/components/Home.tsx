@@ -15,7 +15,7 @@ type FieldError = { field: 'nickname' | 'code'; message: string } | null;
 // A cor da borda fica fora do INPUT: no estado de erro a borda precisa
 // ficar vermelha (Tela A) e, com `border-white/10` no mesmo lugar, quem
 // vence dependeria da ordem de geração do Tailwind.
-const INPUT = 'w-full bg-surface-input/90 text-white placeholder:text-slate-500 border rounded-xl px-4 py-3 text-sm transition-all outline-none';
+const INPUT = 'w-full h-12 bg-surface-input/90 text-white placeholder:text-slate-500 border rounded-xl px-4 text-sm leading-5 transition-all outline-none';
 const LABEL = 'block text-xs font-semibold uppercase tracking-wider text-slate-300';
 
 export default function Home({ onCreateRoom, onJoinRoom, error, connecting }: HomeProps) {
@@ -252,7 +252,7 @@ export default function Home({ onCreateRoom, onJoinRoom, error, connecting }: Ho
                     required
                     aria-describedby={fieldError?.field === 'code' ? 'join-code-error' : undefined}
                     aria-invalid={fieldError?.field === 'code' ? true : undefined}
-                    className={`${INPUT} ${fieldError?.field === 'code' ? 'border-red-400' : 'border-white/10'} text-amber-400 placeholder:text-slate-600 text-center text-base sm:text-lg font-mono font-bold tracking-widest uppercase ${fieldError?.field === 'code' ? 'focus:border-red-400 focus:ring-red-500/20' : 'focus:border-amber-400 focus:ring-amber-400/20'}`}
+                    className={`${INPUT} ${fieldError?.field === 'code' ? 'border-red-400' : 'border-white/10'} text-amber-400 placeholder:text-slate-600 text-center font-mono font-bold tracking-widest uppercase ${fieldError?.field === 'code' ? 'focus:border-red-400 focus:ring-red-500/20' : 'focus:border-amber-400 focus:ring-amber-400/20'}`}
                   />
                   {fieldError?.field === 'code' && (
                     <p id="join-code-error" role="alert" className="text-xs text-red-300 pt-1">

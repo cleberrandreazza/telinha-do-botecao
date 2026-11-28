@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  areShareSlotsFull,
+  gridModeForSharers,
   DEFAULT_GRID_MODE,
   GRID_MODES,
   GRID_MODE_KEY,
@@ -11,6 +13,7 @@ import {
   limitNoticeForMode,
   loadGridMode,
   maxStreamsForMode,
+  remoteSlotsForMode,
   saveGridMode,
 } from './grid.ts';
 import type { StorageLike } from './session.ts';
@@ -25,6 +28,26 @@ function fakeStorage(initial: Record<string, string> = {}): StorageLike & { data
     removeItem: (key) => { delete data[key]; },
   };
 }
+
+test('a grade acompanha o numero de transmissoes: 1, 2 e depois 4', () => {
+  assert.equal(gridModeForSharers(1), 1);
+  assert.equal(gridModeForSharers(2), 2);
+  assert.equal(gridModeForSharers(3), 4);
+  assert.equal(gridModeForSharers(4), 4);
+});
+
+test('quem transmite reserva a primeira celula para o proprio preview', () => {
+  assert.equal(remoteSlotsForMode(1, false), 1);
+  assert.equal(remoteSlotsForMode(1, true), 0);
+  assert.equal(remoteSlotsForMode(2, true), 1);
+  assert.equal(remoteSlotsForMode(4, true), 3);
+  assert.equal(remoteSlotsForMode(4, false), 4);
+});
+
+test('com 4 transmissoes ninguem mais pode compartilhar', () => {
+  assert.equal(areShareSlotsFull(3), false);
+  assert.equal(areShareSlotsFull(4), true);
+});
 
 test('os modos da grade sao 1, 2 e 4', () => {
   assert.deepEqual([...GRID_MODES], [1, 2, 4]);

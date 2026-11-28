@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import type { AudioMode } from '../lib/diagnostics/audio';
 import { loadSettings, type BotecaoSettings } from './SettingsModal';
-
 export interface StreamConfig {
   resolution: '2160' | '1080' | '720' | '480';
   frameRate: 30 | 15 | 5;
@@ -14,8 +13,8 @@ export type StreamFrameRate = 30 | 15 | 5;
 
 const AUDIO_MODES: { value: AudioMode; label: string; desc: string }[] = [
   { value: 'off', label: 'Sem áudio', desc: 'Só vídeo.' },
-  { value: 'source', label: 'Áudio da aba', desc: 'Padrão. Som da guia. Janela e tela inteira saem sem áudio global.' },
-  { value: 'system', label: 'Áudio de todo o Windows', desc: 'Separado do padrão. Só quando a superfície for a tela inteira.' },
+  { value: 'source', label: 'Áudio da aba ou janela', desc: 'Padrão. Som só da guia ou do programa compartilhado, quando o navegador isola. Tela inteira sai sem áudio.' },
+  { value: 'system', label: 'Áudio de todo o Windows', desc: 'Tela inteira ou janela. Leva todo o som do Windows.' },
 ];
 
 /** Lista de resoluções — reutilizada pelo ResolutionControl (troca durante a live). */
@@ -49,7 +48,6 @@ export default function StreamSettings({ onStart, onCancel }: StreamSettingsProp
   const [resolution, setResolution] = useState<StreamConfig['resolution']>(settingsResToStreamRes(saved.resolution));
   const [frameRate, setFrameRate] = useState<StreamConfig['frameRate']>(saved.fps);
   const [audioMode, setAudioMode] = useState<AudioMode>(saved.audioMode);
-
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className="bg-surface-container border border-outline-variant/30 rounded-2xl w-full max-w-md max-h-[90vh] overflow-y-auto mx-4 p-5 shadow-2xl">
@@ -131,7 +129,7 @@ export default function StreamSettings({ onStart, onCancel }: StreamSettingsProp
             );
           })}
           <p className="text-[11px] leading-snug text-outline">
-            Aba: marque “Compartilhar áudio da guia”. Janela: o vídeo sai sem áudio. Tela inteira só leva o som do Windows no modo separado. Não usa microfone.
+            Aba: marque “Compartilhar áudio da guia”. Janela: sai o som só do programa se o navegador isolar; senão o vídeo sai sem áudio. O som de todo o Windows só vai no modo separado.
           </p>
         </div>
 

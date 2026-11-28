@@ -57,6 +57,22 @@ A limitação é de **visualização**, não de quem compartilha:
 - dá para **abrir essa transmissão sozinha**, em tela cheia, pelo modo foco;
 - o aviso não some ninguém da sala.
 
+Com 4 outras pessoas transmitindo, o botão **Compartilhar Tela** fica bloqueado e um aviso acima dele diz que a grade está ocupada, até uma vaga abrir. O bloqueio é só no cliente: o servidor não recusa um quinto `start-sharing`.
+
+O modo da grade acompanha quantas outras pessoas estão transmitindo (`gridModeForSharers`): 1 transmissão abre no modo 1, 2 no modo 2, e 3 ou 4 no modo 4. A primeira live que chega toca; as que chegam com outra já na tela vêm pausadas. Todas começam mudas.
+
+Quem transmite vê o próprio preview (`LocalPreview`) na primeira célula da grade, e ele conta como uma vaga (`remoteSlotsForMode`). Sozinho, ele ocupa o palco no modo 1. Com 1 outra transmissão, a grade vai para o modo 2. Com 2 ou 3, vai para o modo 4. O preview não é arrastável. Ele usa o mesmo menu dos outros players (`StreamControls`), sem o botão de som, com estas opções:
+
+- pausar o preview — ele entra pausado, com o texto "preview pausado" e o ícone da TV;
+- zoom (ícone de lupa e um slider, no mesmo estilo do volume) e tela cheia;
+- **Diagnóstico**: o mesmo painel de quem transmite;
+- **Configurações**: abre a fonte, a resolução, a taxa de quadros e o aviso da captura. Um ponto âmbar no ícone avisa que existe um aviso da captura;
+- **Parar transmissão**.
+
+O menu fica no rodapé do preview, na mesma ordem dos outros players: o play fica entre o som e o zoom, dentro da ilha compacta. Não há faixa de "Sua transmissão" embaixo do vídeo.
+
+Com uma live em foco (tela cheia), o preview some até voltar à grade.
+
 Na grade (2 a 4 streams):
 
 - **clicar num tile** (botão `open_in_full` no canto, ou `zoom_out_map` no rodapé) abre aquela transmissão em tela cheia; **"Voltar à grade"** (`arrow_back`) traz a grade de volta;

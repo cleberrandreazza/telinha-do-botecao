@@ -1,6 +1,6 @@
 import { SignalingClient } from './signaling';
 import { configureAudioSenderParameters, configureOpusReceiverSdp, configureOpusSenderSdp } from './opus';
-import { assertScreenShareSupported, contentHintForSurface, scaleFactorForCapture } from './screenShare';
+import { assertScreenShareSupported, captureVideoConstraints, contentHintForSurface } from './screenShare';
 import { asLinkRole, linkKey, oppositeRole, parseLinkKey, type LinkRole } from './links';
 import { describeSwitchError, errorNameOf, replaceTrackOnSenders, type DisplaySource, type TrackSenderLike } from './sourceSwitch';
 import type { ServerMessage, StreamInfo } from './types';
@@ -73,7 +73,12 @@ export const RESOLUTION_MAP: Record<string, { width: number; height: number }> =
   '480': { width: 854, height: 480 },
 };
 
-/** Bitrate limits per resolution (bits/s). 30 fps recebe o teto inteiro em cada frame. */
+/**
+ * Teto de bitrate da resolução ESCOLHIDA (bits/s), não do tamanho medido da
+ * captura. Uma janela de 1078×730 com 1080p pedido continua com 8 Mbps: o
+ * encoder pode gastar esse teto nos pixels que a janela tem. O ABR só mexe
+ * nesse teto por FPS ou por limitação de banda, nunca pelo tamanho do frame.
+ */
 const BITRATE_MAP: Record<string, number> = {
   '2160': 16_000_000,
   '1080': 8_000_000,
@@ -217,11 +222,7 @@ export class WebRTCManager {
 
     // Áudio fica boolean. echoCancellation/noiseSuppression fazem o Chrome descartar a faixa.
     // Os hints de escopo não obrigam o navegador a devolver uma track.
-    const videoConstraints = {
-      width: { ideal: res.width },
-      height: { ideal: res.height },
-      frameRate: { ideal: fps, max: fps },
-    };
+    const videoConstraints = captureVideoConstraints(res, fps);
     const captured = await requestDisplayMedia(
       (options) => navigator.mediaDevices.getDisplayMedia(options as DisplayMediaStreamOptions),
       videoConstraints,
@@ -233,6 +234,7 @@ export class WebRTCManager {
       stream: displayScope(stream),
       mode,
       scopeUnsupported: captured.audioScopeFallback,
+      windowAudioFallback: captured.windowAudioFallback,
       assignLocal: (_ready, prepared) => {
         this.localStream = stream;
         this.notePreparedAudio(stream, mode, prepared);
@@ -323,11 +325,7 @@ export class WebRTCManager {
     const mode = audioModeFromConfig(this.currentConfig);
     const res = RESOLUTION_MAP[this.currentConfig.resolution];
     const fps = this.currentConfig.frameRate;
-    const base: Record<string, unknown> = {
-      width: { ideal: res.width },
-      height: { ideal: res.height },
-      frameRate: { ideal: fps, max: fps },
-    };
+    const base: Record<string, unknown> = captureVideoConstraints(res, fps);
 
     const capture = (video: Record<string, unknown>, fallbackToVideoOnly?: boolean) =>
       requestDisplayMedia(
@@ -337,7 +335,7 @@ export class WebRTCManager {
         { fallbackToVideoOnly },
       );
 
-    let captured: { stream: MediaStream; audioScopeFallback: boolean };
+    let captured: { stream: MediaStream; audioScopeFallback: boolean; windowAudioFallback: boolean };
     try {
       captured = await capture({ ...base, displaySurface: source }, false);
     } catch (error) {
@@ -367,7 +365,7 @@ export class WebRTCManager {
           policy: 'scope-unsupported',
           message: 'Navegador não oferece opções suficientes para garantir o escopo solicitado. A transmissão segue só com vídeo.',
         }
-      : decideAudioScope(mode, surface);
+      : decideAudioScope(mode, surface, { windowAudioFallback: captured.windowAudioFallback });
     stripDisallowedAudio(scope, decision.keepAudio);
 
     const videoTrack = stream.getVideoTracks()[0];
@@ -502,7 +500,11 @@ export class WebRTCManager {
       const capturedFps = track.getSettings().frameRate ?? null;
       if (capturedFps === null) {
         try {
-          await track.applyConstraints({ frameRate: { ideal: frameRate, max: frameRate } });
+          // applyConstraints substitui o conjunto inteiro: sem o `max` de
+          // tamanho, a captura voltaria ao tamanho nativo.
+          await track.applyConstraints(
+            captureVideoConstraints(RESOLUTION_MAP[this.currentConfig.resolution], frameRate),
+          );
         } catch (error) {
           console.warn('[WebRTC] Captura recusou o novo frame rate (best effort):', error);
         }
@@ -687,7 +689,8 @@ export class WebRTCManager {
       const maxBitrate = BITRATE_MAP[this.currentConfig.resolution] || 8_000_000;
       params.encodings[0].maxBitrate = maxBitrate;
       params.encodings[0].maxFramerate = this.currentConfig.frameRate;
-      params.encodings[0].scaleResolutionDownBy = this.scaleResolutionDownBy(this.currentConfig.resolution);
+      // A redução para o alvo já acontece na captura (constraints `max`).
+      params.encodings[0].scaleResolutionDownBy = 1;
 
       // 30 fps é a prioridade. Se a banda apertar, o Chrome reduz resolução
       // em vez de derrubar o framerate. O ABR continua podendo baixar o teto.
@@ -748,19 +751,6 @@ export class WebRTCManager {
     });
     this.abrControllers.set(key, abr);
     monitor?.setSampleListener((sample) => abr.onSample(sample));
-  }
-
-  /**
-   * Fator de redução aplicado pelo encoder para chegar na resolução pedida.
-   * A largura capturada vem de getSettings(); se a captura for menor que o
-   * alvo, o fator é 1 (não há o que reduzir). Sem largura medida não há como
-   * saber o tamanho da fonte: assumir um valor faria o encoder reduzir a
-   * imagem duas vezes, então fica 1.
-   */
-  private scaleResolutionDownBy(resolution: string): number {
-    const target = RESOLUTION_MAP[resolution] ?? null;
-    const capturedWidth = this.localStream?.getVideoTracks()[0]?.getSettings().width ?? null;
-    return scaleFactorForCapture(capturedWidth, target);
   }
 
   /**
@@ -1224,9 +1214,12 @@ export class WebRTCManager {
    * Troca a resolução da live SEM derrubar o compartilhamento.
    *
    * Cada conexão de papel `sender` recebe seu próprio `setParameters`
-   * (scaleResolutionDownBy/maxBitrate/maxFramerate/degradationPreference) com
-   * try/catch individual: uma falha não derruba as demais nem a transmissão.
-   * O ABR é recriado com o novo teto, no mesmo padrão de configureVideoSender.
+   * (maxBitrate/maxFramerate/degradationPreference) com try/catch individual:
+   * uma falha não derruba as demais nem a transmissão. O ABR é recriado com o
+   * novo teto, no mesmo padrão de configureVideoSender.
+   *
+   * O tamanho muda na captura: cada clone de vídeo tem constraints próprias,
+   * então todas as tracks dos senders e a local recebem o novo `max`.
    *
    * Devolve false só quando nenhuma conexão aceitou a mudança — nesse caso o
    * valor anterior continua valendo e a UI avisa.
@@ -1237,8 +1230,8 @@ export class WebRTCManager {
 
     const previous = this.currentConfig.resolution;
     const maxBitrate = BITRATE_MAP[resolution] || BITRATE_MAP[previous];
-    const scale = this.scaleResolutionDownBy(resolution);
     const fps = this.currentConfig.frameRate;
+    const constraints = captureVideoConstraints(target, fps);
 
     this.currentConfig = { ...this.currentConfig, resolution };
 
@@ -1255,7 +1248,7 @@ export class WebRTCManager {
         if (!params.encodings || params.encodings.length === 0) {
           params.encodings = [{}];
         }
-        params.encodings[0].scaleResolutionDownBy = scale;
+        params.encodings[0].scaleResolutionDownBy = 1;
         params.encodings[0].maxBitrate = maxBitrate;
         params.encodings[0].maxFramerate = fps;
         // @ts-ignore - degradationPreference exists but TypeScript doesn't know about it
@@ -1264,9 +1257,15 @@ export class WebRTCManager {
         applied += 1;
         // O ABR nasce com um teto fixo: recria com o teto da nova resolução.
         this.restartAbr(pc, key, maxBitrate);
-        console.info(`[WebRTC] Resolução ${resolution}p aplicada em ${key} (scale ${scale}, teto ${(maxBitrate / 1_000_000).toFixed(1)} Mbps)`);
+        console.info(`[WebRTC] Resolução ${resolution}p aplicada em ${key} (teto ${(maxBitrate / 1_000_000).toFixed(1)} Mbps)`);
       } catch (error) {
         console.warn(`[WebRTC] Falha ao aplicar ${resolution}p em ${key}:`, error);
+        continue;
+      }
+      try {
+        await videoSender.track?.applyConstraints(constraints);
+      } catch (error) {
+        console.warn(`[WebRTC] Captura de ${key} recusou ${resolution}p (best effort):`, error);
       }
     }
 
@@ -1276,24 +1275,13 @@ export class WebRTCManager {
       return false;
     }
 
-    // A redução para o alvo é feita pelo encoder (scaleResolutionDownBy).
-    // Aplicar o mesmo limite também na captura reduziria a imagem duas
-    // vezes: o encoder voltaria a reduzir o que a captura já reduziu.
-    // Só tentamos pela captura quando não sabemos o tamanho dela — aí não
-    // existe encoder capaz de medir o quanto falta.
+    // A track local é a origem dos clones de quem entrar depois.
     const track = this.localStream?.getVideoTracks()[0];
     if (track) {
-      const capturedWidth = track.getSettings().width ?? null;
-      if (capturedWidth === null) {
-        try {
-          await track.applyConstraints({
-            width: { ideal: target.width },
-            height: { ideal: target.height },
-            frameRate: { ideal: fps, max: fps },
-          });
-        } catch (error) {
-          console.warn('[WebRTC] Captura recusou a nova resolução (best effort):', error);
-        }
+      try {
+        await track.applyConstraints(constraints);
+      } catch (error) {
+        console.warn('[WebRTC] Captura recusou a nova resolução (best effort):', error);
       }
     }
 

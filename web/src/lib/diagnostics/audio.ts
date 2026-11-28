@@ -15,6 +15,10 @@ export type { AudioSdpInfo } from './types.ts';
 
 export type AudioMode = 'off' | 'source' | 'system';
 
+function isAudioMode(value: unknown): value is AudioMode {
+  return value === 'off' || value === 'source' || value === 'system';
+}
+
 export interface AudioCaptureContext {
   requested: boolean;
   audioMode: AudioMode | null;
@@ -319,16 +323,14 @@ export function negotiationFromSdp(localSdp: string | null | undefined, remoteSd
 
 /** Preferência antiga `shareAudio: true` vira `source`. Nunca vira `system`. */
 export function migrateAudioMode(stored: { audioMode?: unknown; shareAudio?: unknown } | null | undefined): AudioMode {
-  if (stored?.audioMode === 'off' || stored?.audioMode === 'source' || stored?.audioMode === 'system') {
-    return stored.audioMode;
-  }
+  if (isAudioMode(stored?.audioMode)) return stored.audioMode;
   if (stored?.shareAudio === false) return 'off';
   if (stored?.shareAudio === true) return 'source';
   return 'source';
 }
 
 export function audioModeFromConfig(config: { audio?: boolean; audioMode?: AudioMode | null }): AudioMode {
-  if (config.audioMode === 'off' || config.audioMode === 'source' || config.audioMode === 'system') return config.audioMode;
+  if (isAudioMode(config.audioMode)) return config.audioMode;
   if (config.audio === false) return 'off';
   return 'source';
 }
@@ -339,17 +341,25 @@ export function audioModeFromConfig(config: { audio?: boolean; audioMode?: Audio
  * `suppressLocalAudioPlayback` pertence a `audio` na especificação de screen capture.
  * Não pedimos essa restrição: o valor antigo no topo das opções era inválido, e
  * colocá-lo dentro de `audio` nesta etapa mudaria o que a pessoa ouve localmente.
- * `exclude` limita o escopo. `windowAudio: 'system'` não é usado.
+ * `systemAudio` e `windowAudio` limitam o escopo:
+ * - `source` pede `windowAudio: 'window'`, o som só do programa compartilhado.
+ * - `system` pede `windowAudio: 'system'`: a pessoa escolheu o áudio do
+ *   Windows, então ele vale também quando a superfície é uma janela.
+ * `windowAudio` nunca é omitido quando há áudio: sem o campo vale o padrão do
+ * navegador, que pode incluir o áudio global.
  */
+export type WindowAudio = 'window' | 'system' | 'exclude';
+
 export function buildDisplayMediaOptions(
   video: Record<string, unknown>,
   mode: AudioMode,
+  overrides: { windowAudio?: WindowAudio } = {},
 ): Record<string, unknown> {
   if (mode === 'off') return { video, audio: false };
   if (mode === 'system') {
-    return { video, audio: true, systemAudio: 'include', windowAudio: 'exclude' };
+    return { video, audio: true, systemAudio: 'include', windowAudio: overrides.windowAudio ?? 'system' };
   }
-  return { video, audio: true, systemAudio: 'exclude', windowAudio: 'exclude' };
+  return { video, audio: true, systemAudio: 'exclude', windowAudio: overrides.windowAudio ?? 'window' };
 }
 
 function errorName(err: unknown): string {
@@ -364,7 +374,7 @@ export async function requestDisplayMedia<T>(
   video: Record<string, unknown>,
   mode: AudioMode,
   options: { fallbackToVideoOnly?: boolean } = {},
-): Promise<{ stream: T; audioScopeFallback: boolean }> {
+): Promise<{ stream: T; audioScopeFallback: boolean; windowAudioFallback: boolean }> {
   const full = buildDisplayMediaOptions(video, mode);
   const capture = async (options: Record<string, unknown>): Promise<T> => {
     const stream = await getDisplayMedia(options);
@@ -381,18 +391,32 @@ export async function requestDisplayMedia<T>(
     }
     return stream;
   };
-  try {
-    return { stream: await capture(full), audioScopeFallback: false };
-  } catch (err) {
+  const retryable = (err: unknown) => {
     const name = errorName(err);
-    if (mode === 'off' || CANCELLED.has(name) || !UNSUPPORTED.has(name)) throw err;
+    return !CANCELLED.has(name) && UNSUPPORTED.has(name);
+  };
+  if (mode === 'off') {
+    return { stream: await capture(full), audioScopeFallback: false, windowAudioFallback: false };
+  }
+  try {
+    return { stream: await capture(full), audioScopeFallback: false, windowAudioFallback: false };
+  } catch (err) {
+    if (!retryable(err)) throw err;
+  }
+  // O navegador recusou `windowAudio: 'window' | 'system'`: repete com
+  // `exclude`, o escopo mais estreito. Nunca sem o campo.
+  try {
+    const stream = await capture(buildDisplayMediaOptions(video, mode, { windowAudio: 'exclude' }));
+    return { stream, audioScopeFallback: false, windowAudioFallback: true };
+  } catch (err) {
+    if (!retryable(err)) throw err;
     // A troca de fonte precisa do erro na mão: quem chamou decide se repete
     // sem a dica de superfície em vez de cair para vídeo só.
     if (options.fallbackToVideoOnly === false) throw err;
-    // Uma segunda tentativa, só vídeo. Não se tira `exclude` e se segue com áudio.
-    const stream = await capture(buildDisplayMediaOptions(video, 'off'));
-    return { stream, audioScopeFallback: true };
   }
+  // Última tentativa, só vídeo. Não se tira `exclude` e se segue com áudio.
+  const stream = await capture(buildDisplayMediaOptions(video, 'off'));
+  return { stream, audioScopeFallback: true, windowAudioFallback: false };
 }
 
 export interface AudioScopeDecision {
@@ -401,7 +425,16 @@ export interface AudioScopeDecision {
   message: string | null;
 }
 
-export function decideAudioScope(mode: AudioMode, surface: string): AudioScopeDecision {
+/**
+ * `windowAudioFallback`: o navegador recusou `windowAudio: 'window' | 'system'`
+ * e a captura saiu com `exclude`. Uma janela nesse caso não tem áudio
+ * garantido no escopo pedido, então qualquer track é descartada.
+ */
+export function decideAudioScope(
+  mode: AudioMode,
+  surface: string,
+  options: { windowAudioFallback?: boolean } = {},
+): AudioScopeDecision {
   if (mode === 'off') {
     return { keepAudio: false, policy: 'off', message: disabledAudioMessage() };
   }
@@ -412,15 +445,16 @@ export function decideAudioScope(mode: AudioMode, surface: string): AudioScopeDe
       message: 'Áudio não capturado pela superfície selecionada. A superfície não foi identificada, então nenhum áudio é transmitido.',
     };
   }
+  if (surface === 'window' && options.windowAudioFallback) {
+    return {
+      keepAudio: false,
+      policy: 'window-unsupported',
+      message: 'O navegador não isola o áudio desta janela. O vídeo segue sem áudio.',
+    };
+  }
   if (mode === 'source') {
     if (surface === 'browser') return { keepAudio: true, policy: 'tab-audio', message: null };
-    if (surface === 'window') {
-      return {
-        keepAudio: false,
-        policy: 'window-no-global',
-        message: 'Áudio global desabilitado para janelas. O vídeo segue, sem áudio. O navegador não entrega o som exclusivo dessa janela.',
-      };
-    }
+    if (surface === 'window') return { keepAudio: true, policy: 'window-audio', message: null };
     return {
       keepAudio: false,
       policy: 'source-blocks-monitor',
@@ -428,10 +462,17 @@ export function decideAudioScope(mode: AudioMode, surface: string): AudioScopeDe
     };
   }
   if (surface === 'monitor') return { keepAudio: true, policy: 'system-monitor', message: null };
+  if (surface === 'window') {
+    return {
+      keepAudio: true,
+      policy: 'system-window',
+      message: 'Áudio do Windows transmitido junto com a janela. Todo o som do computador vai para a sala.',
+    };
+  }
   return {
     keepAudio: false,
     policy: 'system-requires-monitor',
-    message: 'Áudio do Windows exige compartilhamento da tela inteira. O vídeo foi mantido e o áudio foi descartado.',
+    message: 'Áudio do Windows exige compartilhar a tela inteira ou uma janela. O vídeo da aba foi mantido e o áudio foi descartado.',
   };
 }
 
@@ -439,9 +480,11 @@ export function policyLabel(policy: string | null): string {
   switch (policy) {
     case 'tab-audio': return 'Áudio da aba disponível.';
     case 'system-monitor': return 'Áudio do Windows na tela inteira.';
-    case 'window-no-global': return 'Áudio global desabilitado para janelas.';
+    case 'system-window': return 'Áudio do Windows transmitido junto com a janela.';
+    case 'window-audio': return 'Áudio da janela disponível.';
+    case 'window-unsupported': return 'O navegador não isola o áudio desta janela.';
     case 'source-blocks-monitor': return 'Áudio não capturado pela superfície selecionada.';
-    case 'system-requires-monitor': return 'Áudio do Windows exige compartilhamento da tela inteira.';
+    case 'system-requires-monitor': return 'Áudio do Windows exige tela inteira ou janela.';
     case 'unknown-surface': return 'Áudio não capturado pela superfície selecionada.';
     case 'scope-unsupported': return 'Navegador não oferece opções suficientes para garantir o escopo solicitado.';
     case 'off': return 'Áudio desligado.';
@@ -482,6 +525,8 @@ export function commitPreparedShare(args: {
   stream: ScopeStream;
   mode: AudioMode;
   scopeUnsupported?: boolean;
+  /** A captura recuou de `windowAudio: 'window' | 'system'` para `exclude`. */
+  windowAudioFallback?: boolean;
   assignLocal: (stream: ScopeStream, prepared: PreparedShare) => void;
   startSharing: () => void;
 }): PreparedShare {
@@ -492,7 +537,7 @@ export function commitPreparedShare(args: {
       policy: 'scope-unsupported',
       message: 'Navegador não oferece opções suficientes para garantir o escopo solicitado. A transmissão segue só com vídeo.',
     }
-    : decideAudioScope(args.mode, surface);
+    : decideAudioScope(args.mode, surface, { windowAudioFallback: args.windowAudioFallback });
   const counts = stripDisallowedAudio(args.stream, decision.keepAudio);
   let message = decision.message;
   if (decision.keepAudio && counts.kept === 0) {
@@ -526,7 +571,7 @@ export function captureUnavailableMessage(surface: string | null): string {
     return 'AUDIO_CAPTURE_UNAVAILABLE. A tela inteira veio sem áudio. Marque "Compartilhar áudio do sistema" no seletor. Isso não é microfone.';
   }
   if (surface === 'window') {
-    return 'AUDIO_CAPTURE_UNAVAILABLE. Áudio global desabilitado para janelas. Chrome e Edge no Windows não entregam o áudio exclusivo de uma janela.';
+    return 'AUDIO_CAPTURE_UNAVAILABLE. O navegador não devolveu o áudio desta janela. No Chrome/Edge, marque a opção de áudio no seletor, se aparecer.';
   }
   return 'AUDIO_CAPTURE_UNAVAILABLE. O áudio foi pedido e o navegador devolveu zero tracks. A transmissão segue só com vídeo.';
 }

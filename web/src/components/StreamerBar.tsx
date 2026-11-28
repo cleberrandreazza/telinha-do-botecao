@@ -23,10 +23,12 @@ interface StreamerBarProps {
   busy: boolean;
   /** Aviso com o motivo real de uma falha (faixa âmbar). */
   notice: string | null;
+  /** O aviso explica a captura; não é uma falha. */
+  informative?: boolean;
 }
 
 /**
- * Barra de controles de quem transmite — fica ACIMA do preview local.
+ * Configurações de quem transmite — abertas pelo menu do preview local.
  *
  * Reúne as três coisas que o transmissor mexe durante a live: trocar o
  * conteúdo capturado, a resolução e a taxa de quadros.
@@ -47,17 +49,22 @@ export default function StreamerBar({
   onSelectFrameRate,
   busy,
   notice,
+  informative = false,
 }: StreamerBarProps) {
   const activeSource = measuredSurface ?? null;
 
   return (
-    <div className="absolute bottom-[13rem] sm:bottom-[15rem] right-4 z-30 flex flex-col gap-2 items-end">
-      {/* Falha: faixa âmbar com o motivo real */}
+    <div className="flex flex-col gap-2 items-stretch max-w-[min(22rem,calc(100vw-2rem))]">
+      {/* Falha: faixa âmbar. Aviso da captura: faixa neutra, não é defeito. */}
       {notice && (
         <div
           role="status"
           aria-live="polite"
-          className="max-w-[min(22rem,calc(100vw-2rem))] px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-200/90 text-[11px] leading-snug"
+          className={`px-2.5 py-1.5 rounded-lg border text-[11px] leading-snug ${
+            informative
+              ? 'bg-surface-container/80 border-outline-variant/30 text-on-surface-variant'
+              : 'bg-amber-500/10 border-amber-500/20 text-amber-200/90'
+          }`}
         >
           {notice}
         </div>

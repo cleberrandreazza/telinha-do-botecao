@@ -38,38 +38,6 @@ export function clampPan(pan: PanOffset, limit: PanOffset): PanOffset {
 }
 
 /**
- * Tamanho de uma caixa (em pixels).
- */
-export interface BoxSize {
-  width: number;
-  height: number;
-}
-
-/**
- * Mantém uma caixa (o preview local) dentro do palco.
- *
- * A posição é o canto superior esquerdo da caixa. Com `margin`, a caixa
- * ainda guarda uma folga da borda do palco. Se o palco for menor que a
- * caixa, a posição volta para a margem (a caixa pode até transbordar —
- * não há para onde ir).
- */
-export function clampBoxPosition(
-  position: { x: number; y: number },
-  box: BoxSize,
-  stage: BoxSize,
-  margin = 0,
-): { x: number; y: number } {
-  const maxX = Math.max(margin, stage.width - box.width - margin);
-  const maxY = Math.max(margin, stage.height - box.height - margin);
-  const x = Number.isFinite(position.x) ? position.x : margin;
-  const y = Number.isFinite(position.y) ? position.y : margin;
-  return {
-    x: Math.min(maxX, Math.max(margin, x)),
-    y: Math.min(maxY, Math.max(margin, y)),
-  };
-}
-
-/**
  * Formata código de sala com traço no meio: ABC-DEF
  */
 export function formatCode(code: string): string {

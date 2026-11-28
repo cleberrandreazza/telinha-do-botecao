@@ -2,7 +2,6 @@ import { useState, useEffect, useRef } from 'react';
 import { getInitials } from '../lib/profile';
 import { migrateAudioMode, type AudioMode } from '../lib/diagnostics/audio';
 import { resolveEventSounds, setSoundsEnabled } from '../lib/sounds';
-
 const STORAGE_KEY = 'botecao-settings';
 
 export interface BotecaoSettings {
@@ -26,8 +25,8 @@ const DEFAULT_SETTINGS: BotecaoSettings = {
 
 const AUDIO_MODES: { key: AudioMode; label: string; desc: string }[] = [
   { key: 'off', label: 'Sem áudio', desc: 'Só vídeo.' },
-  { key: 'source', label: 'Áudio da aba', desc: 'Padrão. Som da guia. Janela e tela inteira neste modo saem sem áudio global.' },
-  { key: 'system', label: 'Áudio de todo o Windows', desc: 'Separado do padrão. Só vale ao compartilhar a tela inteira.' },
+  { key: 'source', label: 'Áudio da aba ou janela', desc: 'Padrão. Som só da guia ou do programa compartilhado, quando o navegador isola. Tela inteira sai sem áudio.' },
+  { key: 'system', label: 'Áudio de todo o Windows', desc: 'Tela inteira ou janela. Leva todo o som do Windows.' },
 ];
 
 export function loadSettings(): BotecaoSettings {
@@ -310,7 +309,7 @@ export default function SettingsModal({ nickname, onClose, onSave }: SettingsMod
               </button>
             </div>
 
-            <span className="font-body-sm text-body-sm text-on-surface-variant">Não captura microfone. Uma janela não transmite o áudio do Windows.</span>
+            <span className="font-body-sm text-body-sm text-on-surface-variant">Não captura microfone. Uma janela só leva o som de todo o Windows no modo separado.</span>
           </div>
         </div>
 
