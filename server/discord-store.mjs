@@ -101,8 +101,8 @@ export function createDiscordStore(databaseUrl) {
 
     async consumeLoginCode(rawCode, roomCode) {
       const codeHash = createHash('sha256').update(String(rawCode || '')).digest('hex');
-      const result = await pool.query('DELETE FROM discord_login_codes WHERE code_hash = $1 AND room_code = $2 AND expires_at > NOW() RETURNING session_hash', [codeHash, roomCode]);
-      return result.rows[0]?.session_hash ?? null;
+      const result = await pool.query('DELETE FROM discord_login_codes WHERE code_hash = $1 AND room_code = $2 AND expires_at > NOW() RETURNING encrypted_session_token', [codeHash, roomCode]);
+      return result.rows[0] ? decryptDiscordToken(result.rows[0].encrypted_session_token) : null;
     },
 
     async getWebSession(rawToken) {
