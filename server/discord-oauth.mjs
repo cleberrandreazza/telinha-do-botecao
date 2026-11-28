@@ -88,7 +88,8 @@ export function createDiscordOAuth({ store, webOrigin, getVoiceMembership }) {
       await store.createWebSession(user.id, session, Date.now() + SESSION_TTL_MS);
       const loginCode = randomBytes(32).toString('base64url');
       await store.createLoginCode(loginCode, session, roomCode, Date.now() + LOGIN_CODE_TTL_MS);
-      const target = new URL(`/abrir/${encodeURIComponent(roomCode)}`, frontendOrigin);
+      const target = new URL('/', frontendOrigin);
+      target.searchParams.set('sala', roomCode);
       target.searchParams.set('source', 'discord');
       target.searchParams.set('discord_code', loginCode);
       redirect(res, target.toString());
