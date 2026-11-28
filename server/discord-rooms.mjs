@@ -120,12 +120,28 @@ export function blockedVoiceMessage(voiceChannelId) {
 }
 
 /** Links efêmeros, já com o ticket. O chat público não recebe isto. */
-export function entryLinks({ origin, code, ticket }) {
+export function normalizeAppBridgeOrigin(value) {
+  const raw = String(value || '').trim().replace(/\\/+$/, '');
+  if (!raw.startsWith('https://') || /\\s/.test(raw)) return null;
+  try {
+    const url = new URL(raw);
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+/** Links efêmeros: o app usa uma página HTTPS intermediária porque o Discord
+ * não aceita esquemas personalizados (telinha://) em botões de link. */
+export function entryLinks({ origin, redirectOrigin, code, ticket }) {
   const base = normalizeWebOrigin(origin);
+  const bridge = normalizeAppBridgeOrigin(redirectOrigin);
   const room = encodeURIComponent(code);
   const pass = encodeURIComponent(ticket);
+  const app = `telinha://sala/${code}?ticket=${pass}`;
   return {
     web: `${base}/?sala=${room}&ticket=${pass}`,
-    app: `telinha://sala/${code}?ticket=${pass}`,
+    app,
+    appWeb: bridge ? `${bridge}/abrir/${room}?ticket=${pass}` : null,
   };
 }
