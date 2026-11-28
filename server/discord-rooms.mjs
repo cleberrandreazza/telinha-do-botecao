@@ -47,3 +47,25 @@ export function ensureVoiceRoom(rooms, voiceChannelId, guildId) {
   rooms.set(code, room);
   return { room, created: true };
 }
+
+export function restoreVoiceRoom(rooms, code, voiceChannelId, guildId) {
+  if (!/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/.test(code)) return null;
+  const existing = rooms.get(code);
+  if (existing) return existing;
+  const room = {
+    code,
+    password: null,
+    peers: new Map(),
+    createdAt: Date.now(),
+    history: [],
+    emptySince: null,
+    cleanupTimer: null,
+    voiceChannelId,
+    guildId,
+    discordPrivate: false,
+    discordRestricted: true,
+    discordHoldTimer: null,
+  };
+  rooms.set(code, room);
+  return room;
+}
