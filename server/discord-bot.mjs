@@ -127,6 +127,7 @@ export async function startDiscordBot({ rooms, holdEmptyRoom, issueVoiceTicket }
     const ticket = issueVoiceTicket(room);
     const links = entryLinks({
       origin: normalizeWebOrigin(process.env.PUBLIC_WEB_URL),
+      redirectOrigin: process.env.PUBLIC_APP_REDIRECT_URL || process.env.RENDER_EXTERNAL_URL,
       code: room.code,
       ticket,
     });
@@ -137,7 +138,16 @@ export async function startDiscordBot({ rooms, holdEmptyRoom, issueVoiceTicket }
         `O convite vale 45 segundos e só uma vez.\n[Assistir no navegador](${links.web})\nApp: ${links.app}`,
       );
 
-    await replyEphemeral(interaction, { embeds: [embed] });
+    const response = { embeds: [embed] };
+    if (links.appWeb) {
+      response.components = [new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setLabel('Abrir no aplicativo')
+          .setStyle(ButtonStyle.Link)
+          .setURL(links.appWeb),
+      )];
+    }
+    await replyEphemeral(interaction, response);
   }
 
   client.on('error', () => {});
