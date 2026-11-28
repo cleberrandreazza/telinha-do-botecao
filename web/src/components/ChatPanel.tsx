@@ -213,7 +213,9 @@ export default function ChatPanel({
         <button
           type="button"
           onClick={onLeaveRoom}
-          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-surface-container/60 hover:bg-error-container/20 border border-outline-variant/20 hover:border-error/30 text-on-surface-variant hover:text-error transition-all cursor-pointer shrink-0"
+          className={`flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg bg-surface-container/60 hover:bg-error-container/20 border border-outline-variant/20 hover:border-error/30 text-on-surface-variant hover:text-error transition-all cursor-pointer ${
+            hideRoomCode ? 'flex-1' : 'shrink-0'
+          }`}
           title="Sair da sala"
         >
           <span className="material-symbols-outlined text-[14px]">logout</span>
@@ -243,7 +245,7 @@ export default function ChatPanel({
       )}
       {showDesktopCta && (
         <div className="px-3.5 py-2 border-b border-[#1f222e] shrink-0">
-          <DesktopDownloadCapsule />
+          <DesktopDownloadCapsule fullWidth />
         </div>
       )}
       {showDesktopStabilityHint && (
@@ -297,7 +299,8 @@ export default function ChatPanel({
               peerId: myPeerId,
               nickname: myNickname,
             });
-            const color = colorFromString(message.nickname);
+            const nickname = message.nickname || 'Anônimo';
+            const color = colorFromString(nickname);
             return (
               <div
                 key={message.id}
@@ -312,9 +315,9 @@ export default function ChatPanel({
                     border: `1px solid ${color}55`,
                     color,
                   }}
-                  title={message.nickname}
+                  title={nickname}
                 >
-                  {getInitials(message.nickname)}
+                  {getInitials(nickname)}
                 </div>
                 <div className="min-w-0 flex-1">
                   <div
@@ -330,7 +333,7 @@ export default function ChatPanel({
                           isMine ? 'text-primary' : 'text-on-surface'
                         }`}
                       >
-                        {message.nickname}
+                        {nickname}
                       </span>
                       <span className="text-[10px] font-label-mono text-outline shrink-0">
                         {formatChatTime(message.ts)}

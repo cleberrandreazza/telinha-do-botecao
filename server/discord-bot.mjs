@@ -1,4 +1,4 @@
-import { ensureVoiceRoom, normalizeWebOrigin, restoreVoiceRoom } from './discord-rooms.mjs';
+import { discordEntryUrls, ensureVoiceRoom, normalizeHttpsOrigin, restoreVoiceRoom } from './discord-rooms.mjs';
 
 export async function startDiscordBot({ rooms, holdEmptyRoom, store, onVoiceMembership }) {
   const token = process.env.DISCORD_BOT_TOKEN?.trim();
@@ -30,7 +30,9 @@ export async function startDiscordBot({ rooms, holdEmptyRoom, store, onVoiceMemb
 
   client.on('voiceStateUpdate', (oldState, newState) => {
     const memberId = newState.id || oldState.id;
-    const guildId = newState.guild.id;
+    const guildId = newState.guild?.id || oldState.guild?.id;
+    if (!memberId || !guildId) return;
+    console.log(`[discord] voz ${newState.channelId ? 'mudou de canal' : 'saiu do canal'}`);
     updateMember(memberId, guildId, newState.channelId);
   });
 
@@ -52,9 +54,14 @@ export async function startDiscordBot({ rooms, holdEmptyRoom, store, onVoiceMemb
       if (created) holdEmptyRoom?.(room);
       await store.saveVoiceRoom(interaction.guildId, voiceChannelId, room.code);
 
-      const origin = normalizeWebOrigin(process.env.PUBLIC_WEB_URL);
-      const browserUrl = `${origin}/?sala=${room.code}&source=discord`;
-      const desktopUrl = `${origin}/abrir/${room.code}?source=discord`;
+      const redirectFromCallback = normalizeHttpsOrigin(process.env.DISCORD_REDIRECT_URI);
+      const links = discordEntryUrls({
+        origin: process.env.PUBLIC_WEB_URL,
+        redirectOrigin: process.env.PUBLIC_APP_REDIRECT_URL || process.env.RENDER_EXTERNAL_URL || redirectFromCallback,
+        code: room.code,
+      });
+      const browserUrl = links.browser;
+      const desktopUrl = links.desktop;
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setLabel('Entrar pelo navegador').setStyle(ButtonStyle.Link).setURL(browserUrl),
         new ButtonBuilder().setLabel('Abrir aplicativo').setStyle(ButtonStyle.Link).setURL(desktopUrl),

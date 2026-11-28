@@ -1,6 +1,26 @@
 import { createServer } from 'node:http';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { randomBytes } from 'node:crypto';
+
+// No Render as variáveis já vêm do painel. Aqui o .env local só preenche o que falta.
+const envFile = join(dirname(fileURLToPath(import.meta.url)), '.env');
+if (existsSync(envFile)) {
+  for (const line of readFileSync(envFile, 'utf8').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (process.env[key] === undefined) process.env[key] = value;
+  }
+}
 import {
   announcedPeer,
   publicPeer,
@@ -320,9 +340,10 @@ wss.on('connection', (ws) => {
           peerId,
           peers: peerList,
           isPrivate: roomPrivateFlag(room),
+          discordRoom: room.discordRestricted === true,
         });
 
-        // histórico de chat da sala (últimas 50 mensagens)
+        if (!Array.isArray(room.history)) room.history = [];
         send(ws, {
           type: 'chat-history',
           messages: room.history.slice(),
@@ -374,7 +395,8 @@ wss.on('connection', (ws) => {
         if (!room) return;
 
         const text = sanitizeChatText(msg.text);
-        if (!text) return; // texto vazio é ignorado
+        if (!text) return;
+        if (!Array.isArray(room.history)) room.history = [];
 
         const now = Date.now();
         // rate limit: descarta silenciosamente mensagens enviadas menos de
@@ -537,6 +559,8 @@ async function initializeDiscordIntegration() {
           if (peer.discordUserId !== discordUserId || !peer.roomCode) continue;
           const room = rooms.get(peer.roomCode);
           if (!membership || !room || membership.guildId !== room.guildId || membership.channelId !== room.voiceChannelId) {
+            const roomCode = peer.roomCode;
+            console.log(`[discord] ${peer.nickname} saiu do canal de voz; encerrando a sala ${roomCode}`);
             removeFromRoom(peer);
             send(peer.ws, { type: 'error', message: 'Você saiu ou mudou de canal de voz. A conexão com esta sala foi encerrada.' });
           }
@@ -551,7 +575,9 @@ async function initializeDiscordIntegration() {
       });
     }
   } catch (error) {
-    console.error('[discord] integração não iniciou:', error.message);
+    const nested = Array.isArray(error?.errors) ? error.errors.map((item) => item?.message).filter(Boolean) : [];
+    const detail = [error?.message, ...nested].filter(Boolean).join('; ') || error?.code || 'erro sem mensagem';
+    console.error('[discord] integração não iniciou:', detail);
   }
 }
 void initializeDiscordIntegration();

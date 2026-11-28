@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ensureVoiceRoom, roomForVoice, normalizeWebOrigin } from './discord-rooms.mjs';
+import { discordEntryUrls, ensureVoiceRoom, roomForVoice, normalizeWebOrigin } from './discord-rooms.mjs';
 
 const VOICE = '123456789012345678';
 const GUILD = '987654321098765432';
@@ -41,6 +41,16 @@ test('sala removida não reaproveita o código antigo', () => {
   const next = ensureVoiceRoom(rooms, VOICE, GUILD);
   assert.equal(next.created, true);
   assert.notEqual(next.room.code, first.room.code);
+});
+
+test('os botões do Discord passam pelo servidor quando ele tem origem HTTPS', () => {
+  const links = discordEntryUrls({
+    origin: 'https://telinha-do-botecao.vercel.app',
+    redirectOrigin: 'https://telinha-signaling.onrender.com/discord/callback',
+    code: 'AB234C',
+  });
+  assert.equal(links.browser, 'https://telinha-signaling.onrender.com/discord/entry/AB234C?target=browser');
+  assert.equal(links.desktop, 'https://telinha-signaling.onrender.com/discord/entry/AB234C?target=desktop');
 });
 
 test('normaliza apenas origens HTTPS', () => {

@@ -8,9 +8,8 @@ use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
 use serde::Deserialize;
 
 const DEFAULT_WEB_ORIGIN: &str = "https://telinha-do-botecao.vercel.app";
-const PRIVATE_LABEL: &str = "Em uma sala privada";
-const IDLE_DETAILS: &str = "Disponível para assistir e compartilhar";
-const IDLE_STATE: &str = "Abra o Telinha para entrar com seus amigos";
+/// ID público do aplicativo. O Rich Presence precisa dele mesmo sem o `.env` do servidor.
+const DISCORD_APP_ID: &str = "1576204543526703144";
 const JOIN_LABEL: &str = "Entrar na Sala";
 const CODE_ALPHABET: &str = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -29,7 +28,6 @@ pub struct PresenceState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActivityPlan {
     Clear,
-    /// Sem atividade quando não há transmissão ativa.
     Private,
     Public { join_url: Option<String> },
 }
@@ -49,7 +47,7 @@ fn web_origin() -> String {
 fn client_id() -> Option<String> {
     let from_env = std::env::var("DISCORD_CLIENT_ID").ok();
     let compiled = option_env!("DISCORD_CLIENT_ID").map(str::to_string);
-    let raw = from_env.or(compiled)?;
+    let raw = from_env.or(compiled).unwrap_or_else(|| DISCORD_APP_ID.to_string());
     let id = raw.trim();
     if id.len() >= 8 && id.chars().all(|c| c.is_ascii_digit()) {
         Some(id.to_string())
@@ -71,7 +69,7 @@ pub fn normalize_room_code(raw: &str) -> Option<String> {
     }
 }
 
-/// Publica Rich Presence apenas enquanto o usuário transmite a tela.
+/// O ícone no canal de voz só existe enquanto a tela está sendo compartilhada.
 /// Sala privada não expõe código, party ou convite.
 pub fn plan_activity(state: &PresenceState) -> ActivityPlan {
     if !state.enabled || !state.in_room || !state.is_streaming {
@@ -149,18 +147,10 @@ fn apply(client: &mut Option<DiscordIpcClient>, plan: &ActivityPlan) -> Result<(
         match plan {
             ActivityPlan::Clear => connected.clear_activity().map_err(|_| ()),
             ActivityPlan::Private => connected
-                .set_activity(
-                    activity::Activity::new()
-                        .activity_type(activity::ActivityType::Watching)
-                        .name("Telinha do Botecão")
-                        .details("🔴 LIVE — Transmitindo tela em sala privada"),
-                )
+                .set_activity(live_activity("🔴 LIVE — Transmitindo tela em sala privada"))
                 .map_err(|_| ()),
             ActivityPlan::Public { join_url } => {
-                let mut act = activity::Activity::new()
-                    .activity_type(activity::ActivityType::Watching)
-                    .name("Telinha do Botecão")
-                    .details("🔴 LIVE — Transmitindo tela");
+                let mut act = live_activity("🔴 LIVE — Transmitindo tela");
                 if let Some(url) = join_url.as_ref() {
                     act = act.buttons(vec![activity::Button::new(JOIN_LABEL, url.as_str())]);
                 }
@@ -172,6 +162,15 @@ fn apply(client: &mut Option<DiscordIpcClient>, plan: &ActivityPlan) -> Result<(
         *client = None;
     }
     result
+}
+
+/// `Playing` é o tipo que coloca o ícone do aplicativo ao lado do nome no canal de voz.
+fn live_activity(details: &str) -> activity::Activity<'_> {
+    activity::Activity::new()
+        .activity_type(activity::ActivityType::Playing)
+        .status_display_type(activity::StatusDisplayType::Name)
+        .name("Telinha do Botecão")
+        .details(details)
 }
 
 enum PresenceJob {
@@ -275,17 +274,15 @@ mod tests {
     }
 
     #[test]
-    fn stopping_stream_clears_activity() {
-        let mut state = sample(false);
-        state.is_streaming = false;
-        assert_eq!(plan_activity(&state), ActivityPlan::Clear);
-    }
+    fn voice_icon_only_while_sharing() {
+        let mut stopped = sample(false);
+        stopped.is_streaming = false;
+        assert_eq!(plan_activity(&stopped), ActivityPlan::Clear);
 
-    #[test]
-    fn leaving_room_clears_activity() {
-        let mut state = sample(false);
-        state.in_room = false;
-        assert_eq!(plan_activity(&state), ActivityPlan::Clear);
+        let mut outside = sample(false);
+        outside.in_room = false;
+        outside.is_streaming = true;
+        assert_eq!(plan_activity(&outside), ActivityPlan::Clear);
     }
 
     #[test]

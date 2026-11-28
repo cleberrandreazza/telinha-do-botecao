@@ -3,6 +3,37 @@ import { randomBytes } from 'node:crypto';
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 export const DEFAULT_WEB_ORIGIN = 'https://telinha-do-botecao.vercel.app';
 
+/** Origem HTTPS do servidor de sinalização, sem caminho. */
+export function normalizeHttpsOrigin(value) {
+  const raw = String(value || '').trim();
+  if (!raw.startsWith('https://') || raw.split('').some((char) => char.charCodeAt(0) <= 32)) return null;
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Os botões do Discord apontam para o servidor. Lá o cookie da sessão
+ * decide se a pessoa autoriza de novo ou segue direto.
+ */
+export function discordEntryUrls({ origin, redirectOrigin, code }) {
+  const web = normalizeWebOrigin(origin);
+  const bridge = normalizeHttpsOrigin(redirectOrigin);
+  const room = encodeURIComponent(code);
+  if (!bridge) {
+    return {
+      browser: `${web}/?sala=${room}&source=discord`,
+      desktop: `${web}/abrir/${room}?source=discord`,
+    };
+  }
+  return {
+    browser: `${bridge}/discord/entry/${room}?target=browser`,
+    desktop: `${bridge}/discord/entry/${room}?target=desktop`,
+  };
+}
+
 export function normalizeWebOrigin(value) {
   let raw = String(value || DEFAULT_WEB_ORIGIN).trim();
   while (raw.endsWith('/')) raw = raw.slice(0, -1);

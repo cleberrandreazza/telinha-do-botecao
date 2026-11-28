@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node index.mjs",
     "dev": "node index.mjs",
-    "test": "node --test relay-protocol.test.mjs discord-rooms.test.mjs discord-store.test.mjs",
+    "test": "node --test relay-protocol.test.mjs discord-rooms.test.mjs discord-store.test.mjs discord-oauth.test.mjs",
     "build": "node --check index.mjs && node --check discord-bot.mjs && node --check discord-oauth.mjs && node --check discord-rooms.mjs && node --check discord-store.mjs && node --check relay-protocol.mjs"
   },
   "dependencies": {

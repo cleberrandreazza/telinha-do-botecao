@@ -33,12 +33,12 @@ export function DesktopDownloadCard() {
   );
 }
 
-export function DesktopDownloadCapsule() {
+export function DesktopDownloadCapsule({ fullWidth = false }: { fullWidth?: boolean }) {
   return (
     <a
       href={DESKTOP_APP_DOWNLOAD_URL}
       title={DESKTOP_APP_BENEFIT}
-      className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-emerald-500/30 bg-[#111318]/95 px-2.5 py-1 text-[11px] font-semibold text-emerald-300 shadow-2xl backdrop-blur-xl hover:border-emerald-400/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/70"
+      className={`${fullWidth ? 'flex w-full justify-center' : 'inline-flex max-w-full'} items-center gap-1.5 rounded-full border border-emerald-500/30 bg-[#111318]/95 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-300 shadow-2xl backdrop-blur-xl hover:border-emerald-400/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/70`}
     >
       <span className="material-symbols-outlined text-[14px]" aria-hidden="true">download</span>
       <span className="truncate">{DOWNLOAD_LABEL}</span>

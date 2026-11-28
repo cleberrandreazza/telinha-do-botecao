@@ -17,6 +17,18 @@ export function normalizeRoomCode(raw: string): string | null {
   return ALPHABET.test(code) ? code : null;
 }
 
+export const DISCORD_SESSION_KEY = 'telinha.discord.session';
+
+/** A aba nova do Discord não vê sessionStorage. O localStorage é o que vale entre cliques. */
+export function readStoredDiscordSession(
+  local: { getItem(key: string): string | null } | null | undefined,
+  session: { getItem(key: string): string | null } | null | undefined,
+): string {
+  return normalizeDiscordCode(local?.getItem(DISCORD_SESSION_KEY))
+    ?? normalizeDiscordCode(session?.getItem(DISCORD_SESSION_KEY))
+    ?? '';
+}
+
 export function normalizeDiscordCode(raw: string | null | undefined): string | null {
   const code = (raw ?? '').trim();
   return /^[A-Za-z0-9_-]{40,64}$/.test(code) ? code : null;

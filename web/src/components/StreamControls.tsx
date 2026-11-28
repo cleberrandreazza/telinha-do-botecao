@@ -91,7 +91,7 @@ export default function StreamControls({
         </div>
       )}
 
-      <div className="flex w-full items-center justify-between gap-2 pb-1.5 pl-2 pr-[7.5rem] pt-1 sm:pl-3">
+      <div className="flex w-full items-center justify-between gap-2 pb-1.5 pl-2 pr-2 pt-1 sm:pl-3 sm:pr-3">
         <div className="flex min-w-0 items-center gap-0.5">
           <ControlButton
             icon={paused ? 'play_arrow' : 'pause'}
@@ -143,7 +143,7 @@ export default function StreamControls({
                 onClick={() => onZoomChange(1)}
                 title="Voltar ao 100%"
                 aria-label={`Zoom ${zoomPercent(zoom)}. Voltar ao 100%`}
-                className="h-8 min-w-12 rounded-md px-1 font-label-mono text-[12px] font-semibold text-white/90 hover:bg-white/10 hover:text-white cursor-pointer focus-visible:ring-2 focus-visible:ring-white/70"
+                className="inline-flex h-8 min-w-12 items-center justify-center rounded-md px-1 font-label-mono text-[12px] font-semibold leading-none text-white/90 hover:bg-white/10 hover:text-white cursor-pointer focus-visible:ring-2 focus-visible:ring-white/70"
               >
                 {zoomPercent(zoom)}
               </button>

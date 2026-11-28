@@ -36,7 +36,7 @@ import { describeSwitchError, type DisplaySource } from './lib/sourceSwitch';
 import type { StreamConfig } from './lib/webrtc';
 import { loadProfile } from './lib/profile';
 import { buildPresence, discordHideSwitchVisible, pushDiscordPresence, readDiscordRpcStatus } from './lib/discordPresence';
-import { desktopRoomUrl, roomCodeFromLocation, roomTargetFromDesktopUrl } from './lib/roomLink';
+import { desktopRoomUrl, DISCORD_SESSION_KEY, readStoredDiscordSession, roomCodeFromLocation, roomTargetFromDesktopUrl } from './lib/roomLink';
 import { clampWebPreset, webShareNeedsDesktopPrompt, webViewerShouldSuggestDesktop } from './lib/desktopPrompt';
 import { DesktopSharePrompt } from './components/DesktopAppPrompt';
 import { describeCapture, readTrackSettings } from './lib/diagnostics/index';
@@ -293,6 +293,7 @@ export default function App() {
   const connectPromiseRef = useRef<Promise<SignalingClient> | null>(null);
   /** Código da sala para o qual o join-room já foi enviado (evita entrar 2x). */
   const joinedCodeRef = useRef<string | null>(null);
+  const endRoomRef = useRef<(message: string) => void>(() => {});
   /** Senha desta entrada: a sala conta como privada mesmo antes do servidor confirmar. */
   const pendingSecretRef = useRef(false);
   const peersRef = useRef<PeerInfo[]>([]);
@@ -462,6 +463,7 @@ export default function App() {
           : [...msg.peers, selfJoined];
         setRoomCode(msg.code);
         setRoomPrivate(Boolean(msg.isPrivate || pendingSecretRef.current));
+        if (msg.discordRoom) setDiscordEntry(true);
         setMyPeerId(msg.peerId);
         setPeers(peersWithSelf);
         setScreen('room');
@@ -611,6 +613,10 @@ export default function App() {
           clearRoomSession();
           setReconnectState('failed');
           setReconnectError(msg.message);
+          break;
+        }
+        if (joinedCodeRef.current) {
+          endRoomRef.current(msg.message);
           break;
         }
         setError(msg.message);
@@ -1213,6 +1219,12 @@ export default function App() {
     joinedCodeRef.current = null;
   };
 
+  endRoomRef.current = (message: string) => {
+    clearRoomSession();
+    resetRoom();
+    setError(message);
+  };
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -1263,6 +1275,7 @@ export default function App() {
     setPeers(mock.peers);
     setStreams([]); // Start with no streams — loading state
     setChatMessages(generateMockChatMessages());
+    setDiscordEntry(new URLSearchParams(window.location.search).get('source') === 'discord');
     setScreen('room');
 
     // ?mock&share — simula que você está transmitindo (preview local)
@@ -1388,18 +1401,46 @@ export default function App() {
     if (isMockMode()) return;
 
     const params = new URLSearchParams(window.location.search);
-    try { discordSessionRef.current = window.sessionStorage.getItem('telinha.discord.session') || ''; } catch { /* storage indisponível */ }
+    try {
+      discordSessionRef.current = readStoredDiscordSession(window.localStorage, window.sessionStorage);
+      if (discordSessionRef.current) window.localStorage.setItem(DISCORD_SESSION_KEY, discordSessionRef.current);
+    } catch { /* storage indisponível */ }
     setDiscordEntry(params.get('source') === 'discord');
     const link = roomCodeFromLocation(window.location.pathname, window.location.search);
     if (params.has('discord_code')) {
       params.delete('discord_code');
       window.history.replaceState(null, '', `${window.location.pathname}${params.toString() ? `?${params}` : ''}${window.location.hash}`);
     }
-    if (link && params.get('source') === 'discord' && !link.discordCode && !discordSessionRef.current) {
+    const authOrigin = () => {
       const authUrl = new URL(getSignalingUrl());
       authUrl.protocol = authUrl.protocol === 'wss:' ? 'https:' : 'http:';
-      const authOrigin = authUrl.origin;
-      window.location.assign(`${authOrigin}/discord/entry/${link.code}`);
+      return authUrl.origin;
+    };
+    if (link && params.get('source') === 'discord' && !link.discordCode && !discordSessionRef.current) {
+      const target = link.openApp && !isTauriDesktop() ? 'desktop' : 'browser';
+      window.location.assign(`${authOrigin()}/discord/entry/${link.code}?target=${target}`);
+      return;
+    }
+    if (link?.openApp && !isTauriDesktop() && discordSessionRef.current && !link.discordCode) {
+      const sessionToken = discordSessionRef.current;
+      void fetch(new URL('/discord/desktop-code', authOrigin()), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionToken, roomCode: link.code }),
+      }).then(async (response) => {
+        if (!response.ok) {
+          window.location.assign(`${authOrigin()}/discord/entry/${link.code}?target=desktop`);
+          return;
+        }
+        const data = await response.json() as { loginCode?: string };
+        if (!data.loginCode) {
+          window.location.assign(`${authOrigin()}/discord/entry/${link.code}?target=desktop`);
+          return;
+        }
+        window.location.assign(desktopRoomUrl(link.code, null, data.loginCode));
+      }).catch(() => {
+        window.location.assign(`${authOrigin()}/discord/entry/${link.code}?target=desktop`);
+      });
       return;
     }
     if (link) {
@@ -1447,6 +1488,7 @@ export default function App() {
     pendingSecretRef.current = false;
     const join = async () => {
       if (discordCode) {
+        setDiscordEntry(true);
         let pending = discordExchangeRef.current.get(discordCode);
         if (!pending) {
           const api = new URL(getSignalingUrl());
@@ -1465,7 +1507,10 @@ export default function App() {
         }
         try {
           discordSessionRef.current = await pending;
-          try { window.sessionStorage.setItem('telinha.discord.session', discordSessionRef.current); } catch { /* storage indisponível */ }
+          try {
+            window.localStorage.setItem(DISCORD_SESSION_KEY, discordSessionRef.current);
+            window.sessionStorage.setItem(DISCORD_SESSION_KEY, discordSessionRef.current);
+          } catch { /* storage indisponível */ }
         } catch (error) {
           discordExchangeRef.current.delete(discordCode);
           setError(error instanceof Error ? error.message : 'Não foi possível validar o acesso Discord.');

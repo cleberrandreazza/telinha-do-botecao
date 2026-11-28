@@ -81,7 +81,7 @@ export type ClientMessage =
 // ── Signaling messages (server → client) ───────────────
 export type ServerMessage =
   | { type: 'room-created'; code: string; peerId: string; hasPassword: boolean; isPrivate?: boolean }
-  | { type: 'room-joined'; code: string; peerId: string; peers: PeerInfo[]; isPrivate?: boolean }
+  | { type: 'room-joined'; code: string; peerId: string; peers: PeerInfo[]; isPrivate?: boolean; discordRoom?: boolean }
   | { type: 'left-room' }
   | { type: 'peer-joined'; peer: PeerInfo }
   | { type: 'peer-left'; peerId: string }

@@ -608,9 +608,9 @@ export default function Room({
             </div>
           </div>
 
-          {/* Compartilhar e chat no fundo da tela.
+          {/* Compartilhar e chat ficam acima da barra do player, no mesmo canto.
               O ícone some com o chat aberto; a transmissão se encerra pelo preview ou pelo chat. */}
-          <div className="absolute bottom-4 right-4 z-40 flex items-center gap-2">
+          <div className="absolute bottom-16 right-3 z-40 flex items-center gap-2">
             {!isSharing && !chatOpen && (
             <HoverTip
               label={

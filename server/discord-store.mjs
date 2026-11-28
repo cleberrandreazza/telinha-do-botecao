@@ -72,21 +72,31 @@ export function createDiscordStore(databaseUrl) {
         )
       `);
       await pool.query('CREATE INDEX IF NOT EXISTS discord_web_sessions_expiry_idx ON discord_web_sessions (expires_at)');
-      await pool.query(`CREATE TABLE IF NOT EXISTS discord_oauth_states (state_hash TEXT PRIMARY KEY, room_code TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`);
+      await pool.query(`CREATE TABLE IF NOT EXISTS discord_oauth_states (state_hash TEXT PRIMARY KEY, room_code TEXT NOT NULL, client TEXT NOT NULL DEFAULT 'browser', expires_at TIMESTAMPTZ NOT NULL)`);
+      await pool.query(`ALTER TABLE discord_oauth_states ADD COLUMN IF NOT EXISTS client TEXT NOT NULL DEFAULT 'browser'`);
       await pool.query('CREATE INDEX IF NOT EXISTS discord_oauth_states_expiry_idx ON discord_oauth_states (expires_at)');
       await pool.query(`CREATE TABLE IF NOT EXISTS discord_login_codes (code_hash TEXT PRIMARY KEY, encrypted_session_token TEXT NOT NULL, room_code TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`);
       await pool.query('CREATE INDEX IF NOT EXISTS discord_login_codes_expiry_idx ON discord_login_codes (expires_at)');
     },
 
-    async saveOAuthState(state, roomCode, expiresAt) {
+    async saveOAuthState(state, roomCode, expiresAt, client = 'browser') {
       const hash = createHash('sha256').update(state).digest('hex');
-      await pool.query('INSERT INTO discord_oauth_states (state_hash, room_code, expires_at) VALUES ($1, $2, $3)', [hash, roomCode, new Date(expiresAt)]);
+      const safeClient = client === 'desktop' ? 'desktop' : 'browser';
+      await pool.query(
+        'INSERT INTO discord_oauth_states (state_hash, room_code, client, expires_at) VALUES ($1, $2, $3, $4)',
+        [hash, roomCode, safeClient, new Date(expiresAt)],
+      );
     },
 
     async consumeOAuthState(state) {
       const hash = createHash('sha256').update(String(state || '')).digest('hex');
-      const result = await pool.query('DELETE FROM discord_oauth_states WHERE state_hash = $1 AND expires_at > NOW() RETURNING room_code', [hash]);
-      return result.rows[0]?.room_code ?? null;
+      const result = await pool.query(
+        'DELETE FROM discord_oauth_states WHERE state_hash = $1 AND expires_at > NOW() RETURNING room_code, client',
+        [hash],
+      );
+      const row = result.rows[0];
+      if (!row) return null;
+      return { roomCode: row.room_code, client: row.client === 'desktop' ? 'desktop' : 'browser' };
     },
 
     async createWebSession(discordUserId, rawToken, expiresAt) {
