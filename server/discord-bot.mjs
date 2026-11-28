@@ -1,11 +1,7 @@
 import {
-  blockedVoiceMessage,
-  discordSlashPost,
   ensureVoiceRoom,
   entryLinks,
   normalizeWebOrigin,
-  parseJoinButtonId,
-  sameVoiceChannel,
 } from './discord-rooms.mjs';
 
 /**
