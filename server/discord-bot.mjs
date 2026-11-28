@@ -122,10 +122,6 @@ export async function startDiscordBot({ rooms, holdEmptyRoom, issueVoiceTicket }
   client.on('error', () => {});
   client.on('interactionCreate', async (interaction) => {
     try {
-      if (interaction.isButton()) {
-        await onJoinButton(interaction);
-        return;
-      }
       if (interaction.isChatInputCommand() && interaction.commandName === 'telinha') {
         await onSlash(interaction);
       }
