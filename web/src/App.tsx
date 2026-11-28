@@ -1365,7 +1365,7 @@ export default function App() {
       // (o servidor remove e reinsere o mesmo peer).
       if (joinedCodeRef.current !== session.code) {
         joinedCodeRef.current = session.code;
-        signal.send({ type: 'join-room', code: session.code, nickname: session.nickname, isDesktop: isTauriDesktop() });
+        signal.send({ type: 'join-room', code: session.code, nickname: session.nickname, isDesktop: isTauriDesktop(), ...(discordSessionRef.current ? { discordSession: discordSessionRef.current } : {}) });
       }
     } catch {
       if (reconnectCancelledRef.current) return;
