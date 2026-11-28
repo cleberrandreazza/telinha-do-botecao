@@ -4,10 +4,11 @@
 
 1. Uma pessoa executa `/telinha` dentro de um canal de voz.
 2. O bot cria ou reutiliza uma sala associada ao servidor e ao canal de voz e publica um link compartilhável.
-3. O link abre o frontend. Se o navegador já possui uma sessão Discord válida, ela é reutilizada; caso contrário, o backend inicia OAuth2.
-4. O OAuth solicita somente o escopo `identify`. O callback salva o refresh token criptografado no PostgreSQL e cria uma sessão de navegador.
-5. Ao entrar na sala, o backend valida a sessão e confirma que o usuário ainda está no mesmo canal de voz usando o estado recebido do gateway Discord.
-6. O evento `voiceStateUpdate` encerra a conexão Telinha quando o usuário sai do canal ou muda para outro canal.
+3. O link abre o frontend. Se a aba já possui uma sessão de navegador válida, ela é reutilizada; caso contrário, o backend inicia OAuth2.
+4. O OAuth solicita somente o escopo `identify`. O callback salva o refresh token criptografado no PostgreSQL e cria uma sessão server-side.
+5. O callback redireciona com um código temporário de uso único (validade de 2 minutos). O frontend troca esse código por uma sessão via POST; o token de sessão nunca vai na URL e fica apenas em memória/sessionStorage da aba.
+6. Ao entrar na sala, o backend valida a sessão e confirma que o usuário ainda está no mesmo canal de voz usando o estado recebido do gateway Discord. A renovação de refresh token é serializada por usuário para evitar corridas.
+7. O evento `voiceStateUpdate` encerra a conexão Telinha quando o usuário sai do canal ou muda para outro canal.
 
 OAuth identifica a conta Discord; não é um convite individual nem substitui a verificação de presença ao vivo.
 
@@ -44,8 +45,8 @@ Não versionar nem compartilhar `DATABASE_URL`, `DISCORD_CLIENT_SECRET`, `DISCOR
 
 ## Persistência
 
-O backend cria as tabelas `discord_authorizations`, `discord_voice_rooms`, `discord_web_sessions` e `discord_oauth_states` automaticamente na inicialização. Refresh tokens são cifrados com AES-256-GCM; sessões e estados são armazenados como hashes SHA-256.
+O backend cria as tabelas `discord_authorizations`, `discord_voice_rooms`, `discord_web_sessions`, `discord_oauth_states` e `discord_login_codes` automaticamente na inicialização. Refresh tokens e os tokens de sessão temporários do fluxo de troca são cifrados com AES-256-GCM; sessões, estados OAuth e códigos de login são armazenados como hashes SHA-256. Códigos de login são de uso único e expiram em 2 minutos. A sessão de navegador expira em 30 dias e fica limitada à aba via `sessionStorage`.
 
 ## Estado da implementação
 
-A integração ainda requer validação de ponta a ponta com as variáveis reais do Render/Neon, revisão da interface para ocultar o código no modo Discord e testes de browser/Tauri. Não considerar pronta para produção até esses testes passarem.
+A integração requer validação de ponta a ponta com as variáveis reais do Render/Neon e testes de browser/Tauri. Não considerar pronta para produção até esses testes passarem.
