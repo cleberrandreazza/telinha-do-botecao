@@ -175,14 +175,17 @@ const httpServer = createServer((req, res) => {
   if (req.method === 'GET' && appBridge) {
     const [, code, ticket] = appBridge;
     const deepLink = `telinha://sala/${code}?ticket=${encodeURIComponent(ticket)}`;
-    const safeLink = deepLink.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
-    res.writeHead(200, {
-      'Content-Type': 'text/html; charset=utf-8',
+    // Redireciona diretamente para o protocolo do app. O clique inicial no
+    // botão do Discord já abriu esta URL HTTPS; não exigimos um segundo clique
+    // numa página intermediária. Se o navegador bloquear o protocolo, ele
+    // exibirá o comportamento padrão de segurança do próprio navegador.
+    res.writeHead(302, {
+      Location: deepLink,
       'Cache-Control': 'no-store',
       'Referrer-Policy': 'no-referrer',
       'X-Content-Type-Options': 'nosniff',
     });
-    res.end(`<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Abrir Telinha</title><body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#101414;color:#f4f7f5;font:16px system-ui"><main style="max-width:420px;padding:32px;text-align:center"><h1>Telinha do Botecão</h1><p>Seu convite está pronto. Abra o aplicativo para entrar na sala.</p><a href="${safeLink}" style="display:inline-block;padding:14px 24px;border-radius:10px;background:#10b981;color:#06251b;text-decoration:none;font-weight:700">Abrir no aplicativo</a><p style="color:#aab7b0;font-size:13px">Se o aplicativo não abrir, confirme que o Telinha está instalado e tente novamente pelo botão acima.</p></main></body></html>`);
+    res.end();
     return;
   }
 
