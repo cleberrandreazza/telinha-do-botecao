@@ -1389,12 +1389,11 @@ export default function App() {
 
     const params = new URLSearchParams(window.location.search);
     setDiscordEntry(params.get('source') === 'discord');
-    const oauthCode = params.get('discord_code');
-    if (oauthCode) {
+    const link = roomCodeFromLocation(window.location.pathname, window.location.search);
+    if (params.has('discord_code')) {
       params.delete('discord_code');
       window.history.replaceState(null, '', `${window.location.pathname}${params.toString() ? `?${params}` : ''}${window.location.hash}`);
     }
-    const link = roomCodeFromLocation(window.location.pathname, window.location.search);
     if (link && params.get('source') === 'discord' && !discordSessionRef.current) {
       const authUrl = new URL(getSignalingUrl());
       authUrl.protocol = authUrl.protocol === 'wss:' ? 'https:' : 'http:';
