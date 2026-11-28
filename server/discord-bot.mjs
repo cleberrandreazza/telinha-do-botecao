@@ -1,4 +1,4 @@
-import { ensureVoiceRoom, normalizeWebOrigin } from './discord-rooms.mjs';
+import { ensureVoiceRoom, normalizeWebOrigin, restoreVoiceRoom } from './discord-rooms.mjs';
 
 export async function startDiscordBot({ rooms, holdEmptyRoom, store, onVoiceMembership }) {
   const token = process.env.DISCORD_BOT_TOKEN?.trim();
@@ -45,7 +45,10 @@ export async function startDiscordBot({ rooms, holdEmptyRoom, store, onVoiceMemb
       }
 
       updateMember(interaction.user.id, interaction.guildId, voiceChannelId);
-      const { room, created } = ensureVoiceRoom(rooms, voiceChannelId, interaction.guildId);
+      const persistedCode = await store.getVoiceRoom(interaction.guildId, voiceChannelId);
+      const restored = persistedCode ? restoreVoiceRoom(rooms, persistedCode, voiceChannelId, interaction.guildId) : null;
+      const ensured = restored ? { room: restored, created: false } : ensureVoiceRoom(rooms, voiceChannelId, interaction.guildId);
+      const { room, created } = ensured;
       if (created) holdEmptyRoom?.(room);
       await store.saveVoiceRoom(interaction.guildId, voiceChannelId, room.code);
 
