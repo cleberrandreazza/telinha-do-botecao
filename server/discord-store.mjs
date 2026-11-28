@@ -74,7 +74,7 @@ export function createDiscordStore(databaseUrl) {
       await pool.query('CREATE INDEX IF NOT EXISTS discord_web_sessions_expiry_idx ON discord_web_sessions (expires_at)');
       await pool.query(`CREATE TABLE IF NOT EXISTS discord_oauth_states (state_hash TEXT PRIMARY KEY, room_code TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`);
       await pool.query('CREATE INDEX IF NOT EXISTS discord_oauth_states_expiry_idx ON discord_oauth_states (expires_at)');
-      await pool.query(`CREATE TABLE IF NOT EXISTS discord_login_codes (code_hash TEXT PRIMARY KEY, session_hash TEXT NOT NULL REFERENCES discord_web_sessions(session_hash) ON DELETE CASCADE, room_code TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`);
+      await pool.query(`CREATE TABLE IF NOT EXISTS discord_login_codes (code_hash TEXT PRIMARY KEY, encrypted_session_token TEXT NOT NULL, room_code TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`);
       await pool.query('CREATE INDEX IF NOT EXISTS discord_login_codes_expiry_idx ON discord_login_codes (expires_at)');
     },
 
@@ -96,8 +96,7 @@ export function createDiscordStore(databaseUrl) {
 
     async createLoginCode(rawCode, sessionToken, roomCode, expiresAt) {
       const codeHash = createHash('sha256').update(rawCode).digest('hex');
-      const sessionHash = createHash('sha256').update(sessionToken).digest('hex');
-      await pool.query('INSERT INTO discord_login_codes (code_hash, session_hash, room_code, expires_at) VALUES ($1, $2, $3, $4)', [codeHash, sessionHash, roomCode, new Date(expiresAt)]);
+      await pool.query('INSERT INTO discord_login_codes (code_hash, encrypted_session_token, room_code, expires_at) VALUES ($1, $2, $3, $4)', [codeHash, encryptDiscordToken(sessionToken), roomCode, new Date(expiresAt)]);
     },
 
     async consumeLoginCode(rawCode, roomCode) {
