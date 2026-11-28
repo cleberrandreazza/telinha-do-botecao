@@ -116,12 +116,10 @@ export function createDiscordOAuth({ store, webOrigin, getVoiceMembership }) {
       const roomCode = typeof payload.roomCode === 'string' ? payload.roomCode.toUpperCase() : '';
       const loginCode = typeof payload.code === 'string' ? payload.code : '';
       if (!/^[A-HJ-NP-Z2-9]{6}$/.test(roomCode) || !/^[A-Za-z0-9_-]{40,64}$/.test(loginCode)) return sendText(res, 400, 'Código de acesso inválido.');
-      const sessionHash = await store.consumeLoginCode(loginCode, roomCode);
-      if (!sessionHash) return sendText(res, 401, 'Este link expirou ou já foi utilizado.');
-      const session = await store.getSessionByHash(sessionHash);
-      if (!session) return sendText(res, 401, 'Sessão não encontrada. Autorize novamente.');
+      const sessionToken = await store.consumeLoginCode(loginCode, roomCode);
+      if (!sessionToken) return sendText(res, 401, 'Este link expirou ou já foi utilizado.');
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Pragma': 'no-cache' });
-      res.end(JSON.stringify({ sessionToken: session.token }));
+      res.end(JSON.stringify({ sessionToken }));
       return true;
     }
     return false;
