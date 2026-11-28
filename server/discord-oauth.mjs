@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { normalizeWebOrigin } from './discord-rooms.mjs';
 
 const STATE_TTL_MS = 10 * 60_000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60_000;
@@ -27,6 +28,7 @@ async function discordRequest(path, options) {
 }
 
 export function createDiscordOAuth({ store, webOrigin, getVoiceMembership }) {
+  const frontendOrigin = normalizeWebOrigin(webOrigin);
   const clientId = process.env.DISCORD_CLIENT_ID?.trim();
   const clientSecret = process.env.DISCORD_CLIENT_SECRET?.trim();
   const redirectUri = process.env.DISCORD_REDIRECT_URI?.trim();
@@ -81,7 +83,7 @@ export function createDiscordOAuth({ store, webOrigin, getVoiceMembership }) {
       });
       const session = randomBytes(32).toString('base64url');
       await store.createWebSession(user.id, session, Date.now() + SESSION_TTL_MS);
-      const target = new URL(`/abrir/${encodeURIComponent(roomCode)}`, webOrigin);
+      const target = new URL(`/abrir/${encodeURIComponent(roomCode)}`, frontendOrigin);
       target.searchParams.set('source', 'discord');
       target.searchParams.set('discord_session', session);
       redirect(res, target.toString());
