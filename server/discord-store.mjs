@@ -42,6 +42,7 @@ export function createDiscordStore(databaseUrl) {
 
   return {
     async initialize() {
+      encryptionKey();
       await pool.query(`
         CREATE TABLE IF NOT EXISTS discord_authorizations (
           discord_user_id TEXT PRIMARY KEY,
