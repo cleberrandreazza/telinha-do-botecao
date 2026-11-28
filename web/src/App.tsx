@@ -1388,6 +1388,7 @@ export default function App() {
     if (isMockMode()) return;
 
     const params = new URLSearchParams(window.location.search);
+    try { discordSessionRef.current = window.sessionStorage.getItem('telinha.discord.session') || ''; } catch { /* storage indisponível */ }
     setDiscordEntry(params.get('source') === 'discord');
     const link = roomCodeFromLocation(window.location.pathname, window.location.search);
     if (params.has('discord_code')) {
@@ -1464,6 +1465,7 @@ export default function App() {
         }
         try {
           discordSessionRef.current = await pending;
+          try { window.sessionStorage.setItem('telinha.discord.session', discordSessionRef.current); } catch { /* storage indisponível */ }
         } catch (error) {
           discordExchangeRef.current.delete(discordCode);
           setError(error instanceof Error ? error.message : 'Não foi possível validar o acesso Discord.');
