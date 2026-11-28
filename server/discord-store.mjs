@@ -105,6 +105,12 @@ export function createDiscordStore(databaseUrl) {
       return result.rows[0]?.room_code ?? null;
     },
 
+    async getVoiceRoomByCode(roomCode) {
+      const result = await pool.query('SELECT guild_id, voice_channel_id FROM discord_voice_rooms WHERE room_code = $1', [roomCode]);
+      const row = result.rows[0];
+      return row ? { guildId: row.guild_id, voiceChannelId: row.voice_channel_id } : null;
+    },
+
     async saveAuthorization({ discordUserId, username, refreshToken, scope = 'identify' }) {
       await pool.query(`
         INSERT INTO discord_authorizations (discord_user_id, username, encrypted_refresh_token, scope)
