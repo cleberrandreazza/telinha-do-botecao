@@ -101,8 +101,8 @@ export function createDiscordOAuth({ store, webOrigin, getVoiceMembership }) {
   async function handle(req, res) {
     const url = new URL(req.url, 'http://localhost');
     const entry = /^\/discord\/entry\/([A-HJ-NP-Z2-9]{6})$/.exec(url.pathname);
-    if (req.method === 'GET' && entry) return begin(entry[1], res);
-    if (req.method === 'GET' && url.pathname === '/discord/callback') return callback(req, res);
+    if (req.method === 'GET' && entry) { await begin(entry[1], res); return true; }
+    if (req.method === 'GET' && url.pathname === '/discord/callback') { await callback(req, res); return true; }
     if (url.pathname === '/discord/exchange') {
       const requestOrigin = req.headers.origin || '';
       if (allowedExchangeOrigins.has(requestOrigin)) res.setHeader('Access-Control-Allow-Origin', requestOrigin);
