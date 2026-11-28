@@ -1413,7 +1413,7 @@ export default function App() {
         window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
       }
       if (link.openApp && !isTauriDesktop()) {
-        window.location.assign(desktopRoomUrl(link.code, link.ticket));
+        window.location.assign(desktopRoomUrl(link.code, link.ticket, discordSessionRef.current));
       }
       const nick = loadProfile()?.nickname?.trim();
       if (nick) {
@@ -1438,10 +1438,14 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const joinLinkRef = useRef<(code: string, ticket?: string | null) => void>(() => {});
+  const joinLinkRef = useRef<(code: string, ticket?: string | null, discordSession?: string | null) => void>(() => {});
   const lastDesktopJoin = useRef<{ key: string; at: number }>({ key: '', at: 0 });
-  joinLinkRef.current = (code: string, ticket?: string | null) => {
-    const key = `${code}:${ticket ?? ''}`;
+  joinLinkRef.current = (code: string, ticket?: string | null, discordSession?: string | null) => {
+    if (discordSession) {
+      discordSessionRef.current = discordSession;
+      try { window.localStorage.setItem('telinha.discord.session', discordSession); } catch { /* storage indisponível */ }
+    }
+    const key = `${code}:${ticket ?? ''}:${discordSession ?? ''}`;
     const now = Date.now();
     if (lastDesktopJoin.current.key === key && now - lastDesktopJoin.current.at < 2000) return;
     lastDesktopJoin.current = { key, at: now };
@@ -1453,7 +1457,7 @@ export default function App() {
   const joinDesktopUrls = (urls: string[]) => {
     for (const url of urls) {
       const target = roomTargetFromDesktopUrl(url);
-      if (target) joinLinkRef.current(target.code, target.ticket);
+      if (target) joinLinkRef.current(target.code, target.ticket, target.discordSession);
     }
   };
 
@@ -1482,16 +1486,16 @@ export default function App() {
       const { listen } = await import('@tauri-apps/api/event');
       const { invoke } = await import('@tauri-apps/api/core');
       if (cancelled) return;
-      stops.push(await listen<{ code: string; ticket?: string | null }>('telinha-join', (event) => {
-        if (event.payload?.code) joinLinkRef.current(event.payload.code, event.payload.ticket);
+      stops.push(await listen<{ code: string; ticket?: string | null; discordSession?: string | null }>('telinha-join', (event) => {
+        if (event.payload?.code) joinLinkRef.current(event.payload.code, event.payload.ticket, event.payload.discordSession);
       }));
       if (cancelled) {
         stopAll();
         return;
       }
       try {
-        const pending = await invoke<{ code: string; ticket?: string | null } | null>('take_pending_join');
-        if (!cancelled && pending?.code) joinLinkRef.current(pending.code, pending.ticket);
+        const pending = await invoke<{ code: string; ticket?: string | null; discordSession?: string | null } | null>('take_pending_join');
+        if (!cancelled && pending?.code) joinLinkRef.current(pending.code, pending.ticket, pending.discordSession);
       } catch {
         // O site não tem o comando.
       }
