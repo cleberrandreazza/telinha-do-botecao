@@ -54,10 +54,8 @@ export async function startDiscordBot({ rooms, holdEmptyRoom, store, onVoiceMemb
 
       const origin = normalizeWebOrigin(process.env.PUBLIC_WEB_URL);
       const browserUrl = `${origin}/?sala=${room.code}&source=discord`;
-      const desktopUrl = `${origin}/abrir/${room.code}?source=discord`;
       const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setLabel('Entrar pelo navegador').setStyle(ButtonStyle.Link).setURL(browserUrl),
-        new ButtonBuilder().setLabel('Abrir aplicativo').setStyle(ButtonStyle.Link).setURL(desktopUrl),
+        new ButtonBuilder().setLabel('Abrir Telinha').setStyle(ButtonStyle.Link).setURL(browserUrl),
       );
       await interaction.reply({
         content: `Sala vinculada ao canal **${interaction.guild.channels.cache.get(voiceChannelId)?.name || 'voz'}**. Compartilhe este link com quem está na call. Cada pessoa autoriza o Discord uma vez; a entrada só funciona enquanto estiver neste canal. ${created ? '' : 'Reutilizando a sala existente.'}`,
